@@ -60,6 +60,7 @@ import {
   stateLine,
   statusLabel,
   triggerWords,
+  until,
   useAutomations,
   words,
   worstFirst,
@@ -160,7 +161,9 @@ function useWords(schedule: Schedule | undefined, now: number) {
 function Trigger({ automation, now }: { automation: Automation; now: number }) {
   const described = useWords(automation.schedule, now)
   const script = automation.script
-  const text = triggerWords(automation) || (script ? script.ask : described)
+  const text =
+    triggerWords(automation) ||
+    (script ? [described, script.ask].filter(Boolean).join(' · ') : described)
   return (
     <p className="truncate font-mono text-[11px] text-muted-foreground" title={text}>
       {text}
@@ -336,15 +339,19 @@ function Toggle({
       title={
         passed
           ? 'Its one time has passed: edit the time, then switch it on'
-          : automation.script
+          : automation.script && automation.schedule
             ? checked
-              ? 'Pause: stop the script; nothing fires until resumed'
-              : done
-                ? 'Start watching again'
-                : 'Resume: start the script'
-            : checked
-              ? 'Pause: no new runs until resumed; a running run finishes'
-              : 'Resume the trigger'
+              ? 'Pause checks and stop any active check'
+              : 'Resume scheduled checks'
+            : automation.script
+              ? checked
+                ? 'Pause: stop the script; nothing fires until resumed'
+                : done
+                  ? 'Start watching again'
+                  : 'Resume: start the script'
+              : checked
+                ? 'Pause: no new runs until resumed; a running run finishes'
+                : 'Resume the trigger'
       }
     />
   )
@@ -373,6 +380,7 @@ function AutomationRow({
   const menu = useRef<HTMLButtonElement>(null)
   const afterMenu = useRef<() => void>(undefined)
   const script = automation.script
+  const check = !!script && !!automation.schedule
   const look = lookOf(automation, now)
   const running = automation.runs.some((run) => run.status === 'running')
   const kept =
@@ -452,37 +460,51 @@ function AutomationRow({
             <ChevronRightIcon className="size-3" />
           </Button>
         ) : null}
-        <Button
-          aria-expanded={expanded}
-          className="h-6 gap-1 px-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
-          onClick={() => onExpand(!expanded)}
-          size="xs"
-          variant="ghost"
-        >
-          <ChevronRightIcon
-            className={cn('size-3 transition-transform', expanded && 'rotate-90')}
-          />
-          {automation.runs.length} run{automation.runs.length === 1 ? '' : 's'}
-          {running && <BusyDot className="ml-0.5" />}
-        </Button>
+        {(!check || automation.prompt || automation.runs.length > 0) && (
+          <Button
+            aria-expanded={expanded}
+            className="h-6 gap-1 px-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
+            onClick={() => onExpand(!expanded)}
+            size="xs"
+            variant="ghost"
+          >
+            <ChevronRightIcon
+              className={cn('size-3 transition-transform', expanded && 'rotate-90')}
+            />
+            {automation.runs.length} run{automation.runs.length === 1 ? '' : 's'}
+            {running && <BusyDot className="ml-0.5" />}
+          </Button>
+        )}
         <span className="min-w-0 truncate pl-1 font-mono text-[10.5px] text-muted-foreground/60">
           {actions(automation)}
         </span>
         {script ? (
           <Button
             className="ml-auto h-6 shrink-0 gap-1 px-1.5 text-[11.5px] text-muted-foreground hover:text-foreground"
-            disabled={busy !== undefined || script.state === 'writing'}
+            disabled={
+              busy !== undefined ||
+              script.state === 'writing' ||
+              (check && script.check?.result === 'running')
+            }
             onClick={runNow}
             size="xs"
             title={
               script.state === 'writing'
                 ? 'The watcher starts it once the script is written'
-                : 'Start the script again from the top'
+                : check
+                  ? 'Run one bounded check now'
+                  : 'Start the script again from the top'
             }
             variant="ghost"
           >
             <RotateCwIcon className="size-3" />
-            {busy === 'run' ? 'Restarting…' : 'Restart'}
+            {check
+              ? busy === 'run'
+                ? 'Checking…'
+                : 'Check now'
+              : busy === 'run'
+                ? 'Restarting…'
+                : 'Restart'}
           </Button>
         ) : (
           <Button
@@ -861,7 +883,8 @@ function Script({
     const element = scroller.current
     if (element && pinned.current) element.scrollTop = element.scrollHeight
   }, [output, view])
-  const running = script.state === 'running'
+  const check = !!automation.schedule
+  const running = check ? script.check?.result === 'running' : script.state === 'running'
   const path = source.data?.path
   const restart = () => {
     setBusy(true)
@@ -872,21 +895,35 @@ function Script({
       void refetchLog()
     })
   }
-  const look = scriptLooks[script.state]
-  const facts = [
-    script.pid !== undefined && `pid ${script.pid}`,
-    running && script.startedAt && `up ${since(script.startedAt, now)}`,
-    !running && script.exitCode !== undefined && `exit ${script.exitCode}`,
-    `fired ${automation.fires}`,
-    running && script.lastOutputAt && `output ${since(script.lastOutputAt, now)} ago`,
-  ].filter(Boolean)
+  const look = check ? lookOf(automation, now) : scriptLooks[script.state]
+  const facts = check
+    ? [
+        automation.enabled &&
+          automation.nextAt !== undefined &&
+          `next ${until(automation.nextAt, now)}`,
+        script.check
+          ? script.check.result === 'running'
+            ? `started ${clock(script.check.at, now)}`
+            : `last ${script.check.result} · ${clock(script.check.at, now)}`
+          : 'not checked yet',
+        script.check?.ms !== undefined && `took ${formatDuration(script.check.ms)}`,
+        `timeout ${script.timeout ?? 300}s`,
+        `fired ${automation.fires}`,
+      ].filter(Boolean)
+    : [
+        script.pid !== undefined && `pid ${script.pid}`,
+        running && script.startedAt && `up ${since(script.startedAt, now)}`,
+        !running && script.exitCode !== undefined && `exit ${script.exitCode}`,
+        `fired ${automation.fires}`,
+        running && script.lastOutputAt && `output ${since(script.lastOutputAt, now)} ago`,
+      ].filter(Boolean)
   return (
     <section
       className="flex min-h-0 flex-1 flex-col border-t border-border/70 font-mono text-[12px]"
       data-automation-script={automation.id}
     >
       <div className="flex h-9 shrink-0 items-center gap-2 pr-1.5 pl-3">
-        <span className={heading}>Script</span>
+        {!check && <span className={heading}>Script</span>}
         <span className={cn('flex shrink-0 items-center gap-1.5 text-[11px]', looks[look].text)}>
           <Dot look={look} />
           {looks[look].word}
@@ -909,23 +946,25 @@ function Script({
           <span className="mx-1 h-4 w-px bg-border/70" />
           <Button
             className="h-6 gap-1 px-2 font-mono text-[11px]"
-            disabled={busy || script.state === 'writing'}
+            disabled={busy || script.state === 'writing' || (check && running)}
             onClick={restart}
             size="xs"
             title={
               script.state === 'writing'
                 ? 'The watcher starts it once the script is written'
-                : 'Start the script again from the top'
+                : check
+                  ? 'Run one bounded check now'
+                  : 'Start the script again from the top'
             }
             variant="outline"
           >
             <RotateCwIcon className="size-2.5" />
-            {running ? 'Restart' : 'Start'}
+            {check ? (busy ? 'Checking…' : 'Check now') : running ? 'Restart' : 'Start'}
           </Button>
         </span>
       </div>
       <div className="flex shrink-0 flex-col gap-0.5 border-b border-border/70 px-3 pb-2 text-[11px] text-muted-foreground">
-        <span className="truncate tabular-nums">{facts.join(' · ')}</span>
+        <span className={cn('tabular-nums', !check && 'truncate')}>{facts.join(' · ')}</span>
         <span className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 text-muted-foreground/50">$</span>
           <span className="min-w-0 truncate text-foreground/90" title={path}>
