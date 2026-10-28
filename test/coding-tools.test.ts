@@ -12,6 +12,52 @@ import type { ExtensionHost } from '../server/extensions.ts'
 
 afterEach(() => vi.unstubAllEnvs())
 
+it('warns about old Git without exposing the probe output or blocking unrelated shell commands', async () => {
+  const cwd = tmpdir()
+  const extension = codingTools({
+    emit: vi.fn<ExtensionHost['emit']>() as ExtensionHost['emit'],
+  })
+  const bash = extension.tools!.find((tool) => tool.name === 'bash') as ReturnType<
+    typeof createBashTool
+  >
+  const exec = vi.fn<NonNullable<ToolExecutionApi['env']>['exec']>(
+    async (command, options, execution) => {
+      options?.onOutput?.(
+        command === 'git --version' ? 'git version 2.50.1 (Apple Git-155)\n' : 'done\n',
+        execution,
+        { stream: 'stdout' },
+      )
+      return { ok: true, value: { exitCode: 0 } }
+    },
+  )
+  const diagnostic = vi.fn<ToolExecutionApi['diagnostic']>()
+  const output = vi.fn<ToolExecutionApi['output']>()
+  const api = {
+    conversationId: 7,
+    callId: 'old-git',
+    env: { cwd, exec },
+    diagnostic,
+    output,
+    retainedOutput: () => ({ text: 'done\n', truncated: false }),
+    snapshot: async () => ({ calls: {} }),
+    watchDoc: async () => ({
+      value: { calls: {} },
+      start: () => {},
+      stop: async () => {},
+    }),
+  } as unknown as ToolExecutionApi
+  const result = await bash.execute({ command: 'echo done' }, api, context)
+  expect(exec.mock.calls.map(([command]) => command)).toEqual(['git --version', 'echo done'])
+  expect(output).toHaveBeenCalledExactlyOnceWith('done\n', undefined)
+  expect(result.isError).toBeFalsy()
+  expect(diagnostic).toHaveBeenCalledExactlyOnceWith({
+    severity: 'warn',
+    code: 'git_version',
+    message:
+      'Commit attribution requires Git 2.54 or newer (found git version 2.50.1 (Apple Git-155)). Install or update Git and put it before older Git binaries on PATH, then restart Ultimate from that environment. This command will still run, but commit trailers and events may be missing.',
+  })
+})
+
 it('uses a 600-second default tripwire and leaves explicit timeouts unchanged', async () => {
   vi.stubEnv('ULTIMATE_BASH_TIMEOUT', undefined)
   const execute = vi

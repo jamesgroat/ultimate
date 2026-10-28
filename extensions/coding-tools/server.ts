@@ -307,7 +307,35 @@ export default function codingTools(host: Pick<ExtensionHost, 'emit'>) {
       // One log per invocation: task ids repeat across projects and a retried call reruns its task.
       const log = join(tmpdir(), `ultimate-commits-${randomUUID()}.log`)
       const call = createBashTool({
-        prepare: (execution) => prepareBash(execution, api, log),
+        prepare: async (execution, callApi, command) => {
+          prepareBash(execution, callApi, log)
+          if (!callApi.env) return
+          let output = ''
+          const checked = await callApi.env.exec(
+            'git --version',
+            {
+              cwd: execution.cwd,
+              env: execution.env,
+              inheritEnv: execution.inheritEnv,
+              timeout: 30,
+              onOutput: (text) => (output += text),
+            },
+            command,
+          )
+          const version = /^git version (\d+)\.(\d+)(?:\.|$)/.exec(output.trim())
+          if (
+            !checked.ok ||
+            checked.value.exitCode !== 0 ||
+            !version ||
+            Number(version[1]) < 2 ||
+            (Number(version[1]) === 2 && Number(version[2]) < 54)
+          )
+            callApi.diagnostic({
+              severity: 'warn',
+              code: 'git_version',
+              message: `Commit attribution requires Git 2.54 or newer (${version ? `found ${output.trim()}` : 'could not verify Git on PATH'}). Install or update Git and put it before older Git binaries on PATH, then restart Ultimate from that environment. This command will still run, but commit trailers and events may be missing.`,
+            })
+        },
       })
       const run = (command: Context) => call.execute(args, api, command)
       try {
