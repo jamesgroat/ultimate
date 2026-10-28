@@ -16,7 +16,8 @@ import type { Question } from './refs.ts'
 const optionSchema = obj({
   label: str({
     minLength: 1,
-    description: 'A few words; the reasoning goes in detail.',
+    description:
+      "A few words; the reasoning goes in detail. A multi option's label must not contain ', ' (answers join labels with it); use ' / '.",
   }),
   key: opt(str({ pattern: '^[a-z]$', description: 'Its letter, "a".' })),
   detail: opt(str()),
