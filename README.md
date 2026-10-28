@@ -72,7 +72,9 @@ Stop and ask me whenever a step needs my password, a login or a decision.
 By default you get Pi's coding agent in a web UI: read, write, edit, bash, codemode, and browser debugging tools,
 with the conversation, model and thinking controls, login, and footer, plus every other built-in building block.
 
-Needs Node 26, pnpm and Git 2.54 or newer.
+Needs Node 26, pnpm and Git 2.54 or newer on PATH (`git --version`). Commit attribution uses Git's native config-based
+hooks; older Git silently ignores them. On macOS, Apple Git may be older: install a current Git (for example,
+`brew install git`) and ensure it comes first on PATH before starting Ultimate.
 
 You log in to a model provider on first start, not before. Ultimate shares `~/.pi/agent` with
 `pi` (credentials, models, settings); personal skills and instructions go in `~/.ultimate/skills/` and
