@@ -21,6 +21,7 @@ import { Seen } from '../extensions/lineage/catchup.ts'
 import { abstract, Tally } from '../extensions/lineage/server.ts'
 import { Roots } from '../extensions/lineage/api.ts'
 import { estimateTextTokens } from '@earendil-works/pi-ai/utils/estimate'
+import { validateToolArguments } from '@earendil-works/pi-ai/utils/validation'
 import { Standing } from '../extensions/subagents/api.ts'
 import { SubmissionLanded } from '../extensions/workspaces/api.ts'
 import type { LandedData } from '../extensions/workspaces/api.ts'
@@ -149,12 +150,22 @@ it.concurrent('applies memory ops atomically and holds the cap', async () => {
     [[add('fine'), { op: 'update', slug: 'missing', line: 'x' }], 'no memory missing'],
     [[add('fine'), { op: 'delete', slug: 'missing' }], 'no memory missing'],
     [[add('fine'), add('Bad_Slug')], 'slug must match'],
-    [[add('fine'), add('long', 'x'.repeat(121))], 'at most 120'],
+    [[add('fine'), add('long', 'x'.repeat(121))], 'line is 121 chars, limit 120'],
     [[add('fine'), { ...add('multi'), line: 'one\ntwo' }], 'one non-empty line'],
-    [[add('fine'), { ...add('big'), body: 'x'.repeat(2001) }], 'at most 2000'],
+    [[add('fine'), { ...add('big'), body: 'x'.repeat(2001) }], 'body is 2001 chars, limit 2000'],
     [[add('fine'), { ...add('odd'), kind: 'opinion' }], 'kind must be'],
   ] as const)
     await expect(apply(server, [...ops])).rejects.toThrow(error)
+  // Every invalid op is named in one refusal, not just the first.
+  await expect(
+    apply(server, [
+      add('fine'),
+      add('family', 'x'.repeat(131)),
+      { op: 'update', slug: 'missing', line: 'x' },
+    ]),
+  ).rejects.toThrow(
+    '2 problems; nothing was written:\nOp 2 (family): line is 131 chars, limit 120\nOp 3 (missing): no memory missing',
+  )
   expect(Object.keys(await memories(server))).toEqual(['pnpm'])
   await expect(apply(server, [add('x')], 99)).rejects.toThrow('not a listed root')
 
@@ -343,6 +354,15 @@ it.concurrent('reads memories with memory; only @ultimate writes them with remem
     ),
   ).toBe("Added pnpm, lint in #1's memory.")
   expect(await run(server, 'memory', {}, ultimate)).toMatch(/^#1's memory \(2\):/)
+  // The schema names the limits, so the harness refuses a long line before the batch runs.
+  expect(() =>
+    validateToolArguments(tool(server, 'remember') as never, {
+      type: 'toolCall',
+      id: 'long',
+      name: 'remember',
+      arguments: { ops: [add('long', 'x'.repeat(121))] },
+    }),
+  ).toThrow(/line/)
   await expect(
     run(
       server,
@@ -470,7 +490,7 @@ it.concurrent('distils each landing into memory once and writes nothing from a r
   await land(landing('retry', id))
   await settledTasks(server, 2)
   expect(state.asked).toHaveLength(3)
-  expect(state.asked[2]).toContain('Op 1: kind must be decision, fact or lesson')
+  expect(state.asked[2]).toContain('Op 1 (retried): kind must be decision, fact or lesson')
   expect(state.asked[2]).toContain('An opinion')
   expect((await memories(server)).retried).toMatchObject({ line: 'Short enough' })
 
@@ -514,7 +534,7 @@ it.concurrent('distils each landing into memory once and writes nothing from a r
   await land(landing('s3', id))
   await settledTasks(server, 6)
   expect(state.asked).toHaveLength(9)
-  expect(state.asked[8]).toContain('Op 2: no memory missing')
+  expect(state.asked[8]).toContain('Op 2 (missing): no memory missing')
   expect(await memories(server)).toEqual(before)
   await until(async () => (await notices()).length === 2)
   expect(await notices()).toEqual([
@@ -522,7 +542,7 @@ it.concurrent('distils each landing into memory once and writes nothing from a r
       'Memory from landing s2 in #1 was not written: Error: expected {"ops": [...]}',
     ),
     expect.stringContaining(
-      'Memory from landing s3 in #1 was not written: Error: Op 2: no memory missing',
+      'Memory from landing s3 in #1 was not written: Error: Op 2 (missing): no memory missing',
     ),
   ])
 

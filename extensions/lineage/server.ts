@@ -1603,7 +1603,43 @@ export default function lineageExtension(host: ExtensionHost) {
           "Change a root's project memory in one atomic batch: ops are {op:'add', slug, kind: 'decision'|'fact'|'lesson', line, body, source?}, {op:'update', slug, kind?, line?, body?, source?} and {op:'delete', slug}. Slugs are kebab-case, lines one line of at most 120 characters, bodies at most 2000, source `#<conversation>/<entry>`; at most 150 memories. Any invalid op refuses the whole batch. `root` defaults to your tree's root, or outside a tree to the project's only root.",
         parameters: Type.Object({
           root: Type.Optional(Type.Integer({ minimum: 1 })),
-          ops: Type.Array(Type.Object({}, { additionalProperties: true }), { minItems: 1 }),
+          ops: Type.Array(
+            Type.Object({
+              op: Type.Union([Type.Literal('add'), Type.Literal('update'), Type.Literal('delete')]),
+              slug: Type.String({
+                pattern: '^[a-z0-9][a-z0-9-]{0,47}$',
+                description: 'kebab-case, at most 48 characters.',
+              }),
+              kind: Type.Optional(
+                Type.Union([
+                  Type.Literal('decision'),
+                  Type.Literal('fact'),
+                  Type.Literal('lesson'),
+                ]),
+              ),
+              line: Type.Optional(
+                Type.String({
+                  minLength: 1,
+                  maxLength: 120,
+                  description: 'One line, at most 120 characters; write ~100 to be safe.',
+                }),
+              ),
+              body: Type.Optional(
+                Type.String({
+                  minLength: 1,
+                  maxLength: 2000,
+                  description: 'At most 2000 characters.',
+                }),
+              ),
+              source: Type.Optional(
+                Type.String({
+                  pattern: '^#\\d+(/\\d+)?$',
+                  description: '`#<conversation>/<entry>`.',
+                }),
+              ),
+            }),
+            { minItems: 1 },
+          ),
         }),
         // Not replay-safe (the default): an interrupted call is never rerun, so a batch commits at most once.
         async execute({ root, ops }, api, ctx) {

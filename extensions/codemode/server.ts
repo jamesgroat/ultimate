@@ -4,6 +4,8 @@ import { Type } from '@earendil-works/pi-ai'
 import { validateToolArguments } from '@earendil-works/pi-ai/utils/validation'
 import {
   CodemodeSandbox,
+  MAX_STORE_TOTAL_CHARS,
+  MAX_STORE_VALUE_CHARS,
   parseCodemodeSource,
   renderDeclarations,
 } from '@earendil-works/pi-codemode'
@@ -342,7 +344,7 @@ function globals(
     {
       name: 'tell',
       description:
-        "Message another project's @ultimate (only @ultimate reaches it, as a message from you, never the user), as @ultimate only; with reply (default true) its answer returns to you as a reply. machine picks one instance when the project runs on several.",
+        "Message another project's @ultimate (only @ultimate reaches it, as a message from you, never the user), as @ultimate only; with reply (default true) its answer returns to you as a reply. project is the project's name as ultimate.projects() or the remotes setting lists it, never a path; machine picks one machine from remotes when the project runs on several. To answer a message from another project's @ultimate, just answer: its reply returns automatically, and tell is refused for it.",
       signature:
         '(input: { project: string; text: string; reply?: boolean; machine?: string }): Promise<{ message: number; delivered: number }>',
       execute: ([input], { signal }) => {
@@ -487,7 +489,9 @@ export default function codemode(host: ExtensionHost) {
     name: 'codemode',
     replay: 'unsafe',
     description:
-      'Run an async JavaScript function body in a QuickJS/WASM sandbox. Call tools.<name>(args), use Promise.all for parallel calls, text()/console.log() for output, return for JSON, store(key,value)/load(key) for durable conversation values. Store writes are saved only when the script finishes successfully; a yielded wait discards them. No host I/O except injected functions. Nested results stay out of model context. Nested tool hooks do not run. Optional first line: // @options: {"timeout_ms":60000,"max_output_tokens":10000}.\n\n' +
+      'Run an async JavaScript function body in a QuickJS/WASM sandbox. Call tools.<name>(args), use Promise.all for parallel calls, text()/console.log() for output, return for JSON, store(key,value)/load(key) for durable conversation values. Store writes are saved only when the script finishes successfully; a yielded wait discards them. ' +
+      `A stored value is at most ${MAX_STORE_VALUE_CHARS / 1024} K characters of JSON (${MAX_STORE_TOTAL_CHARS / 1024 / 1024} M in all): store compact summaries and IDs, never whole entries or histories. ` +
+      'No host I/O except injected functions. Nested results stay out of model context. Nested tool hooks do not run. Optional first line: // @options: {"timeout_ms":60000,"max_output_tokens":10000}.\n\n' +
       renderDeclarations({ globals: globalDeclarations }),
     parameters: Type.Object({ code: Type.String() }),
     async execute({ code: source }, api, context) {
