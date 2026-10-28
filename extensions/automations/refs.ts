@@ -23,7 +23,7 @@ type Id = { id: string }
 export const EventsAction = actionRef<null, TriggerEvent[]>('automations', 'events')
 /** No arguments → all automations, with process-local alive. */
 export const ListAction = actionRef<null, AutomationListItem[]>('automations', 'list')
-/** Flat trigger and action arguments → new automation. */
+/** Flat trigger/action arguments → new automation; ask+schedule is a bounded check (timeout seconds, default 300). */
 export const CreateAction = actionRef<CreateArgs, Automation>('automations', 'create')
 /** Update trigger settings and run profile; an empty agent copies the root agent. */
 export const UpdateAction = actionRef<
@@ -32,9 +32,9 @@ export const UpdateAction = actionRef<
 >('automations', 'update')
 /** Pause a trigger, terminating its script process group if present. */
 export const PauseAction = actionRef<Id, Automation>('automations', 'pause')
-/** Resume a trigger; scripts require an executable run file. */
+/** Resume a trigger; streaming scripts require an executable, scheduled checks diagnose it on execution. */
 export const ResumeAction = actionRef<Id, Automation>('automations', 'resume')
-/** Fire a schedule, event or condition now, or relaunch a script. */
+/** Fire a trigger now, relaunch a streaming script, or check a scheduled script now. */
 export const RunAction = actionRef<Id, Run | Automation | Id>('automations', 'run')
 /** Delete a record; files and conversations remain. */
 export const DeleteAction = actionRef<Id, Id>('automations', 'delete')
