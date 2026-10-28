@@ -7,6 +7,7 @@ import {
   ComposerRedirect,
   ThreadView,
   useConversation,
+  useEvent,
   useUltimate,
   useViewport,
 } from '@/sdk'
@@ -37,6 +38,14 @@ export function Threads() {
 /** The open thread as a column on the right; main's column moves left to make room. On a phone, a sheet over main. */
 function Pane({ sheet }: { sheet: boolean }) {
   const [open, setOpen] = useOpenThread()
+  const self = useConversation((conversation) => conversation.id)
+  const [reveal, setReveal] = useState<{ threadId: number; entryId: number }>()
+  useEvent('ultimate:reveal-thread', (value) => {
+    const request = value as { conversationId: number; threadId: number; entryId: number }
+    if (request.conversationId !== self) return
+    setReveal(request)
+    setOpen(request.threadId)
+  })
   // The last thread stays mounted while its column leaves.
   const [shown, setShown] = useState<number | null>(open)
   if (open !== null && shown !== open) setShown(open)
@@ -75,7 +84,7 @@ function Pane({ sheet }: { sheet: boolean }) {
           }}
         >
           <ThreadHead id={shown} onClose={() => setOpen(null)} sheet={sheet} />
-          <ThreadBody id={shown} />
+          <ThreadBody id={shown} revealRequest={reveal?.threadId === shown ? reveal : undefined} />
         </aside>
       )}
     </div>
@@ -146,12 +155,12 @@ function OpenBranch({ id }: { id: number }) {
 }
 
 /** A thread's story, and a composer whose words go to @ultimate about it. */
-function ThreadBody({ id }: { id: number }) {
+function ThreadBody({ id, revealRequest }: { id: number; revealRequest?: { entryId: number } }) {
   const self = useConversation((conversation) => conversation.id)
   const shown = useThread(id)
   useSeeing(id, shown?.newest)
   return (
-    <ThreadView thread={id}>
+    <ThreadView revealRequest={revealRequest} thread={id}>
       <ComposerRedirect
         to={{
           placeholder: `Reply about #${id}…`,

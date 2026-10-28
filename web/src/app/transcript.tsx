@@ -23,7 +23,7 @@ import {
 import type { ComponentType, ReactNode } from 'react'
 import { useStickToBottomContext } from 'use-stick-to-bottom'
 import type { StickToBottomContext } from 'use-stick-to-bottom'
-import { useEvent } from '../sdk/events.ts'
+import { events, useEvent } from '../sdk/events.ts'
 import { api } from '../sdk/client.ts'
 import { Button } from '@/components/ui/button'
 import {
@@ -91,17 +91,32 @@ import { TranscriptSkeleton } from './transcript-skeleton.tsx'
  * Thread `thread` of the shown conversation as a transcript of its own, for a side pane: its entries in order, cards
  * open, runs of work folded as in the main stream; `children` (such as its composer) go below it, in the thread.
  */
-export function ThreadView({ thread, children }: { thread: number; children?: ReactNode }) {
+export function ThreadView({
+  thread,
+  revealRequest,
+  children,
+}: {
+  thread: number
+  /** A fresh request object reveals this entry after the thread mounts, even when its id repeats. */
+  revealRequest?: { entryId: number }
+  children?: ReactNode
+}) {
   return (
     <ThreadContext value={thread}>
-      <Transcript dock />
+      <Transcript dock revealRequest={revealRequest} />
       {children}
     </ThreadContext>
   )
 }
 
 /** The shown conversation; `dock` fits it into a narrow side region. */
-export function Transcript({ dock }: { dock?: boolean }) {
+export function Transcript({
+  dock,
+  revealRequest,
+}: {
+  dock?: boolean
+  revealRequest?: { entryId: number }
+}) {
   const { id, loading } = useConversation()
   const { conversationId } = useUltimate()
   // A conversation without messages opens as it is: no placeholder, nothing rising in.
@@ -185,7 +200,7 @@ export function Transcript({ dock }: { dock?: boolean }) {
     <div className="relative flex min-h-0 flex-1 flex-col">
       <Conversation className="min-h-0" contextRef={stick} key={id} resize="instant">
         <ConversationContent className={cn(column(dock), 'gap-3 pt-6 pb-10')}>
-          <TranscriptEntries />
+          <TranscriptEntries revealRequest={revealRequest} />
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
@@ -194,7 +209,7 @@ export function Transcript({ dock }: { dock?: boolean }) {
   )
 }
 
-function TranscriptEntries() {
+function TranscriptEntries({ revealRequest }: { revealRequest?: { entryId: number } }) {
   const { id, entries: active, older, live, busy, loading } = useConversation()
   const [history, setHistory] = useState<EntryRecord[]>([])
   const previousActive = useRef(active)
@@ -587,12 +602,18 @@ function TranscriptEntries() {
   // Reveal a stored row without the auto-follow animation overriding the jump; a row older than those loaded needs the
   // history down to it first, and one in a folded run needs the run open.
   const [reveal, setReveal] = useState<number>()
-  useEvent('ultimate:reveal-entry', (value) => {
-    const target = value as { conversationId?: number; entryId?: number } | undefined
-    const entryId = target?.entryId
-    if (target?.conversationId === id && entryId !== undefined && Number.isSafeInteger(entryId))
-      setReveal(entryId)
-  })
+  useEffect(() => {
+    if (thread !== undefined) return undefined
+    return events.on('ultimate:reveal-entry', (value) => {
+      const target = value as { conversationId?: number; entryId?: number } | undefined
+      const entryId = target?.entryId
+      if (target?.conversationId === id && entryId !== undefined && Number.isSafeInteger(entryId))
+        setReveal(entryId)
+    })
+  }, [id, thread])
+  useEffect(() => {
+    if (revealRequest) setReveal(revealRequest.entryId)
+  }, [revealRequest])
   const revealStep = useEffectEvent(() => {
     if (reveal === undefined || loading || pending) return
     if (error) {
@@ -607,6 +628,15 @@ function TranscriptEntries() {
       }
       // Inside the window's range: a fill still reading it brings it.
       if (filling) return
+    }
+    // A hidden row belongs in its thread: let the pane mount before its transcript consumes the request.
+    if (thread === undefined && id !== undefined && threading?.hidden.has(reveal)) {
+      const threadId = threading.of.get(reveal)?.[0]
+      if (threadId !== undefined) {
+        events.emit('ultimate:reveal-thread', { conversationId: id, threadId, entryId: reveal })
+        setReveal(undefined)
+        return
+      }
     }
     // Open its stretch between thread rows, set-aside group and folded run first; the next commit scrolls.
     const between = threaded.find(
