@@ -61,7 +61,7 @@ it('saves screenshots at the given path, relative to the conversation cwd, creat
   const url = 'data:text/html,<title>Shot</title><p>hello</p>'
   const file = async (name: string, args: Record<string, unknown>, env?: boolean) => {
     const result = await tools.get(name)!.execute({ url, waitMs: 0, ...args }, api(env), context)
-    expect(result.isError).toBeFalsy()
+    expect(result).not.toMatchObject({ isError: true })
     // Codemode reads this structured result; the model reads the PNG line of the output.
     const saved = (result as { structuredContent?: { file: string } }).structuredContent!.file
     await access(saved)

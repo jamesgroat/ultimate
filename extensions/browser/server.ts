@@ -82,6 +82,11 @@ function within<T>(ms: number, work: Promise<T>, error = timeout(ms)) {
 async function capture(page: Page, file: string, selector?: string, fullPage = false) {
   await mkdir(dirname(file), { recursive: true })
   const target = selector ? page.locator(selector) : page
+  // DOMContentLoaded can precede Chromium's first captureable frame, even after fonts are ready.
+  await page.evaluate(
+    () =>
+      new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))),
+  )
   const png = await target.screenshot({
     path: file,
     type: 'png',
