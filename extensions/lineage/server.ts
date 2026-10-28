@@ -1647,7 +1647,10 @@ export default function lineageExtension(host: ExtensionHost) {
           ops: Type.Array(
             Type.Object({
               op: Type.Union([Type.Literal('add'), Type.Literal('update'), Type.Literal('delete')]),
-              slug: Type.String(),
+              slug: Type.String({
+                pattern: '^[a-z0-9][a-z0-9-]{0,47}$',
+                description: 'kebab-case, at most 48 characters.',
+              }),
               kind: Type.Optional(
                 Type.Union([
                   Type.Literal('decision'),
@@ -1655,9 +1658,26 @@ export default function lineageExtension(host: ExtensionHost) {
                   Type.Literal('lesson'),
                 ]),
               ),
-              line: Type.Optional(Type.String({ maxLength: LINE_CHARS })),
-              body: Type.Optional(Type.String({ maxLength: BODY_CHARS })),
-              source: Type.Optional(Type.String({ description: '#<conversation>/<entry>' })),
+              line: Type.Optional(
+                Type.String({
+                  minLength: 1,
+                  maxLength: LINE_CHARS,
+                  description: 'One line, at most 120 characters; write ~100 to be safe.',
+                }),
+              ),
+              body: Type.Optional(
+                Type.String({
+                  minLength: 1,
+                  maxLength: BODY_CHARS,
+                  description: 'At most 2000 characters.',
+                }),
+              ),
+              source: Type.Optional(
+                Type.String({
+                  pattern: '^#\\d+(/\\d+)?$',
+                  description: '`#<conversation>/<entry>`.',
+                }),
+              ),
             }),
             { minItems: 1 },
           ),

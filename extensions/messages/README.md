@@ -155,6 +155,11 @@ One @ultimate can message another project's @ultimate, on this machine or over t
 instance end to end. Nothing else crosses: the sender cannot address any other conversation there, and the message is
 never the user's.
 
+For the caller: only @ultimate may call `tell`. `project` is the project's name as `ultimate.projects()` or the
+`remotes` user setting lists it, never a path; `machine` picks one machine from `remotes` when the project runs on
+several. A message from another project's @ultimate is answered by answering it: the reply returns automatically, and
+`tell` is refused while that message is open.
+
 - **Sender:** codemode `ultimate.tell({ project, text, reply? })` (@ultimate only) logs a message `to: 'remote'` with
   `remote: { project, machine, key }`, a fresh random key, then posts the target's `messages.remote` action, located as
   codemode's `{ project }` reads are (`lib/remote.ts`: loopback, the address set in the `remotes` user setting, else

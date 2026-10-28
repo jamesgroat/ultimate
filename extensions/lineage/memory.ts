@@ -68,48 +68,65 @@ export type MemoryOp =
     }
   | { op: 'delete'; slug: string }
 
-/** `value` as one validated op; throws with the op's position for anything else. */
-function parseOp(value: unknown, index: number): MemoryOp {
-  const fail = (why: string): never => {
-    throw new Error(`Op ${index + 1}: ${why}`)
+/** `Op 3 (family)`: an op's position and, when it has one, its slug, as every refusal names it. */
+function opLabel(value: unknown, index: number) {
+  const slug = value && typeof value === 'object' ? (value as { slug?: unknown }).slug : undefined
+  return `Op ${index + 1}${typeof slug === 'string' && slug ? ` (${slug})` : ''}`
+}
+
+/** `value` as one validated op, or every problem with it, each with the op's position and slug. */
+function parseOp(value: unknown, index: number): MemoryOp | string[] {
+  const problems: string[] = []
+  const fail = (why: string) => problems.push(`${opLabel(value, index)}: ${why}`)
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    fail('expected an object')
+    return problems
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return fail('expected an object')
   const { op, slug, kind, line, body, source } = value as Record<string, unknown>
-  if (op !== 'add' && op !== 'update' && op !== 'delete')
-    return fail('op must be add, update or delete')
+  if (op !== 'add' && op !== 'update' && op !== 'delete') fail('op must be add, update or delete')
   if (typeof slug !== 'string' || !SLUG.test(slug))
-    return fail(`slug must match ${SLUG.source}, got ${JSON.stringify(slug)}`)
-  if (op === 'delete') return { op, slug }
+    fail(`slug must match ${SLUG.source}, got ${JSON.stringify(slug)}`)
+  if (op === 'delete') return problems.length ? problems : { op, slug: slug as string }
   const fields: { kind?: MemoryItem['kind']; line?: string; body?: string; source?: string } = {}
   if (kind !== undefined) {
-    if (!KINDS.includes(kind as MemoryItem['kind']))
-      return fail('kind must be decision, fact or lesson')
-    fields.kind = kind as MemoryItem['kind']
+    if (!KINDS.includes(kind as MemoryItem['kind'])) fail('kind must be decision, fact or lesson')
+    else fields.kind = kind as MemoryItem['kind']
   }
   if (line !== undefined) {
     if (typeof line !== 'string' || !line.trim() || /\n/.test(line.trim()))
-      return fail('line must be one non-empty line')
-    if (line.trim().length > LINE_CHARS)
-      return fail(`line must be at most ${LINE_CHARS} characters`)
-    fields.line = line.trim()
+      fail('line must be one non-empty line')
+    else if (line.trim().length > LINE_CHARS)
+      fail(`line is ${line.trim().length} chars, limit ${LINE_CHARS}`)
+    else fields.line = line.trim()
   }
   if (body !== undefined) {
-    if (typeof body !== 'string' || !body.trim()) return fail('body must be non-empty text')
-    if (body.trim().length > BODY_CHARS)
-      return fail(`body must be at most ${BODY_CHARS} characters`)
-    fields.body = body.trim()
+    if (typeof body !== 'string' || !body.trim()) fail('body must be non-empty text')
+    else if (body.trim().length > BODY_CHARS)
+      fail(`body is ${body.trim().length} chars, limit ${BODY_CHARS}`)
+    else fields.body = body.trim()
   }
   if (source !== undefined) {
     if (typeof source !== 'string' || !/^#\d+(\/\d+)?$/.test(source))
-      return fail('source must be #<conversation>/<entry>')
-    fields.source = source
+      fail('source must be #<conversation>/<entry>')
+    else fields.source = source
   }
+  if (problems.length) return problems
   if (op === 'update') {
-    if (!Object.keys(fields).length) return fail('update changes nothing')
-    return { op, slug, ...fields }
+    if (!Object.keys(fields).length) fail('update changes nothing')
+    return problems.length ? problems : { op, slug: slug as string, ...fields }
   }
-  if (!fields.kind || !fields.line || !fields.body) return fail('add needs kind, line and body')
-  return { op, slug, kind: fields.kind, line: fields.line, body: fields.body, ...fields }
+  if (!fields.kind || !fields.line || !fields.body) {
+    fail('add needs kind, line and body')
+    return problems
+  }
+  return {
+    op: op as 'add',
+    slug: slug as string,
+    kind: fields.kind,
+    line: fields.line,
+    body: fields.body,
+    ...fields,
+  }
 }
 
 /** `text` at most `max` characters: cut at a word boundary past its middle, else hard, and ended with `…`. */
@@ -150,8 +167,8 @@ export function normalizeMemoryOp(op: unknown): unknown {
 /**
  * The one write path of project memory: apply `ops` to root `root` inside `tx`, all or nothing. Every op is validated
  * against the memory as the batch leaves it before anything is written: a bad slug or field, an add of an existing
- * slug, an update or delete of a missing one, or more than `MEMORY_LIMIT` memories after the batch throws.
- * Returns a short summary of what changed.
+ * slug, an update or delete of a missing one, or more than `MEMORY_LIMIT` memories after the batch throws, naming every
+ * invalid op at once. Returns a short summary of what changed.
  */
 export async function applyMemoryOps(
   tx: Tx,
@@ -163,23 +180,40 @@ export async function applyMemoryOps(
     throw new Error(`#${root} is not a listed root`)
   if (!Array.isArray(ops)) throw new Error('ops must be a list')
   const parsed = ops.map(parseOp)
+  const problems: string[] = []
   const doc = await tx.doc(Memory, root as ConversationId)
   const next = new Map(Object.entries(doc.memories))
   const done: Record<MemoryOp['op'], string[]> = { add: [], update: [], delete: [] }
   for (const [index, op] of parsed.entries()) {
+    if (Array.isArray(op)) {
+      problems.push(...op)
+      continue
+    }
     const current = next.get(op.slug)
+    const label = opLabel(op, index)
     if (op.op === 'add') {
-      if (current) throw new Error(`Op ${index + 1}: ${op.slug} exists; update it instead`)
+      if (current) {
+        problems.push(`${label}: ${op.slug} exists; update it instead`)
+        continue
+      }
       const { slug: _, op: __, ...item } = op
       next.set(op.slug, { ...item, updated: now })
-    } else if (!current) throw new Error(`Op ${index + 1}: no memory ${op.slug}`)
-    else if (op.op === 'delete') next.delete(op.slug)
+    } else if (!current) {
+      problems.push(`${label}: no memory ${op.slug}`)
+      continue
+    } else if (op.op === 'delete') next.delete(op.slug)
     else {
       const { slug: _, op: __, ...fields } = op
       next.set(op.slug, { ...current, ...fields, updated: now })
     }
     done[op.op].push(op.slug)
   }
+  if (problems.length)
+    throw new Error(
+      problems.length === 1
+        ? problems[0]
+        : `${problems.length} problems; nothing was written:\n${problems.join('\n')}`,
+    )
   if (next.size > MEMORY_LIMIT)
     throw new Error(
       `${next.size} memories exceed the limit of ${MEMORY_LIMIT}; merge or delete some instead of adding`,
