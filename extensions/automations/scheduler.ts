@@ -40,6 +40,7 @@ export function scheduler(
     kind: 'fired' | 'escalated',
     text: string,
   ) => Promise<void>,
+  check: (id: string, scheduler: number, signal: AbortSignal) => Promise<boolean>,
 ) {
   const RunTask = defineTask<
     { automation: Automation; firedAt: number; text?: string },
@@ -219,13 +220,17 @@ export function scheduler(
     return a.runs.at(-1)!
   }
   const Scheduler = defineTask<
-    { id: string },
-    { phase: 'plan' } | { phase: 'sleep'; until: number } | { phase: 'fire'; until: number },
+    { id: string; now?: number },
+    | { phase: 'plan' }
+    | { phase: 'sleep'; until: number }
+    | { phase: 'fire'; until: number }
+    | { phase: 'check'; until: number; attempt?: number },
     null
   >({
     name: 'ultimate.automation-scheduler',
     version: 1,
-    initial: () => ({ phase: 'plan' }),
+    initial: (input) =>
+      input.now !== undefined ? { phase: 'fire', until: input.now } : { phase: 'plan' },
     phases: {
       plan: (task, runtime, context) =>
         runtime.commit(async (tx) => {
@@ -251,6 +256,13 @@ export function scheduler(
         runtime.commit(async (tx) => {
           const a = (await tx.doc(Automations)).automations[task.input.id]
           if (!a?.enabled || a.scheduler !== task.id) return terminal
+          if (a.script) {
+            a.script.check = { at: runtime.now(), result: 'running' }
+            return {
+              status: 'running',
+              checkpoint: { phase: 'check', until: task.state.checkpoint.until },
+            }
+          }
           await fire(tx, a, runtime.now())
           delete a.nextAt
           if (!a.enabled || a.schedule!.kind === 'at') {
@@ -260,6 +272,44 @@ export function scheduler(
           }
           return { status: 'running', checkpoint: { phase: 'plan' } }
         }, context),
+      check: async (task, runtime, context) => {
+        if (!(await check(task.input.id, task.id, runtime.signal))) {
+          // A facet reload interrupted execution without completing this invocation. Re-enter on the new definition.
+          await runtime.commit(
+            () => ({
+              status: 'running',
+              checkpoint: {
+                ...task.state.checkpoint,
+                attempt: (task.state.checkpoint.attempt ?? 0) + 1,
+              },
+            }),
+            context,
+          )
+          return
+        }
+        await runtime.commit(async (tx) => {
+          const a = (await tx.doc(Automations)).automations[task.input.id]
+          if (!a || a.scheduler !== task.id) return terminal
+          if (a.script!.check?.result === 'running')
+            throw new Error(`Automation ${a.id}: check did not finish durably`)
+          // A manual check before a future one-shot does not consume that scheduled invocation.
+          const start = a.script!.check!.at
+          const future = a.schedule!.kind === 'at' && task.state.checkpoint.until > start
+          if (!a.enabled || (a.schedule!.kind === 'at' && !future)) {
+            a.enabled = false
+            delete a.scheduler
+            delete a.nextAt
+            if (a.script!.state === 'running') a.script!.state = 'stopped'
+            return terminal
+          }
+          a.nextAt = future
+            ? task.state.checkpoint.until
+            : a.schedule!.kind === 'every'
+              ? Math.max(start + a.schedule!.ms, runtime.now())
+              : nextAt(a.schedule!, runtime.now(), start)
+          return { status: 'running', checkpoint: { phase: 'plan' } }
+        }, context)
+      },
     },
     abort: (_task, runtime, context) =>
       runtime.commit(() => ({ status: 'terminal', outcome: { status: 'aborted' } }), context),

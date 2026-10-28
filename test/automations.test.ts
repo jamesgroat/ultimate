@@ -340,7 +340,13 @@ it('validates one trigger, project script scope and action targets before creati
     'Exactly one',
   )
   await expect(
-    f.action('create', { name: 'Both', schedule: 'every 1d', ask: 'Watch', prompt: 'Hello' }),
+    f.action('create', {
+      name: 'Both',
+      schedule: 'every 1d',
+      ask: 'Watch',
+      event: { name: 'workspaces.check' },
+      prompt: 'Hello',
+    }),
   ).rejects.toThrow('Exactly one')
   await expect(
     f.action('create', {

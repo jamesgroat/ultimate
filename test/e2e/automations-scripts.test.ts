@@ -63,7 +63,13 @@ function call(app: NonNullable<typeof server>, action: string, id: string) {
 
 it('starts a prompt run from script FIRE with its payload', async () => {
   const { app, folder } = await fixture()
-  app.host.faux!.setResponses(Array.from({ length: 4 }, () => fauxAssistantMessage('Complete')))
+  const resumed = Promise.withResolvers<void>()
+  const answer = async () => {
+    app.host.faux!.appendResponses([answer])
+    await resumed.promise
+    return fauxAssistantMessage('Complete')
+  }
+  app.host.faux!.setResponses([answer])
   const caller = await app.harness.createConversation({ ownership: { kind: 'ownerless' } }, context)
   const a = (await app.extensions.invoke(
     'automations',
@@ -85,6 +91,7 @@ it('starts a prompt run from script FIRE with its payload', async () => {
   )
   await writeRun(folder(a.id), 'echo FIRE hello')
   await call(app, 'resume', a.id)
+  resumed.resolve()
   const record = async () => (await app.harness.snapshot(Automations, context))!.automations[a.id]
   await until(async () => !!(await record()).runs[0]?.finishedAt)
   const run = (await record()).runs[0]
