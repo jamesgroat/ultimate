@@ -111,6 +111,7 @@ export type Look =
   | 'investigating'
   | 'writing'
   | 'working'
+  | 'checking'
   | 'watching'
   | 'scheduled'
   | 'armed'
@@ -131,6 +132,7 @@ export const looks: Record<
   },
   writing: { dot: 'bg-brand', text: 'text-brand', word: 'writing', rank: 2, busy: true },
   working: { dot: 'bg-brand', text: 'text-brand', word: 'working', rank: 2, busy: true },
+  checking: { dot: 'bg-brand', text: 'text-brand', word: 'checking', rank: 2, busy: true },
   watching: { dot: 'bg-success', text: 'text-success', word: 'watching', rank: 3 },
   scheduled: { dot: 'bg-success', text: 'text-success', word: 'scheduled', rank: 3 },
   armed: { dot: 'bg-success', text: 'text-success', word: 'armed', rank: 3 },
@@ -142,12 +144,14 @@ export const looks: Record<
 export function lookOf(automation: Automation, now: number): Look {
   const state = automation.script?.state
   if (state === 'failed' || state === 'investigating' || state === 'writing') return state
+  if (state === 'running' && automation.schedule && automation.script?.check?.result === 'running')
+    return 'checking'
   const last = automation.runs.at(-1)?.status
   if (last === 'running') return 'working'
   // A failed run of a paused automation was already dealt with by pausing it; a fired one-shot script is disabled by
   // its fire, not by anyone, so its failed run still needs attention.
   if (last === 'failed' && (automation.enabled || state === 'done')) return 'failed'
-  if (state === 'running') return 'watching'
+  if (state === 'running') return automation.schedule ? 'scheduled' : 'watching'
   if (state === 'done') return 'done'
   if (automation.enabled) {
     if (automation.condition) return automation.condition.armed ? 'armed' : 'waiting'
@@ -232,6 +236,22 @@ export function stateLine(automation: Automation, now: number): string {
   const look = lookOf(automation, now)
   const script = automation.script
   const last = automation.runs.at(-1)
+  if (script && automation.schedule) {
+    const check = script.check
+    return [
+      attention(look) && (script.error ?? 'the watcher is repairing the script'),
+      look === 'writing' && 'the watcher is writing the script',
+      automation.enabled &&
+        (automation.nextAt !== undefined ? `next ${until(automation.nextAt, now)}` : 'scheduling…'),
+      check
+        ? check.result === 'running'
+          ? since(check.at, now)
+          : `${check.result} ${ago(check.at, now)}`
+        : 'not checked yet',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
   if (automation.condition && !attention(look) && look !== 'working') {
     const condition = automation.condition
     return condition.armed
