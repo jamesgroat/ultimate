@@ -14,7 +14,8 @@ import type { Question } from './refs.ts'
 const optionSchema = Type.Object({
   label: Type.String({
     minLength: 1,
-    description: 'A few words; the reasoning goes in detail.',
+    description:
+      "A few words; the reasoning goes in detail. A multi option's label must not contain ', ' (answers join labels with it); use ' / '.",
   }),
   key: Type.Optional(Type.String({ pattern: '^[a-z]$', description: 'Its letter, "a".' })),
   detail: Type.Optional(Type.String()),

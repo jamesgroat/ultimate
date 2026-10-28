@@ -1623,17 +1623,24 @@ export default function lineageExtension(host: ExtensionHost) {
               ),
               line: Type.Optional(
                 Type.String({
+                  minLength: 1,
                   maxLength: LINE_CHARS,
-                  description: `The index line: one line, at most ${LINE_CHARS} characters`,
+                  description: `The index line: one line, at most ${LINE_CHARS} characters; write ~100 to be safe.`,
                 }),
               ),
               body: Type.Optional(
                 Type.String({
+                  minLength: 1,
                   maxLength: BODY_CHARS,
                   description: `The full memory, at most ${BODY_CHARS} characters; split longer text across memories`,
                 }),
               ),
-              source: Type.Optional(Type.String({ description: '#<conversation>/<entry>' })),
+              source: Type.Optional(
+                Type.String({
+                  pattern: '^#\\d+(/\\d+)?$',
+                  description: '`#<conversation>/<entry>`.',
+                }),
+              ),
             }),
             { minItems: 1 },
           ),
