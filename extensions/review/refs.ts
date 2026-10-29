@@ -31,6 +31,11 @@ export type ReviewFile = {
 export type ReviewDiff = {
   /** The spec as asked. */
   spec: string
+  /** Opaque source id and trusted display metadata, present only for an external source. */
+  source?: string
+  sourceLabel?: string
+  /** Provider-supplied GitHub repository URL; absent means no external compare link. */
+  github?: string
   kind: ReviewKind
   /** One line naming what is shown: `Uncommitted changes`, a commit's subject, `main...feature`. */
   title: string
@@ -57,28 +62,28 @@ export type ReviewRange = {
 }
 
 /**
- * `{ spec, conversation? }` → the diff of `spec` in the project's checkout, or in conversation `conversation`'s
+ * `{ spec, conversation?, source? }` → the diff of `spec` in the selected trusted source, the project's checkout, or in conversation `conversation`'s
  * worktree while it has one. Throws on a spec or ref Git does not know as a commit, and on any part starting with `-`.
  */
-export const DiffAction = actionRef<{ spec: string; conversation?: number }, ReviewDiff>(
-  'review',
-  'diff',
-)
-/** No arguments → recent specs to choose from: uncommitted, open `ultimate/*` branches, landings and commits. */
-export const RangesAction = actionRef<null, ReviewRange[]>('review', 'ranges')
+export const DiffAction = actionRef<
+  { spec: string; conversation?: number; source?: string },
+  ReviewDiff
+>('review', 'diff')
+/** `null` or `{ source? }` → recent native specs, or the trusted source provider's choices. */
+export const RangesAction = actionRef<null | { source?: string }, ReviewRange[]>('review', 'ranges')
 /**
- * `{ spec }` → the conversation a review of `spec` goes to by default: a branch's owner, a landing's submitter, the
- * conversation a commit's `Ultimate-Conversation` trailer names, else the primary agent's.
+ * `{ spec, source? }` → the default recipient: the source provider's known recipient, else the primary agent.
+ * Without a source: a branch's owner, a landing's submitter, a commit's `Ultimate-Conversation` trailer, else primary.
  */
-export const RecipientAction = actionRef<{ spec: string }, { conversation: number }>(
-  'review',
-  'recipient',
-)
+export const RecipientAction = actionRef<
+  { spec: string; source?: string },
+  { conversation: number }
+>('review', 'recipient')
 /**
- * User only: `{ conversation, spec, comments, note? }` → one `review.comments` input into `conversation`, which wakes
+ * User only: `{ conversation, spec, comments, note?, source? }` → one `review.comments` input into `conversation`, which wakes
  * or steers it like a typed message. Throws on an unknown conversation or a review over the limits in comments.ts.
  */
 export const SendAction = actionRef<
-  { conversation: number; spec: string; comments: ReviewComment[]; note?: string },
+  { conversation: number; spec: string; comments: ReviewComment[]; note?: string; source?: string },
   { conversation: number }
 >('review', 'send')

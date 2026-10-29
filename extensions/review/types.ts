@@ -11,4 +11,12 @@ export type ReviewComment = {
 }
 
 /** What a review carries into the recipient's transcript, as the data of its `review.comments` entry. */
-export type ReviewComments = { spec: string; comments: ReviewComment[]; note?: string }
+export type ReviewComments = {
+  spec: string
+  comments: ReviewComment[]
+  note?: string
+  source?: string
+  /** Resolved by the server, never accepted as authority from the browser. */
+  sourceLabel?: string
+  cwd?: string
+}
