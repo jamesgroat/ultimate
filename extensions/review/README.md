@@ -34,18 +34,38 @@ Links: `/?review=<spec>` opens Review at that spec, and the address carries `?re
 landing card, the Activity feed and a root's landed list open a landing's commit count here (DiffsHub stays as a small
 ↗ beside it), and a branch row's menu has **Review changes**. Without review those stay plain DiffsHub links.
 
+**Optional sources.** A plugin may implement `ReviewSources` from `api.ts` (`review.sources`):
+`resolve(source)` returns a trusted `{ cwd, label, base?, recipient?, github? }`, and `ranges(source)` returns
+`ReviewRange[]`. All four actions accept an optional opaque, non-empty `source` id (`ranges` also accepts `null`
+for native choices). Review keeps ownership of diffing, validation and sending. It resolves the source afresh on
+every operation, including send; a missing provider, invalid or removed source fails without falling back to the
+project. External diffs echo `source`, `sourceLabel` and optional `github`; no GitHub URL means no compare link.
+`branch:` compares against the resolved `base`; without one it asks for an explicit range, while uncommitted,
+commit and explicit-range reviews still work. A source cannot be combined with `uncommitted:<id>` or a diff's
+explicit `conversation` checkout selector whose ready workspace has a different canonical path. The send recipient
+is independent of that checkout selection. External recipient defaults come only from a provider's known
+conversation id, else the primary agent, never commit trailers. Send ignores browser labels and paths, stamps the
+resolved `sourceLabel` and `cwd` on the stored review, and includes them in the model's text. Source drafts use a
+bounded SHA-256 key over source, spec and conversation; native draft keys and model text are unchanged.
+
+Browser plugins provide the `SourcePicker` point from `ui.tsx` (`review.source-picker`), receiving
+`{ source?, select(source | undefined) }`. With no provider, Review adds no controls. The picker owns repository and
+checkout choices, not recipients or diff rendering. `openReview(spec, at?, source?)` and `?review=<spec>&reviewSource=<id>`
+keep the source through links and sent-card file chips. Omitting the source explicitly opens the native project,
+regardless of the last selected repository. Switching sources keeps drafts separate and resets the spec to uncommitted.
+
 Actions (`refs.ts`):
 
-- `diff { spec, conversation? }` → `{ spec, kind, title, base?, head?, patch, files, truncated? }`. Runs in
+- `diff { spec, conversation?, source? }` → `{ spec, kind, title, base?, head?, patch, files, truncated?, source?, sourceLabel?, github? }`. Runs in
   `conversation`'s worktree while it has one, else the project checkout. Every ref is checked with
   `git rev-parse --verify` as a commit, and any part starting with `-` is refused. A file's patch over 400 KB is listed
   as `tooLarge` without hunks; past 8 MB in all, later files are too and the diff is `truncated` (caps count bytes).
   An untracked symlink shows as a new file whose one line is its target (one with a path git would quote or a
   multi-line target is listed as `symlink`, without hunks); a file that became a symlink or stopped
   being one is listed as `typeChanged`, without hunks.
-- `ranges` → recent specs: uncommitted, open `ultimate/*` branches with their conversation, the last ten landings
+- `ranges null | { source? }` → source choices, or native recent specs: uncommitted, open `ultimate/*` branches with their conversation, the last ten landings
   (`workspaces.landed` events) and the last fifteen commits; branches and landings carry their `conversation`.
-- `recipient { spec }` → `{ conversation }`: a `branch:` spec's worktree owner, a landing range's submitter (by its
+- `recipient { spec, source? }` → `{ conversation }`: provider recipient for a source; otherwise a `branch:` spec's worktree owner, a landing range's submitter (by its
   tip in `workspaces.landed`), a commit's `Ultimate-Conversation` trailer, else the primary agent.
-- `send { conversation, spec, comments, note? }` (user only) → `{ conversation }`. At most 50 comments, each text up
+- `send { conversation, spec, comments, note?, source? }` (user only) → `{ conversation }`. At most 50 comments, each text up
   to 4,000 characters and excerpt up to 40 lines and 8 KB, to an existing conversation; it steers a busy one.
