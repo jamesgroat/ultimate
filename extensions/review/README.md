@@ -41,11 +41,18 @@ for native choices). Review keeps ownership of diffing, validation and sending. 
 every operation, including send; a missing provider, invalid or removed source fails without falling back to the
 project. External diffs echo `source`, `sourceLabel` and optional `github`; no GitHub URL means no compare link.
 `branch:` compares against the resolved `base`; without one it asks for an explicit range, while uncommitted,
-commit and explicit-range reviews still work. A source cannot be combined with `uncommitted:<id>` or a conversation
-whose ready workspace has a different canonical path. External recipients come only from a provider's known
+commit and explicit-range reviews still work. A source cannot be combined with `uncommitted:<id>` or a diff's
+explicit `conversation` checkout selector whose ready workspace has a different canonical path. The send recipient
+is independent of that checkout selection. External recipient defaults come only from a provider's known
 conversation id, else the primary agent, never commit trailers. Send ignores browser labels and paths, stamps the
 resolved `sourceLabel` and `cwd` on the stored review, and includes them in the model's text. Source drafts use a
 bounded SHA-256 key over source, spec and conversation; native draft keys and model text are unchanged.
+
+Browser plugins provide the `SourcePicker` point from `ui.tsx` (`review.source-picker`), receiving
+`{ source?, select(source | undefined) }`. With no provider, Review adds no controls. The picker owns repository and
+checkout choices, not recipients or diff rendering. `openReview(spec, at?, source?)` and `?review=<spec>&reviewSource=<id>`
+keep the source through links and sent-card file chips. Omitting the source explicitly opens the native project,
+regardless of the last selected repository. Switching sources keeps drafts separate and resets the spec to uncommitted.
 
 Actions (`refs.ts`):
 

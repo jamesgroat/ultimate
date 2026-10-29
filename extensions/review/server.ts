@@ -244,7 +244,7 @@ export const actions = {
     const conversation = await host.harness().conversation(id as ConversationId, context)
     if (!conversation) throw new Error(`No conversation #${id}`)
     // Resolve again at send time, not from a diff response or browser-supplied label/path.
-    const source = await sourceOf(host, checked.source, checked.spec, id)
+    const source = await sourceOf(host, checked.source, checked.spec)
     const review = source ? { ...checked, sourceLabel: source.label, cwd: source.cwd } : checked
     const content = reviewText(review)
     const submission = await conversation.submit(

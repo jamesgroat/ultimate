@@ -42,7 +42,7 @@ it('resolves trusted sources for diffs, choices, recipients and a fresh, server-
     },
     conversations: () => [{ id: 1 }, { id: 2 }],
     harness: () => ({
-      snapshot: async () => ({ items: {} }),
+      snapshot: async () => ({ items: { '2': { state: 'ready', path: '/other/worktree' } } }),
       conversation: async () => ({ submit }),
       commit: async (change: (tx: unknown) => void) => change({}),
     }),
@@ -69,6 +69,7 @@ it('resolves trusted sources for diffs, choices, recipients and a fresh, server-
   resolved = { ...resolved, recipient: 2 }
   expect(await actions.recipient({ source, spec: 'deadbeef' }, ctx)).toEqual({ conversation: 2 })
 
+  // The recipient owns another checkout: routing a review there must not change or constrain its source.
   // The checkout/label changed since the diff; the browser cannot supply either one at send time.
   resolved = { cwd: '/trusted/new-checkout', label: 'Renamed app', base: 'develop' }
   expect(
