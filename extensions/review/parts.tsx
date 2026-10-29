@@ -4,7 +4,15 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Header, StatusLine } from '@/sdk'
 
 /** The surface's frame: its header with `controls`, the body, the status line. */
-export function Frame({ controls, children }: { controls?: ReactNode; children: ReactNode }) {
+export function Frame({
+  controls,
+  extras,
+  children,
+}: {
+  controls?: ReactNode
+  extras?: ReactNode
+  children: ReactNode
+}) {
   return (
     <>
       <Header>
@@ -14,6 +22,7 @@ export function Frame({ controls, children }: { controls?: ReactNode; children: 
         </span>
         {controls}
       </Header>
+      {extras}
       <div className="flex min-h-0 flex-1">{children}</div>
       <StatusLine />
     </>
