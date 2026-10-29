@@ -4,10 +4,16 @@ import { useExtensionUiState, useUltimate } from '@/sdk'
 /** The spec on screen, in durable UI state: it survives reloads and follows every tab, as the surface does. */
 export const useSpec = () => useExtensionUiState<string>('spec', 'uncommitted')
 
+/** The optional repository/checkout identifier, independent of the spec and recipient. */
+export function useSource() {
+  const [source, set] = useExtensionUiState<string | null>('source', null)
+  return [source ?? undefined, (next: string | undefined) => set(next ?? null)] as const
+}
+
 /** A line to scroll to and mark: `line` of `file`, on the new side unless `side` says old. */
 export type ReviewTarget = { file: string; line: number; side?: 'old' | 'new' }
 
-type Request = { spec: string; at?: ReviewTarget }
+type Request = { spec: string; source?: string; at?: ReviewTarget }
 
 const listeners = new Set<() => void>()
 const subscribe = (listener: () => void) => {
@@ -29,6 +35,7 @@ function fromAddress(): Request | undefined {
   const side = params.get('side') === 'old' ? 'old' : undefined
   return {
     spec,
+    ...(params.has('reviewSource') ? { source: params.get('reviewSource')! } : {}),
     ...(file && Number.isSafeInteger(line) && line > 0
       ? { at: { file, line, ...(side && { side }) } }
       : {}),
@@ -40,9 +47,9 @@ let requested = fromAddress()
 // The line the surface should scroll to, until it has.
 let target: ReviewTarget | undefined
 
-/** Show the Review surface at `spec` (see `ReviewKind` in refs.ts), scrolled to `at` when given. */
-export function openReview(spec: string, at?: ReviewTarget) {
-  requested = { spec, ...(at && { at }) }
+/** Show `spec`, scrolled to `at` when given. Omitting `source` explicitly opens the native project checkout. */
+export function openReview(spec: string, at?: ReviewTarget, source?: string) {
+  requested = { spec, ...(at && { at }), ...(source !== undefined && { source }) }
   notify()
 }
 
@@ -62,25 +69,34 @@ export function reachedTarget() {
 export function ReviewLink() {
   const wanted = useSyncExternalStore(subscribe, () => requested)
   const [spec, setSpec] = useSpec()
+  const [source, setSource] = useExtensionUiState<string | null>('source', null)
   const { surface, showSurface } = useUltimate()
   useEffect(() => {
     if (wanted === undefined) return
     requested = undefined
     target = wanted.at
     setSpec(wanted.spec)
+    setSource(wanted.source ?? null)
     showSurface('review')
     notify()
-  }, [wanted, setSpec, showSurface])
+  }, [wanted, setSpec, setSource, showSurface])
   useEffect(() => {
     if (requested !== undefined) return
     const url = new URL(location.href)
     const shown = surface === 'review' ? spec : null
-    if (url.searchParams.get('review') === shown) return
+    const shownSource = surface === 'review' ? source : null
+    if (
+      url.searchParams.get('review') === shown &&
+      url.searchParams.get('reviewSource') === shownSource
+    )
+      return
     if (shown === null) url.searchParams.delete('review')
     else url.searchParams.set('review', shown)
+    if (shownSource === null) url.searchParams.delete('reviewSource')
+    else url.searchParams.set('reviewSource', shownSource)
     // A line belongs to the review it was asked with: a new spec or another surface drops it.
     for (const name of ['file', 'line', 'side']) url.searchParams.delete(name)
     history.replaceState(history.state, '', url)
-  }, [surface, spec])
+  }, [surface, spec, source])
   return null
 }
