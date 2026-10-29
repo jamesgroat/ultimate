@@ -13,8 +13,8 @@ import type { ExtensionHost } from '../server/extensions.ts'
 afterEach(() => vi.unstubAllEnvs())
 
 it('warns about old Git without exposing the probe output or blocking unrelated shell commands', async () => {
-  const cwd = await temp()
-  const extension = await codingTools({
+  const cwd = tmpdir()
+  const extension = codingTools({
     emit: vi.fn<ExtensionHost['emit']>() as ExtensionHost['emit'],
   })
   const bash = extension.tools!.find((tool) => tool.name === 'bash') as ReturnType<
