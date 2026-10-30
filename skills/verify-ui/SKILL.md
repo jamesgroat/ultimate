@@ -29,6 +29,11 @@ Never claim a UI change works without an image of it.
   included), `{until: {entry: 'pi.tool-result'}}` or `{until: {event: 'workspaces.landed', where: {…}}}` when that
   appears. A timeout says what was still busy. `conversation: <id>` targets another conversation. Click and fill only
   when the interaction itself is under test; never a fixed `wait <ms>`.
+- If `send` succeeded before a later browser step failed (navigation, context destroyed, page closed), the prompt
+  was submitted: do not send it again or retry automatically. Keep the returned conversation and submission identity,
+  open `/?conversation=<id>` fresh, inspect what arrived and continue there. State waits (`idle`, `quiet`) are safe
+  to repeat after reconnecting; an `{event}` wait may have missed an event while disconnected, so check stored entries
+  with codemode `ultimate.entries` instead of waiting again.
 - Set up state (model, thinking, Play/Pause, abort) through the page's SDK in one `eval`, or curl the preview's HTTP
   API, not by clicking menus: `{eval: "window.ultimate.api.configure({model: {provider: 'openai-codex', modelId:
   'gpt-6.1-sol'}}, 2)"}`. Also `api.abort(id)`, `api.compact(undefined, id)`, `api.action({extension: 'pause', name:
