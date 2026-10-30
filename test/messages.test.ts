@@ -749,6 +749,35 @@ it('answers questions to the user through answer cards or input in the sender co
   await f.open()
   expect(await state(second.id)).toBe('delivered')
 })
+it('identifies which overlapping question card a numbered user answer replies to', async () => {
+  const f = await fixture()
+  const questions = [{ ref: '1', text: 'Proceed?', kind: 'confirm' }]
+  await f.send('user', 'First decision', { questions })
+  await f.send('user', 'Second decision', { questions })
+  const [first, second] = (await f.log())!.messages
+  expect(first.state).toBe('delivered')
+  expect(second.state).toBe('delivered')
+
+  for (const question of [second, first]) {
+    const id = await f.service().answer(question.id, '1: Yes', context)
+    await until(async () => (await f.log())!.messages.find((m) => m.id === id)?.entry !== undefined)
+    await f.opened.root.waitForIdle(context)
+    expect(f.observed).toContain(
+      `Message from user (answering your message ${question.id}):\n1: Yes\nAnswer here; your answer is sent to user automatically. Do not use message to reply.`,
+    )
+    const answer = (await f.log())!.messages.find((m) => m.from === 'user' && m.re === question.id)!
+    const view = await f.opened.root.viewState(context)
+    expect(
+      view.value.entries.find(
+        (e) => e.kind === 'board.message' && (e.data as { id: number }).id === answer.id,
+      )?.data,
+    ).toMatchObject({ from: 'user', re: question.id, text: '1: Yes' })
+    view.dispose()
+    expect((await f.log())!.messages.find((m) => m.id === first.id)?.state).toBe(
+      question === second ? 'delivered' : 'answered',
+    )
+  }
+})
 it("ends @ultimate's run with its message to the user, unless it still owes a reply", async () => {
   const f = await fixture()
   await f.send('user', 'Landed')
