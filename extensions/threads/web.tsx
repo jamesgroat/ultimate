@@ -1,13 +1,22 @@
 import { GitBranchIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { MessageResponse } from '@/components/ai/message'
-import { defineWebExtension, provide, useAction, useConversation, useDocOf } from '@/sdk'
+import {
+  defineWebExtension,
+  getConversation,
+  getState,
+  provide,
+  useAction,
+  useConversation,
+  useDocOf,
+} from '@/sdk'
 import { FeatureTag } from '../conversations/ui.tsx'
 import { AbstractAction } from '../lineage/ui.tsx'
 import { StandingDoc } from '../subagents/ui.tsx'
 import { LandingAfter } from '../workspaces/ui.tsx'
 import { isUltimate, messagesOf } from './model.tsx'
 import { Threads } from './pane.tsx'
+import { picker, ThreadPicker } from './picker.tsx'
 import { ThreadRoot } from './roots.tsx'
 import { ROOT, threading, threadsOf } from './threads.tsx'
 
@@ -61,7 +70,19 @@ function useCatchUp({ from: branch, sha }: { from: number; sha: string }): React
 }
 
 export default defineWebExtension({
-  slots: { 'conversation.overlay': [Threads] },
+  slots: { 'conversation.overlay': [Threads], 'header.right': [ThreadPicker] },
+  commands: [
+    {
+      id: 'threads.show',
+      title: 'Show threads',
+      when: (context) =>
+        isUltimate(
+          getConversation(context.conversationId).id,
+          getState().docsOf[1]?.[StandingDoc.kind],
+        ),
+      run: (context) => context.open(picker),
+    },
+  ],
   entries: { [ROOT]: ThreadRoot },
   provides: [provide(LandingAfter, useCatchUp)],
   compact: {

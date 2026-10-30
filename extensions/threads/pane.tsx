@@ -14,6 +14,7 @@ import {
 import { FeatureTag, useOverview } from '../conversations/ui.tsx'
 import {
   ease,
+  recent,
   reduced,
   tones,
   useInset,
@@ -40,6 +41,12 @@ function Pane({ sheet }: { sheet: boolean }) {
   const [open, setOpen] = useOpenThread()
   const self = useConversation((conversation) => conversation.id)
   const [reveal, setReveal] = useState<{ threadId: number; entryId: number }>()
+  const [visit, setVisit] = useState(0)
+  useEvent(recent, (value) => {
+    if ((value as { conversationId: number }).conversationId !== self) return
+    setReveal(undefined)
+    setVisit((previous) => previous + 1)
+  })
   useEvent('ultimate:reveal-thread', (value) => {
     const request = value as { conversationId: number; threadId: number; entryId: number }
     if (request.conversationId !== self) return
@@ -51,6 +58,7 @@ function Pane({ sheet }: { sheet: boolean }) {
   if (open !== null && shown !== open) setShown(open)
   useEffect(() => {
     if (open !== null) return undefined
+    setReveal(undefined)
     const timer = setTimeout(() => setShown(null), duration + 40)
     return () => clearTimeout(timer)
   }, [open])
@@ -84,7 +92,11 @@ function Pane({ sheet }: { sheet: boolean }) {
           }}
         >
           <ThreadHead id={shown} onClose={() => setOpen(null)} sheet={sheet} />
-          <ThreadBody id={shown} revealRequest={reveal?.threadId === shown ? reveal : undefined} />
+          <ThreadBody
+            id={shown}
+            key={`${shown}:${visit}`}
+            revealRequest={reveal?.threadId === shown ? reveal : undefined}
+          />
         </aside>
       )}
     </div>

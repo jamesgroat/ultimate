@@ -1,6 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
-import { useConversation, useConversations, useDocOf, useTranscript, useUiState } from '@/sdk'
+import {
+  events,
+  useConversation,
+  useConversations,
+  useDocOf,
+  useTranscript,
+  useUiState,
+} from '@/sdk'
 import type { CompactDocs, EntryRecord } from '@/sdk'
 import { MessagesDoc } from '../messages/ui.tsx'
 import type { Message } from '../messages/refs.ts'
@@ -174,13 +181,29 @@ export function useThread(id: number) {
   }
 }
 
+export const recent = 'threads:recent'
+
+export function useSelectThread() {
+  const self = useConversation((conversation) => conversation.id)
+  const [, setOpen] = useOpenThread()
+  const [, setSeen] = useSeen()
+  return (id: number, newest: number | undefined) => {
+    events.emit(recent, { conversationId: self })
+    setOpen(id)
+    if (newest !== undefined) setSeen((value) => ({ ...value, [id]: newest }))
+  }
+}
+
 /** Opens or closes thread `id`, marking what it has so far as seen. */
 export function useToggle() {
   const [open, setOpen] = useOpenThread()
   const [, setSeen] = useSeen()
+  const select = useSelectThread()
   return (id: number, newest: number | undefined) => {
-    setOpen(open === id ? null : id)
-    if (newest !== undefined) setSeen((value) => ({ ...value, [id]: newest }))
+    if (open === id) {
+      setOpen(null)
+      if (newest !== undefined) setSeen((value) => ({ ...value, [id]: newest }))
+    } else select(id, newest)
   }
 }
 

@@ -28,6 +28,9 @@ streams in.
   the newest reply's first line and who said it, the reply count, when it last moved and how many replies are new. A
   new reply washes it briefly (Web Animations; none with reduced motion).
   While @ultimate runs a turn of that thread, the root says "@ultimate writing…"; its reply streams only in the thread.
+- **Picker** (`picker.tsx`): **Threads ▾** in the conversation header, or **Show threads** in the command palette,
+  searches loaded threads by title, feature or branch number, newest activity first. Selecting one opens it at recent
+  activity, even if a question previously revealed an older reply. It does not search unloaded history.
 - **Thread pane** (`pane.tsx`): the open thread is a column on the right, and main's column moves left beside it. On a
   phone, a thread opens as a full sheet with **← @ultimate** back. The open thread is the UI state `ext.threads.open`.
 - The thread's composer sends to @ultimate as `Re #<branch>: …`. What arrives while a thread is open counts as seen.
