@@ -752,6 +752,34 @@ it('answers questions to the user through answer cards or input in the sender co
   await f.open()
   expect(await state(second.id)).toBe('delivered')
 })
+it('identifies which overlapping question card a numbered user answer replies to', async () => {
+  const f = await fixture()
+  const questions = [{ ref: '1', text: 'Proceed?', kind: 'confirm' }]
+  await f.send('user', 'First decision', { questions })
+  await f.send('user', 'Second decision', { questions })
+  const [first, second] = (await f.log())!.messages
+  expect(first.state).toBe('delivered')
+  expect(second.state).toBe('delivered')
+
+  for (const question of [second, first]) {
+    const id = await f.service().answer(question.id, '1: Yes', context)
+    await until(async () => (await f.log())!.messages.find((m) => m.id === id)?.entry !== undefined)
+    await f.opened.root.waitForIdle(context)
+    expect(f.observed).toContain(
+      `Message from user (answering your message ${question.id}):\n1: Yes\nAnswer here; your answer is sent to user automatically. Do not use message to reply.`,
+    )
+    const answer = (await f.log())!.messages.find((m) => m.from === 'user' && m.re === question.id)!
+    const view = await f.opened.root.context(context)
+    expect(
+      view.entries.find(
+        (e) => e.kind === 'board.message' && (e.data as { id: number }).id === answer.id,
+      )?.data,
+    ).toMatchObject({ from: 'user', re: question.id, text: '1: Yes' })
+    expect((await f.log())!.messages.find((m) => m.id === first.id)?.state).toBe(
+      question === second ? 'delivered' : 'answered',
+    )
+  }
+})
 it("ends @ultimate's run with its message to the user, unless it still owes a reply", async () => {
   const f = await fixture()
   await f.send('user', 'Landed')
@@ -1366,7 +1394,9 @@ it('lets a branch ask the user directly and leaves passive question and answer n
   expect(JSON.stringify(answered.model)).toContain('A: Yes')
   const reply = (await f.log())!.messages.find((m) => m.from === 'user' && m.re === question.id)!
   expect(reply).toMatchObject({ to: b.id, text, state: 'answered', entry: expect.any(Number) })
-  expect(f.observed).toContainEqual(expect.stringContaining(`Message from user:\n${text}`))
+  expect(f.observed).toContainEqual(
+    expect.stringContaining(`Message from user (answering your message ${question.id}):\n${text}`),
+  )
   // The user's answer is input, so the branch's final result still reports to its starter.
   expect((await b.from()).find((m) => m.report)).toMatchObject({
     to: 1,
