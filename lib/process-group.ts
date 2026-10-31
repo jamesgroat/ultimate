@@ -28,7 +28,9 @@ export type Group = { child: GroupProcess; ended: Promise<boolean>; closed: Prom
 export function identify(pid: number): string | undefined {
   if (process.platform === 'darwin') {
     try {
-      return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+      return execFileSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], {
+        encoding: 'utf8',
+      }).trim()
     } catch {
       // ps exits 1 when the pid is gone.
       return undefined
@@ -51,7 +53,7 @@ function darwinEnded(pid: number, denied: unknown) {
   if (process.platform !== 'darwin' || (denied as NodeJS.ErrnoException).code !== 'EPERM')
     return false
   try {
-    const output = execFileSync('ps', ['-A', '-o', 'pgid=,stat='], { encoding: 'utf8' })
+    const output = execFileSync('/bin/ps', ['-A', '-o', 'pgid=,stat='], { encoding: 'utf8' })
     let found = false
     for (const line of output.trim().split('\n')) {
       const row = /^(\d+)\s+([?IRSTUZ][+<>AELNSsVWX]*)$/.exec(line.trim())
