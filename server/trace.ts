@@ -89,9 +89,10 @@ function failure(error: unknown, credentials: boolean) {
 }
 
 /**
- * What a tool's error result says, cut at about 300 characters: its error diagnostics, then its text. A shell command
- * that exits nonzero has no text parts, its retained output tail sits in `structuredOutput.output`, and its one error
- * diagnostic says `Command exited with code 2`; that is the row's error.
+ * What a tool's error result says: its error diagnostics, then its text. Keep at most 603 characters: the first 300,
+ * a separator, and the final Error line (or text tail), capped at 300. A shell command that exits nonzero has no text
+ * parts, its retained output tail sits in `structuredOutput.output`, and its one error diagnostic says
+ * `Command exited with code 2`; that is the row's error.
  */
 function toolError(result: ToolExecutionResult) {
   const text = [
@@ -100,7 +101,10 @@ function toolError(result: ToolExecutionResult) {
     ),
     ...(result.output ?? []).flatMap((part) => (part.type === 'text' ? [part.text] : [])),
   ].join('\n')
-  return text.length <= LIMIT ? text : text.slice(0, LIMIT) + '…'
+  if (text.length <= LIMIT * 2) return text
+  const last = text.split(/\r?\n/).findLast((line) => line.includes('Error:'))
+  const terminal = last ? last.trim().slice(0, LIMIT) : text.trim().slice(-LIMIT)
+  return `${text.slice(0, LIMIT)}\n…\n${terminal}`
 }
 
 /** JSON of `value`, cut at about 300 characters, with values under secret-looking keys replaced. */

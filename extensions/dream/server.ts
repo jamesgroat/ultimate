@@ -78,6 +78,11 @@ export function prepare(args: unknown, now: number): Prepared {
   }
 }
 
+const terminalError = (error: string) => {
+  const last = error.split(/\r?\n/).findLast((line) => line.includes('Error:'))
+  return last ? last.trim().slice(0, 200) : error.trim().slice(-200)
+}
+
 /** Tool calls in `trace.sqlite`: per tool, the most frequent errors, and `enabled` tools never called in its window. */
 export function toolStats(database: string, enabled: readonly string[]): ToolStats {
   if (!existsSync(database))
@@ -100,7 +105,7 @@ export function toolStats(database: string, enabled: readonly string[]): ToolSta
       )
       .all() as { name: string; error: string; count: number }[]
     const sample = db.prepare(
-      "SELECT conversation, entry, substr(args, 1, 120) AS args FROM calls WHERE kind = 'tool' AND ok = 0 AND name = ? AND substr(error, 1, 160) = ? ORDER BY at DESC LIMIT 2",
+      "SELECT conversation, entry, substr(args, 1, 120) AS args, error FROM calls WHERE kind = 'tool' AND ok = 0 AND name = ? AND substr(error, 1, 160) = ? ORDER BY at DESC LIMIT 2",
     )
     const errors = groups.map((group) => ({
       ...group,
@@ -109,10 +114,12 @@ export function toolStats(database: string, enabled: readonly string[]): ToolSta
           conversation: number | null
           entry: number | null
           args: string | null
+          error: string
         }[]
       ).map((row) => ({
         at: `#${row.conversation ?? '?'}${row.entry === null ? '' : `/${row.entry}`}`,
         args: row.args ?? '',
+        error: terminalError(row.error),
       })),
     }))
     const used = new Set(tools.map((tool) => tool.name))
