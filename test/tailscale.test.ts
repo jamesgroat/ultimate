@@ -1,4 +1,4 @@
-import { chmod, cp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import tailscale, { actions } from '../extensions/tailscale/server.ts'
@@ -62,6 +62,8 @@ else if (args[0] === 'serve') {
 `,
   )
   await chmod(script, 0o755)
+  // macOS process identity needs ps; expose only it, not the host's real Tailscale CLI.
+  if (process.platform === 'darwin') await symlink('/bin/ps', join(home, 'ps'))
   // This file runs its own stub CLI from PATH, not the missing one test/setup.ts names for every other server.
   vi.stubEnv('TAILSCALE_COMMAND', undefined)
   vi.stubEnv('PATH', home)
