@@ -24,6 +24,11 @@ Never claim a UI change works without an image of it.
   `(async () => { const r = await fetch('/api/x'); return r.status })()`. A bare `const x = …; return x` fails.
 - Scope selectors to the card or panel under test: `[data-entry-id="42"] button:has-text("Retry")`, not
   `button:has-text("Retry")`, which clicks the first match anywhere on the page.
+- A string `wait` uses strict locator matching (`page.locator(selector).waitFor()`): it needs exactly one match,
+  not a collection. For example, `{wait: '[data-entry-id="42"] button:has-text("Retry")'}` waits for the unique
+  button in that card; `{wait: 'button:has-text("Retry")'}` fails if several cards have one. Check a collection
+  through `eval` instead: `{eval: 'document.querySelectorAll("[data-entry-id]").length'}`. Do not hide ambiguity
+  by selecting the first match.
 - Wait on Ultimate's state, never a guessed time: `{send: 'prompt'}` submits without the composer, then
   `{until: 'idle'}` returns when that turn is done, `{until: 'quiet'}` when nothing runs (branches and subagents
   included), `{until: {entry: 'pi.tool-result'}}` or `{until: {event: 'workspaces.landed', where: {…}}}` when that
