@@ -7,6 +7,7 @@ import { configure, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { afterEach, expect, it, vi } from 'vitest'
 import { writeJson } from '../lib/json-file.ts'
 import { prepareHarness } from '../server/harness.ts'
+import { callTrace } from '../server/trace.ts'
 import type { OpenHost } from '../server/harness.ts'
 import type { ExtensionHost } from '../server/extensions.ts'
 import type { ActionContext } from '../server/actions.ts'
@@ -297,9 +298,56 @@ it('reads tool numbers from the trace, with unused tools and frequent errors', a
         name: 'edit',
         error: 'Could not find the exact text',
         count: 1,
-        examples: [{ at: '#7/42', args: '{"path":"a.ts"}' }],
+        examples: [
+          { at: '#7/42', args: '{"path":"a.ts"}', error: 'Could not find the exact text' },
+        ],
       },
     ],
   })
   expect(toolStats(join(await temp(), 'none.sqlite'), ['read']).unused).toEqual(['read'])
+})
+
+it('retains the terminal selector error through tracing into dream failure examples', async () => {
+  const file = join(await temp(), 'trace.sqlite')
+  const trace = callTrace(file)
+  const warning =
+    "Console error: WebSocket connection to 'ws://127.0.0.1:1234/api/live/ws' failed: Error during WebSocket handshake: Unexpected response code: 400"
+  const timeout = 'TimeoutError: locator.waitFor: selector timed out after 60s'
+  const failure = {
+    isError: true,
+    output: [
+      {
+        type: 'text' as const,
+        text: `${`${warning}\n`.repeat(10)}Step 1: Error: earlier step failed\n${timeout}\nCall log:\n  - waiting for locator('button') to be visible\n`,
+      },
+    ],
+  }
+  trace.open()
+  try {
+    const [browser] = trace.tools({
+      name: 'browser',
+      tools: [{ name: 'browser', execute: async () => failure } as never],
+    }).tools!
+    expect(
+      await browser.execute(
+        {},
+        {
+          conversationId: 7,
+          taskId: 1,
+          callId: 'call',
+          getTask: async () => ({ input: { kind: 'model', assistant: 43, callId: 'call' } }),
+        } as never,
+        context,
+      ),
+    ).toBe(failure)
+    const [row] = trace.reader.query()
+    expect(row.error).toContain(warning)
+    expect(row.error).toContain(timeout)
+    expect(row.error!.length).toBeLessThanOrEqual(603)
+  } finally {
+    trace.close()
+  }
+  const [group] = toolStats(file, ['browser']).errors
+  expect(group.error).toContain(warning)
+  expect(group.examples).toEqual([{ at: '#7/43', args: '', error: timeout }])
 })
