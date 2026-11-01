@@ -50,7 +50,7 @@ import { shortTitle } from '../../lib/title.ts'
 import { WorkspacesApi } from '../workspaces/api.ts'
 import { ConversationsApi, Marks } from '../conversations/api.ts'
 import type { AgentMarkStyle } from '../conversations/refs.ts'
-import { Pin } from '../models/api.ts'
+import { Pin, Selection } from '../models/api.ts'
 import { Profile, Standing, Subagents, SubagentsApi } from './api.ts'
 import {
   DefinitionAction,
@@ -649,7 +649,10 @@ export default function subagents(
           id = created.id
           index[name] = id
         }
-        const change = definitionAgent(definition, base, host.modelRuntime)
+        let change = definitionAgent(definition, base, host.modelRuntime)
+        // An explicit manual or Auto choice outlives definition refreshes and process restarts.
+        if (!created && (await tx.doc(Selection, id)).mode)
+          change = { ...change, model: base.model, thinkingLevel: base.thinkingLevel }
         await configure(tx, id, { ...change, cwd: host.projectRoot })
         Object.assign(await tx.doc(host.metadata, id), { label: 'agent', title: `@${name}` })
         // A standing agent keeps its `@name`: no automatic title, summary or reply activity.

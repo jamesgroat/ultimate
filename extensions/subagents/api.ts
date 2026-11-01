@@ -58,7 +58,13 @@ export const Standing = defineDoc<Record<string, ConversationId>>({
 })
 
 /** The definition a conversation was configured from: children (including automation runs) and standing agents. */
-export const Profile = defineDoc<{ definition?: string }>({
+export const Profile = defineDoc<{
+  definition?: string
+  /** Creation time of a new child; absent on older children and standing conversations. */
+  createdAt?: number
+  /** The caller supplied options.model, rather than inheriting a model or resolving a definition. */
+  explicitModel?: true
+}>({
   kind: 'ultimate.agent-profile',
   checkpointWhen: () => false,
   version: 1,

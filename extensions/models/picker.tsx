@@ -28,6 +28,7 @@ import {
   thinkingOf,
   useFamilies,
 } from './families.tsx'
+import { SelectAction } from './refs.ts'
 import type { FamilyView } from './refs.ts'
 import {
   authLabel,
@@ -169,7 +170,11 @@ export function ModelPicker() {
     setError(undefined)
     const level = thinkingOf(family)
     api
-      .configure({ model: { provider, modelId }, ...(level ? { thinkingLevel: level } : {}) }, id)
+      .action(
+        SelectAction,
+        { model: { provider, modelId }, ...(level ? { thinkingLevel: level } : {}) },
+        { conversationId: id },
+      )
       .then(
         () => setOpen(false),
         (failure: unknown) => setError(errorMessage(failure)),
