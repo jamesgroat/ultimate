@@ -457,17 +457,18 @@ it.each(['queued', 'running'] as const)(
   },
 )
 
-it.each([false, true])('waits 60 s, retries once; retry failure: %s', async (retryFails) => {
+it.each(
+  [
+    'Incomplete Claude Code upstream response (status unknown, capture incomplete, relay failure Error)',
+    'claude auth status gave no status (exit 0): ',
+  ].flatMap((failure) => [false, true].map((retryFails) => ({ failure, retryFails }))),
+)('retries once after 60 s: $failure ($retryFails)', async ({ failure, retryFails }) => {
   const seen: string[] = []
   const f = await fixture((transcript) => {
     const text = inputText(transcript)
     if (text === 'fail' || text.startsWith('Your previous run')) {
       seen.push(text)
-      return text === 'fail' || retryFails
-        ? error(
-            'Incomplete Claude Code upstream response (status unknown, capture incomplete, relay failure Error)',
-          )
-        : fauxAssistantMessage('recovered')
+      return text === 'fail' || retryFails ? error(failure) : fauxAssistantMessage('recovered')
     }
     return fauxAssistantMessage('ok')
   })
