@@ -162,11 +162,10 @@ export default function todosExtension(host: ExtensionHost) {
       defineTool({
         name: 'todo',
         deferred: true,
-        description:
-          "The project's to-dos, owned by you ('ultimate') or the user ('user'): add {text, owner}, done {id}, list. Keep open loops here, not in codemode store; the user sees and ticks them in the To-dos panel, and their open questions already show there, so never add a to-do for a question. Other projects read this list with ultimate.doc('todos', 1, {project}) and ask you to add through ultimate.tell.",
+        description: `The project's to-dos, owned by you ('ultimate') or the user ('user'): add {text, owner} (text: at most ${TEXT_CHARS} characters), done {id}, list. Keep open loops here, not in codemode store; the user sees and ticks them in the To-dos panel, and their open questions already show there, so never add a to-do for a question. Other projects read this list with ultimate.doc('todos', 1, {project}) and ask you to add through ultimate.tell.`,
         parameters: obj({
           action: strEnum(['add', 'done', 'list']),
-          text: opt(str()),
+          text: opt(str({ maxLength: TEXT_CHARS })),
           owner: opt(strEnum(['user', 'ultimate'])),
           id: opt(int({ minimum: 1 })),
         }),
