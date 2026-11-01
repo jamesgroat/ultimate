@@ -135,6 +135,7 @@ export function diagnose(error: string, assistant?: AssistantMessage) {
   return {
     temporary:
       /^Incomplete Claude Code upstream response \(status (200|unknown),/.test(error) ||
+      /^claude auth status gave no status \(exit 0\):\s*$/.test(error) ||
       !!(assistant && isRetryableAssistantError(assistant)),
   }
 }
