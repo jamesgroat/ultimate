@@ -1,6 +1,7 @@
 import type { ConversationId, GenerationHooks, Tx } from '@earendil-works/pi-durable'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { expect, it } from 'vitest'
+import { validateToolArguments } from '@earendil-works/pi-ai/utils/validation'
 import todosExtension, {
   add,
   DONE_LIMIT,
@@ -45,6 +46,25 @@ it('adds to-dos by owner and refuses empty text or an unknown owner', async () =
   await expect(add(tx, ' ', 'user')).rejects.toThrow('nonempty')
   await expect(add(tx, 'x', 'lander')).rejects.toThrow('owner')
   expect((await list(tx)).map((todo) => todo.id)).toEqual([1, 2])
+})
+
+it('advertises and enforces the 300-character text limit without truncating', async () => {
+  const { tx } = fakeTx()
+  const tool = todosExtension({} as ExtensionHost).tools![0]
+  const validate = (text: string) =>
+    validateToolArguments(tool, {
+      type: 'toolCall',
+      id: 'limit',
+      name: 'todo',
+      arguments: { action: 'add', text, owner: 'user' },
+    })
+  const text = 'x'.repeat(300)
+  expect(tool.description).toContain('at most 300 characters')
+  expect(validate(text).text).toBe(text)
+  expect(() => validate(`${text}x`)).toThrow(/text/)
+  expect((await add(tx, text, 'user')).text).toBe(text)
+  await expect(add(tx, `${text}x`, 'user')).rejects.toThrow('text must be at most 300 characters')
+  expect((await list(tx)).map((todo) => todo.text)).toEqual([text])
 })
 
 it('ticks and reopens a to-do, keeping only the newest done ones', async () => {
