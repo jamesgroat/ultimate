@@ -322,7 +322,7 @@ if (process.argv.includes('status')) {
 
     vi.stubEnv('CLAUDE_CODE_DISABLE_AUTO_MEMORY', '0')
     await a()
-    expect.soft((await lines()).at(-1)?.split(' ').slice(1)).toEqual(['-', '0'])
+    expect((await lines()).at(-1)?.split(' ').slice(1)).toEqual(['-', '0'])
     vi.stubEnv('CLAUDE_CODE_DISABLE_AUTO_MEMORY', undefined)
 
     const folder = join(projectRoot, '.ultimate/extensions/claude-env')
