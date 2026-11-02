@@ -66,7 +66,7 @@ export const branchTool = (host: ExtensionHost) =>
             deliver: false,
             by: from,
             receipt: { taskId: api.taskId, callId: api.callId },
-            ...(model ? { model } : {}),
+            ...(model ? { model, automaticModel: true } : {}),
             ...(thinkingLevel ? { thinkingLevel } : {}),
           },
           ctx,
