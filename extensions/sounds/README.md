@@ -43,10 +43,68 @@ joins the next. A title is cut to its first eight words. Unlike the other sounds
 nothing that happened while the stream was down or before the tab opened. Tabs of one browser share a claim; tabs on
 several machines each speak.
 
-The `say` action (`server.ts`) speaks a line with OpenAI's `gpt-realtime-2.1-mini` over one realtime WebSocket
-response, with the `OPENAI_API_KEY` secret that voice input uses (or an API key Pi's `openai` provider holds), and keeps
-the last 50 lines in memory, so a repeat plays at once. The line's text, branch titles included, goes to OpenAI.
-Without a key the browser's own `speechSynthesis` says it. The voice plays through the same volume.
+The `say` action defaults to OpenAI's `gpt-realtime-2.1-mini` over one realtime WebSocket response, with the
+`OPENAI_API_KEY` secret that voice input uses (or an API key Pi's `openai` provider holds). Set `sounds.voice` to
+`local` to try the self-contained local narrator first, with OpenAI as fallback; without either, the browser's own
+`speechSynthesis` says the line. Branch titles go to OpenAI whenever that voice is used, including as fallback.
+The last 50 lines are cached by source, voice and rate; requests have a shared 20-second deadline and at most 300
+characters. The voice plays through the same volume.
+
+User settings (`~/.ultimate/settings.json`) and project settings (`.ultimate/settings.json`) merge by `sounds` member,
+project winning. For example:
+
+```json
+{
+  "sounds": {
+    "voice": "local",
+    "narratorVoice": "af_heart",
+    "narratorRate": 1,
+    "idleMinutes": 15
+  }
+}
+```
+
+`voice` is `openai` (default), `local` or `off`; `off` returns no server audio, even for a cached line, leaving speech
+to the browser. `narratorVoice` and `narratorRate` select the local Kokoro voice and speed (defaults above). The daemon
+starts on demand, exits after `idleMinutes` without work, and owns only `~/.local/share/ultimate-sounds/`: `worker.sock`,
+`worker.lock`, `worker.log`, `venv/` and `models/`. The log records provider and render time. Missing local setup shows
+one quiet hint in the sounds popover and leaves OpenAI/browser fallback available.
+
+### One-time local setup
+
+**macOS (Apple Silicon):** install Python 3.12 and MLX audio with `uv`:
+
+```bash
+root="$HOME/.local/share/ultimate-sounds"
+uv python install 3.12
+uv venv --python 3.12 "$root/venv"
+uv pip install --python "$root/venv/bin/python" mlx-audio 'misaki[en]'
+```
+
+The fixed model is `mlx-community/Kokoro-82M-bf16`, downloaded on first use. The worker sets `HF_HOME` and Hugging Face
+hub caches under `~/.local/share/ultimate-sounds/models/huggingface` before model imports; it does not reuse another
+application's model cache.
+
+**Linux:** install Python 3.12 with `mise`, then Kokoro ONNX and its model assets:
+
+```bash
+root="$HOME/.local/share/ultimate-sounds"
+mise install python@3.12
+mise exec python@3.12 -- python -m venv "$root/venv"
+"$root/venv/bin/pip" install kokoro-onnx==0.6.1 onnxruntime-gpu==1.31.1
+# Kokoro's CPU dependency and the GPU wheel own the same Python namespace; repair it.
+"$root/venv/bin/pip" uninstall -y onnxruntime
+"$root/venv/bin/pip" install --force-reinstall --no-deps onnxruntime-gpu==1.31.1
+mkdir -p "$root/models"
+curl -fL https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx -o "$root/models/kokoro-v1.0.onnx"
+curl -fL https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin -o "$root/models/voices-v1.0.bin"
+```
+
+For NVIDIA userspace libraries, optionally install `'onnxruntime-gpu[cuda,cudnn]==1.31.1'` in that venv; the worker
+preloads them before selecting CUDA, with CPU fallback. For CPU-only/ARM machines, install only `kokoro-onnx==0.6.1`
+instead of the GPU install/repair steps and retain its `onnxruntime` dependency. No system eSpeak install is needed:
+`espeakng-loader` bundles it. Local replies must be headerless signed PCM16 little-endian, mono, at 24 kHz; the worker
+refuses other sample rates and the client checks the returned rate.
 
 ## Sound of agents
 
