@@ -13,6 +13,7 @@ import {
   useDocOf,
   useEvents,
   useExtensionUiState,
+  useAction,
   useNow,
 } from '@/sdk'
 import type { LiveState } from '@/sdk'
@@ -29,7 +30,7 @@ import type { Variant } from './agents.ts'
 import * as conductor from './conductor.ts'
 import * as tones from './tones.ts'
 import { linesOf, spoken } from './narration.ts'
-import { SayAction } from './refs.ts'
+import { SayAction, StatusAction } from './refs.ts'
 
 const playedKey = 'ultimate.sounds.played'
 
@@ -85,7 +86,7 @@ const gatherMs = 1500
 
 /**
  * Speaks lines one at a time, each after its notification sound: cues that arrive while it gathers or speaks join the
- * next line. A line OpenAI's voice cannot say is said by the browser's.
+ * next line. A line the configured voice cannot say is said by the browser's.
  */
 function speaker() {
   let waiting: Cue[] = []
@@ -285,6 +286,8 @@ function Control() {
     branches,
     setBranches,
   } = useSettings()
+  const [open, setOpen] = useState(false)
+  const status = useAction(StatusAction, null, { enabled: open })
   const stage = useSyncExternalStore(conductor.subscribe, conductor.current)
   const now = useNow(1000, stage.demoUntil !== undefined)
   const playing = agents !== 'off' && !muted
@@ -293,7 +296,7 @@ function Control() {
       ? undefined
       : Math.max(0, Math.ceil((stage.demoUntil - now) / 1000))
   return (
-    <Popover>
+    <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
         <button
           aria-label="Sounds"
@@ -338,6 +341,11 @@ function Control() {
             Narrator
             <Switch checked={narrating} disabled={muted} onCheckedChange={setNarrator} />
           </label>
+          {status.data?.hint && (
+            <p className="px-2 pb-1 text-[10px] leading-4 text-muted-foreground">
+              {status.data.hint}
+            </p>
+          )}
           {narrating && (
             <>
               <label className="flex h-7 cursor-pointer items-center gap-2 px-2 text-[12px]">
@@ -350,7 +358,7 @@ function Control() {
               </label>
               <div className="px-2 pt-0.5 pb-1 text-[11px] leading-4 text-muted-foreground">
                 Speaks questions, failures and landings after their sound, also while the tab is
-                hidden. Branch titles go to OpenAI to be spoken.
+                hidden. OpenAI receives branch titles when used, including as a local fallback.
               </div>
             </>
           )}
