@@ -23,9 +23,14 @@ import type { Automation } from '../extensions/automations/types.ts'
 import type { Seed } from '../extensions/dream/types.ts'
 import dream, { Next } from '../extensions/dream/server.ts'
 import { applySeed, buildSeed, SeedState, writeSeed } from '../extensions/dream/seed.ts'
+import { BuiltInDoc, PauseDoc } from '../extensions/dream/built-ins.ts'
 import { CloudApi } from '../extensions/cloud/api.ts'
 import type { CloudService, LastBackup } from '../extensions/cloud/api.ts'
 import { temp, until, eventHost } from './helpers.ts'
+
+type Script = Seed['scripts'][number] &
+  Pick<Automation, 'enabled'> &
+  Partial<Pick<Automation, 'schedule' | 'subscribers'>>
 
 const openedHosts: OpenHost[] = []
 afterEach(async () => {
@@ -42,7 +47,7 @@ async function fixture() {
   })
   let opened: OpenHost
   let opener: () => Promise<void>
-  let scripts: (Seed['scripts'][number] & { enabled: boolean })[] = []
+  let scripts: Script[] = []
   /** A faked `CloudApi`: never the real Worker. */
   let cloud: CloudService | undefined
   const tokens = [...lineageDocs, Messages, Todos, Next]
@@ -56,7 +61,7 @@ async function fixture() {
     return action === 'list'
       ? [
           ...(result as Automation[]),
-          ...scripts.map(({ ask, ...item }) => ({ ...item, script: { ask } })),
+          ...scripts.map(({ ask, ...item }) => ({ subscribers: [], ...item, script: { ask } })),
         ]
       : result
   })
@@ -123,7 +128,7 @@ async function fixture() {
     get harness() {
       return opened.harness
     },
-    scripts: (items: (Seed['scripts'][number] & { enabled: boolean })[]) => {
+    scripts: (items: Script[]) => {
       scripts = items
     },
     cloud: (service: CloudService | undefined) => {
@@ -203,10 +208,37 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
     { name: 'Daily', prompt: 'Review', schedule: 'every 1d' },
     new AbortController().signal,
   )
+  for (const [doc, name, enabled] of [
+    [BuiltInDoc, 'Dream before compaction', true],
+    [PauseDoc, 'Dream after a pause', false],
+  ] as const) {
+    const automation = (await f.host.invoke(
+      'automations',
+      'create',
+      {
+        name,
+        condition: { metric: 'context', of: '@ultimate', above: 70 },
+        subscribers: ['@ultimate'],
+      },
+      new AbortController().signal,
+    )) as Automation
+    await f.harness.commit(async (tx) => {
+      ;(await tx.doc(doc, ROOT_CONVERSATION_ID)).id = automation.id
+      ;(await tx.doc(Automations)).automations[automation.id].enabled = enabled
+    }, context)
+  }
   f.scripts([
     { id: 'A1', name: 'Watch it', ask: 'Watch the build', prompt: 'Summarise', enabled: true },
-    { id: 'build-watch', scope: 'project', name: 'Project watch', ask: 'Watch CI', enabled: true },
-    { id: 'A2', name: 'Stopped', ask: 'Ignore', enabled: false },
+    {
+      id: 'disk-space-guard',
+      scope: 'project',
+      name: 'Disk space guard',
+      ask: 'Check available disk space. FIRE with a short summary only when free space is low.',
+      schedule: { kind: 'every', ms: 21600000 },
+      subscribers: ['@ultimate'],
+      enabled: true,
+    },
+    { id: 'stopped-guard', scope: 'project', name: 'Stopped', ask: 'Ignore', enabled: false },
   ])
   const seed = await buildSeed(f.host, PREPARED)
   expect(seed.counts).toEqual({
@@ -226,6 +258,9 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
     { text: 'Question 103', ref: '#103' },
   ])
   expect(seed.todos).toEqual([{ text: 'Keep this', owner: 'ultimate' }])
+  expect(seed.builtIn).toEqual({ enabled: true })
+  expect(seed.builtInPause).toEqual({ enabled: false })
+  expect(seed.scripts.map(({ id }) => id)).toEqual(['A1', 'disk-space-guard'])
   expect(seed.automations).toEqual([
     { name: 'Daily', prompt: 'Review', schedule: { kind: 'every', ms: 86400000 } },
   ])
@@ -254,8 +289,18 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
       text: 'Recreate script A1 (Watch it): Watch the build · prompt: Summarise',
       owner: 'ultimate',
     },
+    {
+      text: 'Resume project script disk-space-guard (Disk space guard): paused after chapter change.',
+      owner: 'ultimate',
+    },
   ])
-  expect(after.todos.next).toBe(5)
+  expect(after.todos.next).toBe(6)
+  expect(Object.values(after.automations.automations).map(({ name }) => name)).toEqual(['Daily'])
+  expect(
+    f.invoke.mock.calls
+      .filter(([, action]) => action === 'create')
+      .map(([, , args]) => (args as { name: string }).name),
+  ).not.toContain('Disk space guard')
   expect(after.seed.applied).toBeGreaterThan(0)
   expect(after.seed.automations).toEqual(['Daily'])
   const chapterEntries = async () => {

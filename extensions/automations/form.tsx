@@ -56,6 +56,8 @@ interface Draft {
   /** What a script watches for, in plain words; its watcher writes the script from it. */
   ask: string
   once: boolean
+  check: boolean
+  timeout: string
   /** Whether a fire wakes the conversation the form was opened beside. */
   wake: boolean
   mode: Mode
@@ -113,6 +115,8 @@ function draftOf(automation?: Automation): Draft {
     prompt: '',
     ask: '',
     once: true,
+    check: false,
+    timeout: '300',
     wake: true,
     mode: 'cron',
     cron: '0 9 * * 1-5',
@@ -144,26 +148,24 @@ function draftOf(automation?: Automation): Draft {
       cooldownMinutes: String((automation.condition?.cooldownMs ?? 3600000) / 60000),
       idleHours: String((automation.condition?.idleFor ?? 0) / 3600000),
     }
+  const draft: Draft = {
+    ...blank,
+    name: automation?.name ?? '',
+    prompt: automation?.prompt ?? '',
+    agent: automation?.agent ?? '',
+  }
   if (automation?.script)
-    return {
-      ...blank,
+    Object.assign(draft, {
       trigger: 'script',
-      name: automation.name,
-      prompt: automation.prompt ?? '',
       ask: automation.script.ask,
       once: automation.script.once,
       wake: automation.subscribers.length > 0,
-      agent: automation.agent ?? '',
-    }
-  if (!automation?.schedule) return blank
+      check: !!automation.schedule,
+      timeout: String(automation.script.timeout ?? 300),
+    })
+  if (!automation?.schedule) return draft
   const { schedule } = automation
-  const draft = {
-    ...blank,
-    name: automation.name,
-    prompt: automation.prompt ?? '',
-    mode: schedule.kind,
-  }
-  draft.agent = automation.agent ?? ''
+  draft.mode = schedule.kind
   if (schedule.kind === 'cron') return { ...draft, cron: schedule.expr, tz: schedule.tz }
   if (schedule.kind === 'every') return { ...draft, every: interval(schedule.ms) }
   const date = new Date(schedule.time)
@@ -259,8 +261,8 @@ function Field({
   )
 }
 
-/** What the backend makes of the schedule: in words, the next fire times, and how often it costs a run. */
-function Preview({ schedule }: { schedule: string | undefined }) {
+/** What the backend makes of the schedule: in words, the next times and daily frequency. */
+function Preview({ schedule, check }: { schedule: string | undefined; check?: boolean }) {
   const settled = useSettled(schedule, 250)
   const described = useAction(
     DescribeAction,
@@ -286,7 +288,7 @@ function Preview({ schedule }: { schedule: string | undefined }) {
       ) : !data ? (
         <p className="flex items-center gap-1.5 font-mono text-[11.5px] text-muted-foreground">
           {schedule === undefined ? (
-            'Fill in the schedule to see its next runs.'
+            `Fill in the schedule to see its next ${check ? 'checks' : 'runs'}.`
           ) : (
             <>
               <LoaderCircleIcon className="size-3 animate-spin" /> reading the schedule…
@@ -315,7 +317,7 @@ function Preview({ schedule }: { schedule: string | undefined }) {
           </ol>
           {perDay > 1 && (
             <p className="mt-1 font-mono text-[11px] text-warning">
-              about {perDay.toLocaleString()} runs a day
+              about {perDay.toLocaleString()} {check ? 'checks' : 'runs'} a day
             </p>
           )}
         </>
@@ -463,6 +465,8 @@ export function AutomationForm({
   // A fire wakes the conversation the form opens beside: the shown one, which actions run on behalf of.
   const { conversationId } = useUltimate()
   const script = draft.trigger === 'script'
+  const check = script && draft.check
+  const timeout = amount(draft.timeout)
   const ultimate = draft.trigger === 'ultimate'
   const wakeable = script || ultimate
   const schedule = scheduleOf(draft)
@@ -471,7 +475,9 @@ export function AutomationForm({
   // A fire needs something to do: wake a conversation, run a prompt, or both. An edit keeps its subscribers.
   const acts = !!prompt || (automation ? automation.subscribers.length > 0 : wakeable && draft.wake)
   const validTrigger = script
-    ? !!draft.ask.trim()
+    ? !!draft.ask.trim() &&
+      (!check ||
+        (schedule !== undefined && Number.isInteger(timeout) && timeout >= 1 && timeout <= 3600))
     : ultimate
       ? draft.ultimate === 'event'
         ? !!draft.event &&
@@ -503,7 +509,7 @@ export function AutomationForm({
           ]),
       )
       const trigger = script
-        ? { ask: draft.ask.trim(), once: draft.once }
+        ? { ask: draft.ask.trim(), once: draft.once, ...(check ? { schedule, timeout } : {}) }
         : ultimate
           ? draft.ultimate === 'event'
             ? { event: { name: draft.event, where } }
@@ -785,6 +791,21 @@ export function AutomationForm({
                         value={draft.ask}
                       />
                     </Field>
+                    <div className="flex gap-2" role="group" aria-label="How to watch">
+                      {([false, true] as const).map((scheduled) => (
+                        <Button
+                          aria-pressed={draft.check === scheduled}
+                          disabled={!!automation && draft.check !== scheduled}
+                          key={String(scheduled)}
+                          onClick={() => set({ check: scheduled })}
+                          size="sm"
+                          type="button"
+                          variant={draft.check === scheduled ? 'secondary' : 'outline'}
+                        >
+                          {scheduled ? 'On a schedule' : 'Streaming'}
+                        </Button>
+                      ))}
+                    </div>
                     <label className="-mt-1.5 flex items-center gap-2 text-[12.5px] text-foreground/90">
                       <Checkbox
                         checked={!draft.once}
@@ -844,6 +865,10 @@ export function AutomationForm({
                     value={draft.prompt}
                   />
                 </Field>
+              </>
+            )}
+            {(!wakeable || check) && (
+              <>
                 <fieldset className="flex flex-col gap-2">
                   <legend className="mb-1.5 text-[12.5px] font-medium text-foreground/90">
                     Schedule
@@ -944,11 +969,26 @@ export function AutomationForm({
                       value={draft.every}
                     />
                   )}
-                  <Preview schedule={schedule} />
+                  <Preview schedule={schedule} check={check} />
                 </fieldset>
-                <Field htmlFor="automation-agent" label="Agent">
-                  <AgentPicker onChange={(agent) => set({ agent })} value={draft.agent} />
-                </Field>
+                {check ? (
+                  <Field htmlFor={`${ids}-timeout`} label="Timeout (seconds)">
+                    <input
+                      className={input}
+                      id={`${ids}-timeout`}
+                      min={1}
+                      max={3600}
+                      step={1}
+                      type="number"
+                      onChange={(event) => set({ timeout: event.target.value })}
+                      value={draft.timeout}
+                    />
+                  </Field>
+                ) : (
+                  <Field htmlFor="automation-agent" label="Agent">
+                    <AgentPicker onChange={(agent) => set({ agent })} value={draft.agent} />
+                  </Field>
+                )}
               </>
             )}
             {error && (

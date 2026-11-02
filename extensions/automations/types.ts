@@ -54,8 +54,16 @@ export type Automation = {
     to?: string
     conversationId: number
     state: 'writing' | 'running' | 'investigating' | 'failed' | 'stopped' | 'done'
-    /** Unplanned exits in a row; the third escalates. A FIRE or an hour of running resets it. */
+    /** Unplanned exits in a row; the third escalates. FIRE, quiet success or an hour of running resets it. */
     failures?: number
+    /** Scheduled checks are bounded executions, in seconds (default 300). */
+    timeout?: number
+    check?: {
+      at: number
+      ms?: number
+      result: 'running' | 'quiet' | 'fired' | 'failed' | 'stopped'
+      fired?: number
+    }
     pid?: number
     startedAt?: number
     exitedAt?: number
@@ -89,6 +97,7 @@ export type CreateArgs = {
     idleFor?: number
   }
   once?: boolean
+  timeout?: number
   secrets?: string[]
   prompt?: string
   agent?: string
@@ -109,12 +118,20 @@ export type Args = Partial<CreateArgs> & {
   lines?: number
   reason?: string
 }
-export type Manifest = { name: string; ask: string; once: boolean; secrets?: string[]; to: string }
+export type Manifest = {
+  name: string
+  ask: string
+  once: boolean
+  schedule?: Schedule
+  timeout?: number
+  secrets?: string[]
+  to: string
+}
 /** A standing agent's name as a subscriber or target: `@ultimate`. */
 export const STANDING = /^@[a-zA-Z0-9_-]+$/
 /** How many unplanned script exits in a row escalate instead of waking the watcher again. */
 export const FAILURE_LIMIT = 3
-export type Effect = { id: string; action: string; previousPid?: number }
+export type Effect = { id: string; action: string; previousPid?: number; scheduler?: TaskId }
 export const isSlug = (id: string) => /^[a-z][a-z0-9-]{0,62}$/.test(id) && !(id in Object.prototype)
 export const isId = (id: string) => /^A[1-9]\d*$/.test(id) || isSlug(id)
 

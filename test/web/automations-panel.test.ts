@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import type { ReactNode } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, it, vi } from 'vitest'
 import type { AutomationListItem } from '../../extensions/automations/types.ts'
@@ -8,7 +8,9 @@ const shell = vi.hoisted(() => ({
   requested: undefined as number | undefined,
   list: [] as AutomationListItem[],
   expanded: [] as string[],
-  action: vi.fn<(ref: { name: string }) => Promise<unknown>>(),
+  action: vi.fn<(ref: { name: string }, args?: unknown) => Promise<unknown>>(),
+  checkNow: undefined as { onClick: () => void; disabled: boolean } | undefined,
+  submit: undefined as ((event: { preventDefault: () => void }) => void) | undefined,
 }))
 vi.mock('react', async (original) => ({
   ...(await original<typeof import('react')>()),
@@ -80,6 +82,13 @@ vi.mock('../../extensions/automations/parts.tsx', async (original) => ({
 vi.mock('@/components/ai/message', () => ({
   MessageResponse: ({ children }: { children: ReactNode }) => children,
 }))
+vi.mock('@/components/ui/button', () => ({
+  Button: (props: { children?: ReactNode; onClick: () => void; disabled: boolean }) => {
+    if (Array.isArray(props.children) && props.children.includes('Check now'))
+      shell.checkNow = props
+    return createElement('button', props)
+  },
+}))
 vi.mock('@/components/ui/switch', () => ({
   Switch: (props: { 'aria-label': string; checked: boolean }) =>
     createElement('button', {
@@ -91,13 +100,17 @@ vi.mock('@/components/ui/switch', () => ({
 // Inline the dialog for static rendering; no browser portal is available in these component tests.
 vi.mock('@/components/ui/dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: ReactNode }) => (open ? children : null),
-  DialogContent: ({ children }: { children: ReactNode }) => children,
+  DialogContent: ({ children }: { children: ReactElement<{ onSubmit: typeof shell.submit }> }) => {
+    shell.submit = children.props.onSubmit
+    return children
+  },
   DialogDescription: ({ children }: { children: ReactNode }) => createElement('p', null, children),
   DialogTitle: ({ children }: { children: ReactNode }) => createElement('h2', null, children),
 }))
 Object.assign(globalThis, { document: { visibilityState: 'visible' }, window: {} })
 const { AutomationsPanel } = await import('../../extensions/automations/panel.tsx')
 const { Chip } = await import('../../extensions/automations/chip.tsx')
+const { lookOf, stateLine } = await import('../../extensions/automations/parts.tsx')
 const { AutomationForm, contextCondition } = await import('../../extensions/automations/form.tsx')
 
 const base = (id: string, createdAt: number, extra: Partial<AutomationListItem>) =>
@@ -135,11 +148,25 @@ const failed = base('ci-watch', 100, {
   subscribers: [7],
 })
 
+const scheduledCheck = base('A5', 600, {
+  schedule: { kind: 'every', ms: 900_000 },
+  nextAt: 1_300_000,
+  subscribers: [7],
+  script: {
+    ...script('running', 43),
+    startedAt: 100_000,
+    timeout: 60,
+    check: { at: 940_000, ms: 2000, result: 'quiet' },
+  },
+})
+
 const render = () => renderToStaticMarkup(createElement(AutomationsPanel))
 beforeEach(() => {
   shell.requested = undefined
   shell.list = [schedule, watching, failed]
   shell.expanded = []
+  shell.checkNow = undefined
+  shell.submit = undefined
   shell.action
     .mockReset()
     .mockImplementation((ref) => Promise.resolve(ref.name === 'list' ? shell.list : schedule))
@@ -236,6 +263,95 @@ it('refuses a cleared number field instead of saving it as 0', () => {
   expect(contextCondition({ ...draft, cooldownMinutes: '' })).toBeUndefined()
   expect(contextCondition({ ...draft, above: ' ' })).toBeUndefined()
   expect(contextCondition({ ...draft, idleHours: '' })).toBeUndefined()
+})
+
+it('formats scheduled check results without implying a process stays up between checks', () => {
+  for (const result of ['quiet', 'fired', 'failed', 'running'] as const) {
+    const automation = {
+      ...scheduledCheck,
+      enabled: result !== 'failed',
+      script: {
+        ...scheduledCheck.script!,
+        state: result === 'failed' ? ('investigating' as const) : ('running' as const),
+        check: { at: 940_000, result },
+      },
+    }
+    expect(lookOf(automation, 1_000_000)).toBe(
+      result === 'failed' ? 'investigating' : result === 'running' ? 'checking' : 'scheduled',
+    )
+    const line = stateLine(automation, 1_000_000)
+    expect(line).not.toContain('up ')
+    expect(line).toContain(result === 'running' ? '1m' : `${result} 1m ago`)
+    expect(line.includes('next in 5m')).toBe(automation.enabled)
+  }
+})
+
+it('wires Check now in the list and detail, disables it during checks, and keeps ordinary output', () => {
+  shell.list = [scheduledCheck]
+  for (const conversation of [7, 43]) {
+    shell.requested = conversation
+    const html = render()
+    expect(html).toContain('Check now')
+    expect(html).not.toContain('up ')
+    expect(shell.checkNow?.disabled).toBe(false)
+    shell.checkNow!.onClick()
+    expect(shell.action).toHaveBeenCalledWith(expect.objectContaining({ name: 'run' }), {
+      id: 'A5',
+    })
+  }
+  const detail = render()
+  expect(detail).toContain('last quiet')
+  expect(detail).toContain('took 2s')
+  expect(detail).toContain('timeout 60s')
+  expect(detail).toContain('fired 0')
+  expect(detail).toContain('checking')
+  expect(detail).toContain('build green')
+  for (const state of ['running', 'writing'] as const) {
+    shell.list = [
+      {
+        ...scheduledCheck,
+        script: {
+          ...scheduledCheck.script!,
+          state,
+          check: { at: 1_000_000, result: state === 'writing' ? 'quiet' : 'running' },
+        },
+      },
+    ]
+    for (const conversation of [7, 43]) {
+      shell.requested = conversation
+      render()
+      expect(shell.checkNow?.disabled).toBe(true)
+    }
+  }
+})
+
+it('saves a scheduled script with its watch mode, schedule and timeout intact', () => {
+  const html = renderToStaticMarkup(
+    createElement(AutomationForm, {
+      open: true,
+      automation: scheduledCheck,
+      onOpenChange: () => {},
+      onSaved: () => {},
+      onClosed: () => {},
+    }),
+  )
+  expect(html).toContain('How to watch')
+  expect(html).toContain('Streaming')
+  expect(html).toContain('On a schedule')
+  expect(html).toContain('aria-label="Interval"')
+  expect(html).toContain('value="15m"')
+  expect(html).toContain('Timeout (seconds)')
+  expect(html).toContain('min="1"')
+  expect(html).toContain('max="3600"')
+  shell.submit!({ preventDefault() {} })
+  expect(shell.action).toHaveBeenCalledWith(expect.objectContaining({ name: 'update' }), {
+    id: 'A5',
+    name: 'automation A5',
+    ask: 'watch it',
+    once: false,
+    schedule: 'every 15m',
+    timeout: 60,
+  })
 })
 
 it('colours the chip by the worst state and hides it when nothing is active', () => {

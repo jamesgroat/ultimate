@@ -90,6 +90,7 @@ export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promis
           item.id !== own &&
           item.id !== ownPause &&
           item.enabled &&
+          !item.script &&
           (item.schedule || item.event || item.condition),
       )
       .map((item) => {
@@ -223,13 +224,13 @@ export async function applySeed(host: ExtensionHost) {
           owner: 'user' as const,
           text: `Open question (${seed.from.name}${ref}): ${text}`,
         })),
-        // Project manifests are rediscovered by automations onOpen; user scripts need recreating.
-        ...seed.scripts
-          .filter((item) => item.scope !== 'project')
-          .map(({ id, name, ask, prompt, agent }) => ({
-            owner: 'ultimate' as const,
-            text: `Recreate script ${id} (${name}): ${ask}${prompt ? ` · prompt: ${prompt}${agent ? ` (agent ${agent})` : ''}` : ''}`,
-          })),
+        ...seed.scripts.map(({ id, scope, name, ask, prompt, agent }) => ({
+          owner: 'ultimate' as const,
+          text:
+            scope === 'project'
+              ? `Resume project script ${id} (${name}): paused after chapter change.`
+              : `Recreate script ${id} (${name}): ${ask}${prompt ? ` · prompt: ${prompt}${agent ? ` (agent ${agent})` : ''}` : ''}`,
+        })),
         ...seed.automations
           .filter((item) => !carries(item))
           .map(({ name, schedule, event, condition }) => ({
