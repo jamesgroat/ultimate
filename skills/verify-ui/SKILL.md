@@ -9,14 +9,20 @@ Never claim a UI change works without an image of it.
 
 ## Where to look
 
-- `web/` and built-in `extensions/` changes in the host's own checkout reload in the running host: omit `url`.
-- A worktree, a branch or a project `.ultimate/extensions/` change does not reach the host: start a preview of the
+- `web/`, built-in `extensions/` and the host project's `.ultimate/extensions/` changes in their own checkouts
+  reload in the running host: omit `url`.
+- A worktree or branch change (including its `.ultimate/extensions/`) does not reach the host: start a preview of the
   checkout (`instance start`) and pass its URL. `server/` or `shared/` changes need a fresh preview.
 
 ## How
 
 - `screenshot {url}` for a still image; `selector` for one element, `fullPage` for long pages, `width: 390` for phone,
   `theme: 'light'` and `'dark'` for both themes. Omit `path` so the PNG stays outside your checkout.
+- Before blaming a missing asset, read the page's real request URLs and statuses (`{eval:
+  "performance.getEntriesByType('resource').map(e => [e.name, e.responseStatus])"}`); never diagnose a 404 from a
+  guessed URL.
+- A page embedded in an iframe: load the iframe's own URL and the parent page in separate calls, each with bounded
+  waits (`timeoutMs`, a selector `wait`), rather than driving frames and navigation in one call.
 - `browser {url, steps}` to drive a state: `click`, `fill` (`#composer-input` is the composer), `press`
   (`Control+k` opens ⌘K), `wait`, `eval`. The result lists console errors and failed requests: read them.
 - `eval` takes one expression and returns its value: `document.title`,
