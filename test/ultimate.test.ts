@@ -7,7 +7,7 @@ import {
   fauxToolCall,
 } from '@earendil-works/pi-ai/providers/faux'
 import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
-import { configure, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
+import { AgentDoc, configure, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { context } from '../server/harness.ts'
 import { Metadata } from '../server/metadata.ts'
@@ -20,6 +20,7 @@ import { createChild } from '../extensions/subagents/children.ts'
 import { parseDefinition } from '../lib/agents.ts'
 import {
   fauxServer,
+  branchProbe,
   idleNeed,
   seedTally,
   sourceCopy,
@@ -44,10 +45,11 @@ function textOf(content: unknown): string {
         .flatMap((p) => (p.type === 'text' ? [p.text!] : []))
         .join('')
 }
-async function fixture(onRequest?: (text: string, home: string) => Promise<void>) {
+async function fixture(onRequest?: (text: string, home: string) => Promise<void>, probe = false) {
   const home = await temp('ultimate-agent-')
   homes.push(home)
   const root = await sourceCopy(home)
+  if (probe) await branchProbe(root)
   // The repository's coordinator overlay pins a Claude Code model no test can run; tests pin their own.
   await rm(join(root, '.ultimate/agents/coordinator.md'))
   await mkdir(join(home, '.ultimate/agents'), { recursive: true })
@@ -147,6 +149,40 @@ it.concurrent('persists a same-model manual choice across reopen and standing pi
       model,
     })
   }
+})
+
+it.concurrent('records fresh lineage provenance without changing inherited agents, manual intent or old sources', async () => {
+  const f = await fixture(undefined, true)
+  const source = ROOT_CONVERSATION_ID
+  const inherited = { provider: 'faux', modelId: 'faux-think' }
+  const hold = { mode: 'manual' as const, model: inherited, selectedAt: 123 }
+  await f.server.harness.commit(async (tx) => {
+    await configure(tx, source, { model: inherited })
+    Object.assign(await tx.doc(Selection, source), hold)
+  }, context)
+  await seedTally(f.server.harness)
+  const before = await f.server.harness.snapshot(AgentDoc, source, context)
+  expect(await f.server.harness.snapshot(Profile, source, context)).toBeUndefined()
+  for (const model of [undefined, { provider: 'faux', modelId: 'faux-1' }]) {
+    const response = await post(f.server, '/api/extensions/branch-probe/actions/branch', {
+      args: { from: source, prompt: 'Provenance', deliver: false, model },
+    })
+    expect(response.status).toBe(200)
+    const id = response.data.result.id as ConversationId
+    expect(await f.server.harness.snapshot(Profile, id, context)).toEqual({
+      createdAt: expect.any(Number),
+      ...(model ? { explicitModel: true } : {}),
+    })
+    const branch = (await f.server.harness.conversation(id, context))!
+    expect((await branch.agent(context)).model).toEqual(model ?? inherited)
+    expect(await f.server.harness.snapshot(Selection, id, context)).toBeUndefined()
+    expect(
+      (await f.server.harness.commit((tx) => tx.conversation(id), context))!.owner,
+    ).toBeUndefined()
+  }
+  expect(await f.server.harness.snapshot(AgentDoc, source, context)).toEqual(before)
+  expect(await f.server.harness.snapshot(Selection, source, context)).toEqual(hold)
+  expect(await f.server.harness.snapshot(Profile, source, context)).toBeUndefined()
 })
 
 it.concurrent('records new child creation and explicit model provenance, not inherited model intent', async () => {
@@ -319,6 +355,9 @@ it.concurrent('starts a lineage branch with a message input and caller attributi
   expect(await f.server.harness.snapshot(Metadata, branch, context)).toMatchObject({
     title: 'Explore the task',
     label: 'coordinator',
+  })
+  expect(await f.server.harness.snapshot(Profile, branch, context)).toEqual({
+    createdAt: expect.any(Number),
   })
   expect(
     (await entries(f.server, ROOT_CONVERSATION_ID)).some((entry) =>
