@@ -6,6 +6,12 @@ import type { AuthEvent, AuthPrompt, AuthType, ModelThinkingLevel } from '@earen
 import { actionRef, docRef } from '../../shared/extension-api.ts'
 import { defineEvent } from '../../shared/events.ts'
 
+/** `{ model, thinkingLevel? }` → null: manually select a model and durably hold it, even if already selected. */
+export const SelectAction = actionRef<
+  { model: { provider: string; modelId: string }; thinkingLevel?: ModelThinkingLevel },
+  null
+>('models', 'select')
+
 /** One login flow as the browser sees it. Answers and credentials never enter it. */
 export type LoginFlow = {
   provider: string

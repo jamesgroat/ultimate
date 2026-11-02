@@ -14,9 +14,20 @@ import { Metadata } from '../server/metadata.ts'
 import { Messages } from '../extensions/messages/api.ts'
 import { Branch, Roots } from '../extensions/lineage/api.ts'
 import { rootOf } from '../extensions/lineage/server.ts'
-import { Standing } from '../extensions/subagents/api.ts'
+import { Profile, Standing } from '../extensions/subagents/api.ts'
+import { Selection } from '../extensions/models/api.ts'
+import { createChild } from '../extensions/subagents/children.ts'
 import { parseDefinition } from '../lib/agents.ts'
-import { fauxServer, seedTally, sourceCopy, temp, removeTemp, until, post } from './helpers.ts'
+import {
+  fauxServer,
+  idleNeed,
+  seedTally,
+  sourceCopy,
+  temp,
+  removeTemp,
+  until,
+  post,
+} from './helpers.ts'
 
 type Server = Awaited<ReturnType<typeof fauxServer>>
 const servers: Server[] = []
@@ -100,6 +111,103 @@ async function fixture(onRequest?: (text: string, home: string) => Promise<void>
   }
   return { home, root, server, subagents, requests, open }
 }
+it.concurrent('persists a same-model manual choice across reopen and standing pin refresh; Auto also survives refresh', async () => {
+  const f = await fixture()
+  const id = await f.subagents.standing('dice', context)
+  const model = { provider: 'faux', modelId: 'faux-1' }
+  await f.server.harness.commit((tx) => configure(tx, id, { model }), context)
+  expect(await f.server.harness.snapshot(Selection, id, context)).toBeUndefined()
+  const response = await post(f.server, '/api/extensions/models/actions/select', {
+    conversationId: id,
+    args: { model },
+  })
+  expect(response.status).toBe(200)
+  const intent = await f.server.harness.snapshot(Selection, id, context)
+  expect(intent).toEqual({ mode: 'manual', model, selectedAt: expect.any(Number) })
+  await writeFile(
+    join(f.home, '.ultimate/agents/dice.md'),
+    '---\nname: dice\ndescription: Dice\nresident: true\nmodel: faux/faux-think\nthinking: high\n---\nPinned.',
+  )
+  await f.server.close()
+  servers.splice(servers.indexOf(f.server), 1)
+  const reopened = await f.open()
+  expect(await reopened.harness.snapshot(Selection, id, context)).toEqual(intent)
+  for (const mode of ['manual', 'auto'] as const) {
+    await reopened.harness.commit(async (tx) => {
+      ;(await tx.doc(Selection, id)).mode = mode
+    }, context)
+    expect(
+      (
+        await post(reopened, '/api/extensions/subagents/actions/standing', {
+          args: { name: 'dice' },
+        })
+      ).data.result,
+    ).toBe(id)
+    expect(await (await reopened.harness.conversation(id, context))!.agent(context)).toMatchObject({
+      model,
+    })
+  }
+})
+
+it.concurrent('records new child creation and explicit model provenance, not inherited model intent', async () => {
+  const f = await fixture()
+  const parent = await f.server.root.agent(context)
+  for (const model of [undefined, { provider: 'faux', modelId: 'faux-1' }]) {
+    const child = await f.server.harness.commit(
+      (tx) =>
+        createChild({ need: idleNeed }, tx, {
+          owner: { kind: 'ownerless' },
+          parentAgent: parent,
+          modelRuntime: f.server.host.modelRuntime,
+          metadata: Metadata,
+          label: 'worker',
+          title: 'Worker',
+          model,
+        }),
+      context,
+    )
+    expect(await f.server.harness.snapshot(Profile, child.id, context)).toEqual({
+      createdAt: expect.any(Number),
+      ...(model ? { explicitModel: true } : {}),
+    })
+    expect(await f.server.harness.snapshot(Selection, child.id, context)).toBeUndefined()
+  }
+})
+
+it.concurrent('runs optional model policy transactionally before the independent missing-login fallback', async () => {
+  const f = await fixture()
+  const id = await f.subagents.standing('dice', context)
+  await f.server.close()
+  servers.splice(servers.indexOf(f.server), 1)
+  await writeFile(
+    join(f.home, '.ultimate/agents/dice.md'),
+    '---\nname: dice\ndescription: Dice\nresident: true\nmodel: faux/faux-1\n---\nPinned.',
+  )
+  const plugin = join(f.root, 'extensions/input-policy')
+  await mkdir(plugin)
+  await writeFile(join(plugin, 'README.md'), 'Input policy test.')
+  await writeFile(
+    join(plugin, 'server.ts'),
+    `
+    import { AgentDoc, defineExtension } from '@earendil-works/pi-durable'
+    import { BeforeInput, Selection } from '../models/api.ts'
+    export default (host) => {
+      host.implement(BeforeInput, { async beforeInput(tx, id) {
+        (await tx.doc(Selection, id)).mode = 'auto'
+        ;(await tx.doc(AgentDoc, id)).model = { provider: 'missing', modelId: 'missing' }
+      } })
+      return defineExtension({ name: 'input-policy' })
+    }
+  `,
+  )
+  const reopened = await f.open()
+  await ask(reopened, id, 'Policy input')
+  expect(await reopened.harness.snapshot(Selection, id, context)).toEqual({ mode: 'auto' })
+  expect(
+    (await entries(reopened, id)).filter((e) => e.kind === 'models.fallback').map((e) => e.data),
+  ).toEqual([{ from: 'missing/missing', to: 'faux/faux-1', reason: 'pin' }])
+})
+
 /** A model Pi knows, on a provider with no login in tests. */
 const dead = 'anthropic/claude-opus-5.5'
 async function entries(server: Server, id: ConversationId) {
