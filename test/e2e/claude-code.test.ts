@@ -285,7 +285,7 @@ if (process.argv.includes('status')) {
   vi.stubEnv('PI_CLAUDE_CODE_COMMAND', cli)
   vi.stubEnv('PI_CLAUDE_CODE_CONFIG_DIR', '')
   vi.stubEnv('CLAUDE_CONFIG_DIR', '')
-  vi.stubEnv('CLAUDE_CODE_DISABLE_AUTO_MEMORY', '0')
+  vi.stubEnv('CLAUDE_CODE_DISABLE_AUTO_MEMORY', undefined)
   const projectRoot = join(home, 'project')
   await mkdir(join(projectRoot, '.ultimate'), { recursive: true })
   await writeFile(
@@ -316,9 +316,14 @@ if (process.argv.includes('status')) {
     }
     const [a, b] = [await conversation(), await conversation()]
 
-    // Without a provider the request uses ambient config, but auto-memory stays off.
+    // Without a provider the request uses ambient config, with auto-memory off by default.
     await a()
     expect((await lines()).map((line) => line.split(' ').slice(1))).toEqual([['-', '1']])
+
+    vi.stubEnv('CLAUDE_CODE_DISABLE_AUTO_MEMORY', '0')
+    await a()
+    expect.soft((await lines()).at(-1)?.split(' ').slice(1)).toEqual(['-', '0'])
+    vi.stubEnv('CLAUDE_CODE_DISABLE_AUTO_MEMORY', undefined)
 
     const folder = join(projectRoot, '.ultimate/extensions/claude-env')
     await mkdir(folder, { recursive: true })
@@ -342,13 +347,13 @@ export default function (host) {
     await a()
     await b()
     await a()
-    const [, first, second, third] = (await lines()).map((line) => line.split(' '))
+    const [, , first, second, third] = (await lines()).map((line) => line.split(' '))
     expect([first[1], second[1], third[1]]).toEqual([
       `/config/${a.id}`,
       `/config/${b.id}`,
       `/config/${a.id}`,
     ])
-    expect([first[2], second[2], third[2]]).toEqual(['1', '1', '1'])
+    expect([first[2], second[2], third[2]]).toEqual(['0', '0', '0'])
     // A distinct environment gets its own warm process; the same one reuses it.
     expect(second[0]).not.toBe(first[0])
     expect(third[0]).toBe(first[0])

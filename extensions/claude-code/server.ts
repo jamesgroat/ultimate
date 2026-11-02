@@ -88,9 +88,9 @@ export default function claudeCode(host: ExtensionHost) {
       host.notice(`Claude Code environment lookup failed, using the default: ${String(error)}`)
     }
     const env: Record<string, string | undefined> = {
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY ?? '1',
       ...options?.env,
       ...extra,
-      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
     }
     return { ...options, env } as O
   }
