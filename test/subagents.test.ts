@@ -32,7 +32,7 @@ import type { OpenHost } from '../server/harness.ts'
 import subagents, { actions } from '../extensions/subagents/server.ts'
 import watchdog from '../extensions/watchdog/server.ts'
 import type { ExtensionHost } from '../server/extensions.ts'
-import { Runs, Started, Subagents } from '../extensions/subagents/api.ts'
+import { Profile, Runs, Started, Subagents } from '../extensions/subagents/api.ts'
 import type { ActionContext } from '../server/actions.ts'
 import codemode from '../extensions/codemode/server.ts'
 import { Metadata } from '../server/metadata.ts'
@@ -431,9 +431,30 @@ it('makes an agent on the fly from the call, read-only without a worktree, and r
   expect(await f.opened.harness.snapshot(Runs, f.opened.root.id, context)).toEqual({
     [child.conversationId]: { model: 'faux-1', adhoc: true },
   })
+  expect(await f.opened.harness.snapshot(Profile, child.conversationId, context)).toEqual({
+    adhoc: true,
+    createdAt: expect.any(Number),
+    explicitModel: true,
+  })
   expect(await f.opened.harness.snapshot(Metadata, child.conversationId, context)).toMatchObject({
     label: 'dead-code scan',
   })
+})
+
+it('records caller model and family overrides on named children, not their inherited model', async () => {
+  const f = await fixture()
+  for (const choice of [{}, { model: 'faux/faux-1' }, { family: 'default' }]) {
+    const before = (await children(f.opened)).length
+    await call(f.opened, { action: 'start', agent: 'scout', ...choice, task: 'Scan' })
+    const created = await children(f.opened)
+    expect(created).toHaveLength(before + 1)
+    const child = created.at(-1)!
+    expect(await f.opened.harness.snapshot(Profile, child.conversationId, context)).toEqual({
+      definition: 'scout',
+      createdAt: expect.any(Number),
+      ...(Object.keys(choice).length ? { explicitModel: true } : {}),
+    })
+  }
 })
 
 it('routes asynchronous leaf reports only to their lead, not the root', async () => {
