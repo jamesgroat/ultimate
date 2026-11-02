@@ -73,8 +73,11 @@ that work. Reopening does not reapply those documents.
 Automations are recreated through their create action after the commit, with per-name receipts in `dream.seed`.
 A seed carries at most one enabled automation per name: building rejects duplicates. The destination starts empty;
 before each create, dream checks existing names, so a create committed just before a crash is not repeated when its
-receipt is missing. Project scripts are rediscovered, stopped, from trusted `.ultimate/automations` manifests by
-automations' own open hook; each enabled user script becomes an @ultimate-owned "Recreate script" to-do.
+receipt is missing. Scripts, including scheduled checks, are carried only in the script inventory, never as ordinary
+triggers. Project scripts are rediscovered, paused, from trusted `.ultimate/automations` manifests by automations'
+own open hook. Each previously enabled project script becomes one Ultimate-owned "Resume project script" to-do
+noting that it is paused after the chapter change; it is neither recreated nor automatically resumed. Each enabled
+user script still becomes a "Recreate script" to-do.
 
 ### Fall asleep and switch
 
