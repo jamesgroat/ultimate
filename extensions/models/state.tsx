@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import { api, getConversation, useConversation, useModels, useStore } from '@/sdk'
 import type { ModelsResponse, UltimateActions } from '@/sdk'
+import { SelectAction } from './refs.ts'
 
 export type ModelInfo = ModelsResponse['models'][number]
 export type ProviderInfo = ModelsResponse['providers'][number]
@@ -35,7 +36,11 @@ export function useCurrentModel(target?: number) {
 }
 
 export function selectModel(model: ModelInfo, id: number | undefined) {
-  return api.configure({ model: { provider: model.provider, modelId: model.id } }, id)
+  return api.action(
+    SelectAction,
+    { model: { provider: model.provider, modelId: model.id } },
+    { conversationId: id },
+  )
 }
 
 /**
