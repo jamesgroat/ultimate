@@ -291,6 +291,22 @@ it('records a failed model call by classification only, never the provider messa
   expect(classify('error', 'socket hang up: ECONNRESET at status: 503')).toBe(
     'error 503 ECONNRESET',
   )
+  // Claude Code failures name no code word; both were recorded as a bare "error".
+  expect(
+    classify(
+      'error',
+      'Incomplete Claude Code response: stream ended without assistant, message_stop and one result',
+    ),
+  ).toBe('error incomplete_response')
+  expect(
+    classify(
+      'error',
+      'Incomplete Claude Code upstream response (status 429, capture incomplete, upstream said: SENTINEL)',
+    ),
+  ).toBe('error incomplete_response 429')
+  expect(classify('error', 'claude auth status gave no status (exit 0): ')).toBe(
+    'error empty_auth_status',
+  )
 
   // A direct completeSimple call (health's pings) is one model row as well.
   faux.setResponses([fauxAssistantMessage('pong')])
