@@ -24,15 +24,16 @@ import type { Draft } from './state.tsx'
 
 /** How long a sent card can still be taken back before the answer goes out. */
 const UNDO_MS = 3000
+const INCOMPLETE_UNDO_MS = 8000
 
 /**
- * Fills the undo bar over UNDO_MS from the moment it mounts, as `send` starts the timer. The Web Animations API
+ * Fills the undo bar over its undo window from the moment it mounts, as `send` starts the timer. The Web Animations API
  * runs on every mobile engine, where a `@starting-style` transition left the bar full. It stays under reduced
  * motion: the bar tells how long Undo remains, it is not decoration. Module-level, so re-renders never restart it.
  */
 const countdown = (bar: HTMLDivElement | null) => {
   bar?.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }], {
-    duration: UNDO_MS,
+    duration: Number(bar.dataset.duration),
     easing: 'linear',
     fill: 'both',
   })
@@ -263,6 +264,7 @@ function Card({
   const hints = keys && !phone
   const words = questions.map((question, index) => answerOf(question, drafts[index]))
   const ready = answered(questions, drafts)
+  const unanswered = questions.length - ready.length
   const open = questions.flatMap((question, index) =>
     !words[index] && pickIndices(question).length ? [index] : [],
   )
@@ -356,7 +358,8 @@ function Card({
         },
       )
     }
-    pending.current = { timer: setTimeout(fire, UNDO_MS), fire }
+    const duration = list.length < questions.length ? INCOMPLETE_UNDO_MS : UNDO_MS
+    pending.current = { timer: setTimeout(fire, duration), fire }
     setPhase('undo')
   }
   const now = flush
@@ -495,11 +498,39 @@ function Card({
 
   if (settled)
     return (
-      <div className={cn(className, 'px-3 py-2.5')} data-questions-card={card} ref={root}>
+      <div className={cn(className, 'relative px-3 py-2.5')} data-questions-card={card} ref={root}>
+        {phase === 'undo' && (
+          <button
+            type="button"
+            aria-label="Undo sending your answer"
+            onClick={undo}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
+            }}
+            className={cn(
+              'absolute inset-0 z-10 w-full cursor-pointer rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              unanswered > 0 && 'bg-error/10 motion-safe:animate-pulse',
+            )}
+          />
+        )}
         <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
-          <CornerDownRightIcon className="size-3.5 shrink-0 text-brand" />
-          <span className="font-semibold text-brand">
-            {phase === 'sent' ? 'You answered' : 'Sending your answer'}
+          <CornerDownRightIcon
+            className={cn(
+              'size-3.5 shrink-0',
+              phase === 'undo' && unanswered ? 'text-error' : 'text-brand',
+            )}
+          />
+          <span
+            className={cn(
+              'font-semibold',
+              phase === 'undo' && unanswered ? 'text-error' : 'text-brand',
+            )}
+          >
+            {phase === 'sent'
+              ? 'You answered'
+              : phase === 'undo' && unanswered
+                ? `Sending · ${unanswered} unanswered`
+                : 'Sending your answer'}
           </span>
           {phase === 'undo' && (
             <span className="ml-auto flex items-center gap-2">
@@ -508,10 +539,10 @@ function Card({
                   <Key>esc</Key> undo
                 </span>
               )}
-              <Button variant="ghost" size="xs" onClick={undo}>
+              <span className="inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs [&_svg]:size-3">
                 <Undo2Icon />
                 Undo
-              </Button>
+              </span>
             </span>
           )}
           {phase === 'sending' && <span className="ml-auto">sending…</span>}
@@ -522,7 +553,11 @@ function Card({
             <div
               ref={countdown}
               data-countdown
-              className="h-full w-full origin-left rounded-full bg-brand/70"
+              data-duration={unanswered ? INCOMPLETE_UNDO_MS : UNDO_MS}
+              className={cn(
+                'h-full w-full origin-left rounded-full',
+                unanswered ? 'bg-error' : 'bg-brand/70',
+              )}
             />
           </div>
         )}
@@ -533,7 +568,6 @@ function Card({
   // The keys of the open question: its first two choices, none while it is typed.
   const shown = questions[current]
   const shownKeys = shown ? [0, 1].flatMap((i) => keyOf(shown, i) ?? []) : []
-  const unanswered = questions.length - ready.length
   return (
     <div className={className} data-questions-card={card} ref={root}>
       <div className="flex items-center gap-2 px-3 pt-2.5 pb-1 font-mono text-[11px] text-muted-foreground">
