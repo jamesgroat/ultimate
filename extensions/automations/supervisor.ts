@@ -354,7 +354,8 @@ export function supervisor(
       `Mode: ${sub.script!.once ? 'one-shot' : 'recurring'}${sub.schedule ? ` scheduled check (${JSON.stringify(sub.schedule)}), timeout ${sub.script!.timeout ?? 300}s; exit 0 quietly when nothing changed, never sleep or loop` : ''}`,
       `Named secret environment variables: ${sub.script!.secrets?.join(', ') || 'none'}`,
       `Executable: ${runPath(sub)}`,
-      `Persistent memory: ${join(folder(sub.id), 'state')} ($AUTOMATION_STATE).`,
+      `Persistent memory: ${join(folder(sub.id), 'state')} ($AUTOMATION_STATE): a directory the supervisor creates for the script's own files, not a file.`,
+      'Before resume, run the script once against that layout with the interpreter its shebang declares (macOS ships bash 3.2: no readarray or mapfile unless the shebang names an interpreter that has them), covering the quiet, FIRE and DONE paths.',
       ...(sub.scope === 'project'
         ? [
             `This is a project automation: run and ${MANIFEST} are committed in ${projectDir(sub.id)}, and run starts in ${host.projectRoot}. After you change run, say that the change is uncommitted in the project checkout.`,
