@@ -32,7 +32,7 @@ export const UpdateAction = actionRef<
 >('automations', 'update')
 /** Pause a trigger, terminating its script process group if present. */
 export const PauseAction = actionRef<Id, Automation>('automations', 'pause')
-/** Resume a trigger; streaming scripts require an executable, scheduled checks diagnose it on execution. */
+/** Resume a trigger; all script triggers require an executable. */
 export const ResumeAction = actionRef<Id, Automation>('automations', 'resume')
 /** Fire a trigger now, relaunch a streaming script, or check a scheduled script now. */
 export const RunAction = actionRef<Id, Run | Automation | Id>('automations', 'run')
