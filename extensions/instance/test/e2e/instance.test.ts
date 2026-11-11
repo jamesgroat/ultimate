@@ -318,21 +318,43 @@ it('previews a workspace of another project on the host Ultimate', async () => {
 }, 120000)
 it('starts a preview on the model given to start, over the instance.model setting', async () => {
   const f = await fixture()
+  const model = await scriptedModel(() => ({ text: 'Done.' }))
   try {
+    const modelsFile = join(model.env.PI_CODING_AGENT_DIR, 'models.json')
+    const models = JSON.parse(await readFile(modelsFile, 'utf8'))
+    models.providers.scripted.models.push({ id: 'preview-override' })
+    await writeFile(modelsFile, JSON.stringify(models))
+    vi.stubEnv('PI_CODING_AGENT_DIR', model.env.PI_CODING_AGENT_DIR)
     await writeFile(
       join(f.root, '.ultimate/settings.json'),
       JSON.stringify({
         extensions: { disable: ['tailscale'] },
-        instance: { model: 'scripted/scripted-1' },
+        instance: { model: 'scripted/preview-override' },
       }),
     )
     const main = await f.main()
-    const preview = JSON.parse(await f.run({ action: 'start', model: null }, main.id)) as Preview
-    // The preview's own environment: no ULTIMATE_MODEL, so its agents run their configured models.
-    const environ = await readFile(`/proc/${preview.pid}/environ`, 'utf8')
-    expect(environ.split('\0').filter((line) => line.startsWith('ULTIMATE_MODEL='))).toEqual([])
-    await f.run({ action: 'stop', id: preview.id })
+    // Observe the served agent, not Linux-only /proc. The setting is a positive control for both overrides.
+    for (const [choice, expected] of [
+      [undefined, 'preview-override'],
+      ['scripted/scripted-1', 'scripted-1'],
+      [null, 'scripted-1'],
+    ] as const) {
+      const preview = JSON.parse(
+        await f.run({ action: 'start', model: choice }, main.id),
+      ) as Preview
+      const client = await attach(preview)
+      try {
+        expect(client.view().docs['pi.agent'].model).toEqual({
+          provider: 'scripted',
+          modelId: expected,
+        })
+      } finally {
+        await client.close()
+      }
+      await f.run({ action: 'stop', id: preview.id })
+    }
   } finally {
+    await model.close()
     await f.close()
   }
 }, 120000)
