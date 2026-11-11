@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
+import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai'
 import type { AuthEvent, AuthPrompt, AuthType } from '@earendil-works/pi-ai'
 import {
+  AgentDoc,
   configure,
   defineDoc,
   defineExtension,
@@ -12,7 +14,7 @@ import {
 import type { ConversationId, Cursor } from '@earendil-works/pi-durable'
 import type { ActionContext } from '../../server/actions.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
-import { Family, LoginChanged } from './api.ts'
+import { BeforeInput, Family, LoginChanged, Selection } from './api.ts'
 import { implementAction } from '../../lib/actions.ts'
 import type { ActionInput } from '../../lib/actions.ts'
 import {
@@ -23,6 +25,7 @@ import {
   LoginDoc,
   LogoutAction,
   SaveFamiliesAction,
+  SelectAction,
   SetDefaultAction,
   SetFamilyAction,
 } from './refs.ts'
@@ -58,7 +61,7 @@ export const Logins = defineDoc<{ flows: Record<string, LoginFlow> }>({
   fork: 'initial',
   initial: () => ({ flows: {} }),
 })
-export const docs = [Logins, Family]
+export const docs = [Logins, Family, Selection]
 
 /** A running flow: process-local, so a flow the document shows running without one here died with its process. */
 interface Flow {
@@ -95,7 +98,7 @@ function running(host: ExtensionHost, args: ActionInput<{ flowId: string }>) {
 /** Prompts and events as plain JSON: a document holds no `undefined`. */
 const json = <T>(value: T): Json<T> => JSON.parse(JSON.stringify(value))
 
-export const userActions = ['login', 'answer', 'cancel', 'logout']
+export const userActions = ['select', 'login', 'answer', 'cancel', 'logout']
 
 /**
  * Record that `provider`'s login changed: its recorded health is meaningless now, and health resets it to unknown
@@ -111,6 +114,40 @@ const loginChanged = async (host: ActionContext['host'], provider: string) =>
     })
 
 export const actions = {
+  select: implementAction(SelectAction, async (args, { host, conversationId }) => {
+    const ref = field(args, 'model')
+    if (!ref || typeof ref !== 'object' || Array.isArray(ref)) throw new Error('Expected model')
+    const provider = text(ref, 'provider')
+    const modelId = text(ref, 'modelId')
+    const available = (await host.models()).some(
+      (model) => model.available && model.provider === provider && model.id === modelId,
+    )
+    const model = host.modelRuntime.getModel(provider, modelId)
+    if (!available || !model) throw new Error('Model is not available')
+    const requested = field(args, 'thinkingLevel')
+    const thinking = getSupportedThinkingLevels(model).find((level) => level === requested)
+    if (requested !== undefined && thinking === undefined)
+      throw new Error('Unsupported thinking level')
+    const family = field(args, 'family') ?? null
+    if (family !== null && (typeof family !== 'string' || !family))
+      throw new Error('Expected family: a family name or null')
+    const id = (conversationId ?? ROOT_CONVERSATION_ID) as ConversationId
+    await host.harness().commit(async (tx) => {
+      if (!(await tx.conversation(id))) throw new Error('Unknown conversation')
+      const agent = await tx.doc(AgentDoc, id)
+      await configure(tx, id, {
+        model: { provider, modelId },
+        thinkingLevel: thinking ?? clampThinkingLevel(model, agent.thinkingLevel ?? 'off'),
+      })
+      ;(await tx.doc(Family, id)).name = family
+      Object.assign(await tx.doc(Selection, id), {
+        mode: 'manual',
+        model: { provider, modelId },
+        selectedAt: Date.now(),
+      })
+    }, context)
+    return null
+  }),
   /** The families, and who runs on which, for the Agents panel. */
   families: implementAction(FamiliesAction, (_args, { host }) => familiesView(host)),
   /** Save the families: their models, the features' assignments; optionally move open conversations along. */
@@ -288,7 +325,10 @@ export default function models(host: ExtensionHost) {
       hook(GenerationTask, {
         // Pi upstream: @earendil-works/pi-durable@1.5.2 — patched transactional beforeInput hook. Every run's first
         // input is placed through it (a typed input, a delivery, a queued follow-up), before the run reads its agent.
-        beforeInput: (_input, { tx, conversationId }) => fallback(host, tx, conversationId),
+        beforeInput: async (_input, { tx, conversationId }) => {
+          await host.want(BeforeInput)?.beforeInput(tx, conversationId)
+          return fallback(host, tx, conversationId)
+        },
       }),
     ],
   })

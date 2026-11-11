@@ -11,7 +11,7 @@ import type {
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { definitionAgent, definitionFamily } from '../../lib/agents.ts'
-import { Family } from '../models/api.ts'
+import { Family, Selection } from '../models/api.ts'
 import type { AgentDefinition } from '../../lib/agents.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { Started } from './refs.ts'
@@ -42,7 +42,8 @@ export async function started(
 
 /**
  * Configure existing conversation `id` from `definition` over `parent`: its current tools, extensions and instructions,
- * while the model and thinking chosen in it stay unless the definition pins them. Its cwd stays.
+ * while manual/Auto model, thinking and family selections survive even definition pins. Without recorded selection
+ * intent, definition pins apply over its current model and thinking. Its cwd stays.
  */
 export async function reconfigure(
   tx: Tx,
@@ -57,9 +58,12 @@ export async function reconfigure(
     ...(own.model ? { model: own.model } : {}),
     ...(own.thinkingLevel ? { thinkingLevel: own.thinkingLevel } : {}),
   }
-  const change = definitionAgent(definition, base, modelRuntime)
+  let change = definitionAgent(definition, base, modelRuntime)
+  const held = (await tx.doc(Selection, id)).mode
+  // A manual or Auto choice outlives definition refreshes, including its recorded family, even on the same model.
+  if (held) change = { ...change, model: base.model, thinkingLevel: base.thinkingLevel }
   await configure(tx, id, change)
-  ;(await tx.doc(Family, id)).name = definitionFamily(definition, change)
+  if (!held) (await tx.doc(Family, id)).name = definitionFamily(definition, change)
   ;(await tx.doc(Profile, id)).definition = definition.name
 }
 
@@ -107,8 +111,11 @@ export async function createChild(
     label: options.label,
     title: options.title,
   })
-  if (options.adhoc) (await tx.doc(Profile, child.id)).adhoc = true
-  else if (definition) (await tx.doc(Profile, child.id)).definition = definition.name
+  Object.assign(await tx.doc(Profile, child.id), {
+    createdAt: Date.now(),
+    ...(options.adhoc ? { adhoc: true } : definition ? { definition: definition.name } : {}),
+    ...(options.model ? { explicitModel: true } : {}),
+  })
   if (definition?.summaries === false)
     await host.need(ConversationsApi).setAutomaticSummaries(tx, child.id, false)
   return child

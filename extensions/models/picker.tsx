@@ -28,7 +28,7 @@ import {
   thinkingOf,
   useFamilies,
 } from './families.tsx'
-import { SetFamilyAction } from './refs.ts'
+import { SelectAction } from './refs.ts'
 import type { FamilyView } from './refs.ts'
 import {
   authLabel,
@@ -181,8 +181,15 @@ export function ModelPicker() {
     setError(undefined)
     const level = thinkingOf(family)
     api
-      .configure({ model: { provider, modelId }, ...(level ? { thinkingLevel: level } : {}) }, id)
-      .then(() => api.action(SetFamilyAction, { family: family.name }, { conversationId: id }))
+      .action(
+        SelectAction,
+        {
+          model: { provider, modelId },
+          ...(level ? { thinkingLevel: level } : {}),
+          family: family.name,
+        },
+        { conversationId: id },
+      )
       .then(
         () => {
           notePick()
