@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest'
-import { inboxItems, selection } from '../../items.tsx'
+import { inboxItems, itemKey, selection as choose } from '../../items.tsx'
+import type { InboxItem } from '../../ui.tsx'
 import type { Message } from '../../../messages/refs.ts'
 
 // questions' ui.tsx also exports its answer card, whose imports need the running app.
@@ -15,6 +16,9 @@ const ask = (id: number, at: number, fields: Partial<Message> = {}): Message => 
   state: 'delivered',
   ...fields,
 })
+
+const selection = (items: readonly Message[], picked: number | null, index: number) =>
+  choose(items, picked, index, (item) => item.id)
 
 const log = [
   ask(1, 100),
@@ -40,4 +44,26 @@ it('moves on to the next oldest when the shown item is answered', () => {
   expect(selection(after, 7, 1)).toBe(7)
   expect(selection([after[0]], 7, 1)).toBe(1)
   expect(selection([], 1, 0)).toBeUndefined()
+})
+
+it('keeps provider selection separate across colliding local and peer message IDs', () => {
+  const transport = { answer: async () => undefined, dismiss: async () => undefined }
+  const local: InboxItem = { message: ask(1, 100) }
+  const peer: InboxItem = {
+    source: 'machine/project',
+    sourceLabel: 'Project',
+    sourceHref: 'https://project.example',
+    message: ask(1, 200),
+    transport,
+  }
+  const other: InboxItem = { ...peer, source: 'other/project' }
+  const items = [local, peer, other]
+  expect(new Set(items.map(itemKey)).size).toBe(3)
+  expect(choose(items, null, 0, itemKey)).toBe(itemKey(local))
+  expect(choose(items, itemKey(peer), 1, itemKey)).toBe(itemKey(peer))
+  expect(choose([other, local, peer], itemKey(peer), 1, itemKey)).toBe(itemKey(peer))
+  expect(choose([local, other], itemKey(peer), 1, itemKey)).toBe(itemKey(other))
+  const moved = { ...peer, sourceHref: 'https://new-address.example' }
+  expect(itemKey(moved)).toBe(itemKey(peer))
+  expect(peer.message.id).toBe(local.message.id)
 })
