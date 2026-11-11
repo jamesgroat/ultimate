@@ -20,51 +20,25 @@ import {
   formatTime,
   Header,
   provide,
-  Provided,
   Sidebar,
-  useDocOf,
   useEvent,
   useNow,
   useUltimate,
   useViewport,
 } from '@/sdk'
-import { FeatureTag, useOverview, useStandingName } from '../conversations/ui.tsx'
-import { Body, emptyMessages, MessageImages, MessagesDoc, stateTone } from '../messages/ui.tsx'
+import { featureHue, FeatureTag, useOverview, useStandingName } from '../conversations/ui.tsx'
+import { Body, MessageImages, stateTone } from '../messages/ui.tsx'
 import type { Message } from '../messages/refs.ts'
 import { MessageQuestions } from '../questions/ui.tsx'
 import { UnderUltimate } from '../sidebar/ui.tsx'
 import { talkToUltimate } from '../subagents/ui.tsx'
-import { answeredToday, inboxItems, itemKey, lead, previewUrl, selection } from './items.tsx'
-import { InboxSource } from './ui.tsx'
+import { answeredToday, itemKey, lead, previewUrl, selection } from './items.tsx'
+import { InboxData } from './ui.tsx'
 import type { InboxBoard, InboxItem, InboxStatus } from './ui.tsx'
 
 const SURFACE = 'inbox'
 const HOUR = 60 * 60_000
 const amber = stateTone.waits
-
-function InboxData({
-  children,
-}: {
-  children: (board: InboxBoard, messages: readonly Message[]) => ReactNode
-}) {
-  const log = useDocOf(1, MessagesDoc)
-  const messages = log?.messages ?? emptyMessages.messages
-  const local: InboxBoard = {
-    items: inboxItems(messages).map((message) => ({ message })),
-    status: { state: log === undefined ? 'loading' : 'complete' },
-  }
-  return (
-    <Provided point={InboxSource} input={local}>
-      {(provided) => {
-        const board = provided ?? local
-        return children(
-          { ...board, items: board.items.toSorted((a, b) => a.message.at - b.message.at) },
-          messages,
-        )
-      }}
-    </Provided>
-  )
-}
 
 /** Who asks, as the sidebar draws a branch: its feature chip (or a standing agent's `@name`) and `#id`. */
 function Asker({ id }: { id: Message['from'] }) {
@@ -96,7 +70,14 @@ function ItemAsker({ item }: { item: InboxItem }) {
   }
   return (
     <span className="flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] text-muted-foreground/70">
-      <span className="truncate" title={item.sourceLabel}>
+      <span
+        className={cn(
+          'min-w-0 truncate rounded px-1.5 font-sans text-[10px] leading-4',
+          featureHue(item.source),
+        )}
+        data-inbox-source={item.source}
+        title={item.sourceLabel}
+      >
         {item.sourceLabel}
       </span>
       <span className="shrink-0">{item.asker ?? `#${item.message.from}`}</span>

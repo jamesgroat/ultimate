@@ -10,6 +10,7 @@ import type { Message } from '../../../messages/refs.ts'
 const state = vi.hoisted(() => ({
   messages: undefined as Message[] | undefined,
   remote: false,
+  source: 'machine/project',
   url: undefined as string | undefined,
   preview: undefined as string | undefined,
   input: undefined as InboxBoard | undefined,
@@ -59,7 +60,7 @@ vi.mock('@/sdk', () => ({
             ...input,
             items: input.items.map((item) => ({
               message: item.message,
-              source: 'machine/project',
+              source: state.source,
               sourceLabel: 'Peer project',
               sourceHref: state.url,
               preview: state.preview,
@@ -81,7 +82,8 @@ vi.mock('@/sdk', () => ({
   useViewport: () => 'desktop',
   useConversation: () => 42,
 }))
-vi.mock('../../../conversations/ui.tsx', () => ({
+vi.mock('../../../conversations/ui.tsx', async () => ({
+  featureHue: (await import('../../../conversations/feature.tsx')).featureHue,
   FeatureTag: () => null,
   useOverview: () => ({}),
   useStandingName: () => undefined,
@@ -97,6 +99,7 @@ vi.mock('../../../workspaces/ui.tsx', () => ({}))
 vi.mock('../../../sidebar/ui.tsx', () => ({ UnderUltimate: {} }))
 vi.mock('../../../subagents/ui.tsx', () => ({ talkToUltimate: async () => undefined }))
 import extension from '../../web.tsx'
+import { featureHue } from '../../../conversations/feature.tsx'
 
 const references =
   '#123 #123/456 [preview](http://localhost:1234/) [internal](?conversation=123) [public](https://public.example/path) `#123`\n\n```text\npeer code\n```'
@@ -125,6 +128,7 @@ const hrefs = (html: string) => [...html.matchAll(/href="([^"]*)"/g)].map((match
 beforeEach(() => {
   state.messages = [message]
   state.remote = false
+  state.source = 'machine/project'
   state.url = undefined
   state.preview = undefined
   state.calls = []
@@ -275,6 +279,20 @@ it('scopes direct and reference images and links in the body and option previews
       false,
     )
   }
+})
+
+it('colours peer chips in the list and reading pane by namespace while leaving local labels unchanged', () => {
+  expect(surface()).not.toContain('data-inbox-source')
+  state.remote = true
+  const remote = surface()
+  expect(remote.match(/data-inbox-source="machine\/project"/g)).toHaveLength(2)
+  const chips = [...remote.matchAll(/class="([^"]*)" data-inbox-source=/g)]
+  expect(chips).toHaveLength(2)
+  for (const chip of chips) expect(chip[1]).toContain(featureHue(state.source))
+  state.source = 'other/project'
+  const other = surface()
+  expect(other.match(/data-inbox-source="other\/project"/g)).toHaveLength(2)
+  expect(other).toContain(featureHue(state.source))
 })
 
 it('passes loading to the source until the local messages document arrives', () => {

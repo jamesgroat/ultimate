@@ -3,8 +3,9 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Checkbox } from '@/components/ui/checkbox'
 import { api, cn, errorMessage, events, formatAgo, useDocOf, useNow, useUltimate } from '@/sdk'
-import { MessagesDoc, emptyMessages, stateTone } from '../messages/ui.tsx'
-import { waiting } from '../questions/ui.tsx'
+import { InboxData } from '../inbox/ui.tsx'
+import type { InboxBoard } from '../inbox/ui.tsx'
+import { stateTone } from '../messages/ui.tsx'
 import { StandingAction } from '../subagents/ui.tsx'
 import { AddAction, DoneAction, ReopenAction, TodosDoc } from './refs.ts'
 import type { Todo } from './refs.ts'
@@ -15,13 +16,17 @@ const owners: { id: Todo['owner']; label: string }[] = [
 ]
 
 /**
- * The project's to-dos: what waits on you (one Inbox row for the questions asked of you, read live from Messages, then
+ * The project's to-dos: what waits on you (one Inbox row for the shared board's questions, then
  * your own to-dos), what @ultimate is still on, a field to add one for either of you, and the done ones folded away.
  * Questions are answered in the Inbox.
  */
 export function Todos() {
+  return <InboxData>{(board) => <TodosView board={board} />}</InboxData>
+}
+
+function TodosView({ board }: { board: InboxBoard }) {
   const items = useDocOf(1, TodosDoc)?.items ?? []
-  const questions = waiting((useDocOf(1, MessagesDoc) ?? emptyMessages).messages)
+  const questions = board.items
   const now = useNow(60_000)
   const [error, setError] = useState<string>()
   const open = items.filter((todo) => !todo.done)
@@ -83,7 +88,7 @@ export function Todos() {
       ) : (
         <>
           <Section title="For you" owner="user" empty={!questions.length && !yours.length}>
-            {questions.length > 0 && <InboxRow count={questions.length} />}
+            {questions.length > 0 && <InboxRow board={board} />}
             {yours.map((todo) => (
               <TodoRow key={todo.id} todo={todo} now={now} toggle={toggle} start={start} />
             ))}
@@ -204,7 +209,7 @@ function TodoRow({
 }
 
 /** The questions waiting on you, as one row: a click opens the Inbox, where each is answered. */
-function InboxRow({ count }: { count: number }) {
+function InboxRow({ board }: { board: InboxBoard }) {
   const { showSurface } = useUltimate()
   return (
     <li data-todo-inbox>
@@ -214,7 +219,10 @@ function InboxRow({ count }: { count: number }) {
         type="button"
       >
         <InboxIcon className={cn('size-4 shrink-0', stateTone.waits)} />
-        <span className={cn('min-w-0 flex-1 text-[13px]', stateTone.waits)}>Inbox · {count}</span>
+        <span className={cn('min-w-0 flex-1 text-[13px]', stateTone.waits)}>
+          Inbox · {board.items.length}
+          {board.status.state !== 'complete' ? '+' : ''}
+        </span>
         <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
       </button>
     </li>

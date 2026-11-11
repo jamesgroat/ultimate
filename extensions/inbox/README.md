@@ -28,9 +28,10 @@ does the same at runtime (a push notification's tap, `extensions/push`).
 `InboxSource` is the single optional `inbox.source` web point. Provide it with
 `provide(InboxSource, (local) => useBoard(local))`. The hook receives the live local `InboxBoard` and returns an
 augmented `InboxBoard`, or `undefined` for today's local-only behavior. No settings, server endpoints or second
-surface are needed. The built-in Inbox owns the list, reading pane, empty/status views, sidebar count, phone layout
-and keys. It sorts the returned items oldest first. The provider is invoked independently for the surface and sidebar;
-share reads/subscriptions in the provider (for example with `useAction`), not in another renderer.
+surface are needed. The built-in Inbox owns the list, reading pane, empty/status views, sidebar count, To-dos row,
+phone layout and keys. `InboxData` shares the augmented board with these views and sorts the returned items oldest
+first. The provider is invoked independently for the surface, sidebar and To-dos panel; share reads/subscriptions in
+the provider (for example with `useAction`), not in another renderer.
 
 ```ts
 type InboxBoard = {
@@ -45,7 +46,8 @@ type InboxBoard = {
 Keep `local.items` in the result when augmenting it. Each local item is `{ message }`; add an optional `sourceLabel`
 to show a quiet source label alongside its unchanged local asker, feature metadata, actions and images. Leave `source`
 undefined for local items; no transport or remote content callbacks are needed. Without a label, local asker markup is
-unchanged. Remote items require `sourceLabel` and have:
+unchanged. Remote source labels appear as small chips in the list and reading pane, coloured by the stable `source`
+namespace using the conversation feature-tag palette. Remote items require `sourceLabel` and have:
 
 ```ts
 {
