@@ -1,8 +1,10 @@
 /** Optional browser source for the built-in Inbox; providers supply data and transport, never a second surface. */
 import type { ReactNode } from 'react'
-import { definePoint } from '@/sdk'
+import { definePoint, Provided, useDocOf } from '@/sdk'
+import { emptyMessages, MessagesDoc } from '../messages/ui.tsx'
 import type { Message } from '../messages/refs.ts'
 import type { MessageQuestionsTransport } from '../questions/ui.tsx'
+import { inboxItems } from './items.tsx'
 
 /** An original message plus its source-specific browser presentation and actions. */
 export type InboxItem = {
@@ -41,5 +43,30 @@ export type InboxBoard = { items: readonly InboxItem[]; status: InboxStatus }
 
 /** Receive the local board; return it augmented with remote items and explicit freshness, or undefined for local only. */
 export const InboxSource = definePoint<InboxBoard, InboxBoard | undefined>('inbox.source')
+
+/** Live, augmented Inbox data shared by the surface, sidebar and To-dos row, sorted oldest first. */
+export function InboxData({
+  children,
+}: {
+  children: (board: InboxBoard, messages: readonly Message[]) => ReactNode
+}) {
+  const log = useDocOf(1, MessagesDoc)
+  const messages = log?.messages ?? emptyMessages.messages
+  const local: InboxBoard = {
+    items: inboxItems(messages).map((message) => ({ message })),
+    status: { state: log === undefined ? 'loading' : 'complete' },
+  }
+  return (
+    <Provided point={InboxSource} input={local}>
+      {(provided) => {
+        const board = provided ?? local
+        return children(
+          { ...board, items: board.items.toSorted((a, b) => a.message.at - b.message.at) },
+          messages,
+        )
+      }}
+    </Provided>
+  )
+}
 
 export { itemKey } from './items.tsx'

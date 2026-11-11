@@ -20,14 +20,19 @@ const hues = [
   'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300',
 ]
 
-export function FeatureTag({ feature, className }: { feature: string; className?: string }) {
+/** A stable chip colour for a feature or another named identity. */
+export function featureHue(value: string) {
   let hash = 0
-  for (const char of feature) hash = (Math.imul(hash, 31) + char.codePointAt(0)!) | 0
+  for (const char of value) hash = (Math.imul(hash, 31) + char.codePointAt(0)!) | 0
+  return hues[(hash >>> 0) % hues.length]
+}
+
+export function FeatureTag({ feature, className }: { feature: string; className?: string }) {
   return (
     <span
       className={cn(
         'min-w-0 truncate rounded px-1.5 font-sans text-[10px] leading-4',
-        hues[(hash >>> 0) % hues.length],
+        featureHue(feature),
         className,
       )}
       data-feature={feature}
