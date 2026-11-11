@@ -663,8 +663,8 @@ export default function subagents(
             id = created.id
             index[name] = id
           }
-          // A new conversation starts on the default model and thinking level; an existing one keeps those chosen in
-          // it, so a refresh changes them only where the definition pins them.
+          // A new conversation starts on the default model and thinking level. On refresh, manual/Auto model,
+          // thinking and family selections survive definition pins; otherwise pins apply over its current choices.
           const base = { ...main, ...(await hostDefault(host)) }
           await reconfigure(tx, id, definition, base, host.modelRuntime)
           await configure(tx, id, { cwd: host.projectRoot })
@@ -1141,6 +1141,8 @@ export default function subagents(
                     : { fork: { conversationId: api.conversationId, at: forkAt } }),
                   cwd: parent.cwd ?? host.projectRoot,
                 })
+                if (args.model !== undefined || args.family !== undefined)
+                  (await tx.doc(Profile, child.id)).explicitModel = true
                 conversationId = child.id
                 await started(host, tx, child, label!, 'child')
                 const runs = await tx.doc(Runs, ROOT_CONVERSATION_ID)
