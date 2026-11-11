@@ -58,7 +58,7 @@ export const actions = {
   },
 }`
 
-it('lets a project extension read, pause and resume an automation through the service', async () => {
+it.each([undefined, 'every 1h'])('uses the automation service (%s)', async (schedule) => {
   const home = await temp('ultimate-automations-service-')
   homes.push(home)
   const projectRoot = join(home, 'project')
@@ -85,7 +85,7 @@ it('lets a project extension read, pause and resume an automation through the se
   const sub = (await server.extensions.invoke(
     'automations',
     'create',
-    { name: 'Watch', ask: 'Watch ship/* PRs', once: false },
+    { name: 'Watch', ask: 'Watch ship/* PRs', once: false, ...(schedule ? { schedule } : {}) },
     new AbortController().signal,
     caller.id,
   )) as Automation
@@ -103,9 +103,14 @@ it('lets a project extension read, pause and resume an automation through the se
     enabled: false,
     script: { state: 'stopped' },
   })
-  // Resume checks the executable before it changes anything: the automation stays stopped.
-  expect(await call('resume')).toContain('Missing or non-executable')
-  expect(await call('status')).toMatchObject({ script: { state: 'stopped' } })
+  // A scheduled watcher must not appear enabled when its chapter has no executable (#144446).
+  for (const action of ['resume', 'run']) {
+    expect(await call(action)).toContain('Missing or non-executable')
+    expect(await call('status')).toMatchObject({
+      enabled: false,
+      script: { state: 'stopped' },
+    })
+  }
   expect(await call('status', 'A99')).toBe('Error: Unknown automation: A99')
   expect(await call('status', 'nope')).toBe('Error: Unknown automation: nope')
   expect(await call('status', 'Not/A slug')).toBe(

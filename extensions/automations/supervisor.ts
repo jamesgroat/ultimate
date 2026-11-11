@@ -1,12 +1,30 @@
-import type { ConversationId, Agent, Cursor, Tx } from '@earendil-works/pi-durable'
+import type { ConversationId, Agent, Cursor, TaskId, Tx } from '@earendil-works/pi-durable'
 import { constants } from 'node:fs'
 import type { Dirent } from 'node:fs'
-import { access, appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import {
+  access,
+  appendFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import {
+  awaitWithContext,
+  BACKGROUND_CONTEXT,
+  withAbortSignal,
+} from '@earendil-works/chord/context'
 import { defineTask, InboxDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { discoverAgents } from '../../lib/agents.ts'
+import { deadline } from '../../lib/timers.ts'
+import type { Cancel } from '../../lib/timers.ts'
 import { FIRST_CHAPTER } from '../../lib/chapters.ts'
 import { isMissing, settled } from '../../lib/errors.ts'
 import type { AgentDefinition } from '../../lib/agents.ts'
@@ -22,6 +40,7 @@ import { readSecret, validateName } from '../../lib/secrets.ts'
 import { Standing, SubagentsApi } from '../subagents/api.ts'
 import { MessagesApi } from '../messages/api.ts'
 import { Done, Escalated, Exited, Started } from './refs.ts'
+import { parseSchedule } from './schedule.ts'
 import type { Automations as Ledger } from './server.ts'
 import {
   doneText,
@@ -65,7 +84,15 @@ const exists = (path: string) =>
   )
 function manifest(value: unknown): Manifest | undefined {
   if (!value || typeof value !== 'object') return undefined
-  const { name, ask, once, secrets, to } = value as Record<string, unknown>
+  const { name, ask, once, secrets, to, schedule, timeout } = value as Record<string, unknown>
+  if (
+    timeout !== undefined &&
+    (!Number.isInteger(timeout) || Number(timeout) < 1 || Number(timeout) > 3600)
+  )
+    return undefined
+  if (timeout !== undefined && schedule === undefined) return undefined
+  if (typeof schedule === 'string' && /^in\s/.test(schedule.trim())) return undefined
+  const timing = schedule === undefined ? undefined : parseSchedule(schedule as string)
   if (typeof ask !== 'string' || !ask.trim()) return undefined
   if (name !== undefined && (typeof name !== 'string' || !name.trim())) return undefined
   if (once !== undefined && typeof once !== 'boolean') return undefined
@@ -79,6 +106,7 @@ function manifest(value: unknown): Manifest | undefined {
     name: name?.trim() ?? ask.trim().slice(0, 80),
     ask: ask.trim(),
     once: once ?? true,
+    ...(timing ? { schedule: timing, timeout: Number(timeout ?? 300) } : {}),
     ...(secrets?.length ? { secrets: secrets as string[] } : {}),
     to: to ?? '@ultimate',
   }
@@ -109,6 +137,7 @@ export type Prepared = {
 }
 type Run = {
   child: GroupProcess
+  scheduler?: number
   group: Group
   active: boolean
   afterFire: boolean
@@ -125,22 +154,58 @@ export function supervisor(
   Automations: typeof Ledger,
   fireAutomation: (tx: Tx, a: Automation, firedAt: number, text?: string) => Promise<unknown>,
 ) {
-  const reloadStableProcessState = host.resource('automations.supervisor.state', () => ({
+  const reloadStableProcessState = host.resource('automations.supervisor.state.v2', () => ({
     runs: new Map<string, Run>(),
     launches: new Set<Promise<void>>(),
     effects: new Map<string, Promise<void>>(),
     closing: false,
+    ready: Promise.withResolvers<void>(),
   }))
   const { runs, launches, effects } = reloadStableProcessState
-  const chapterIsolatedRuntimeRoot = () =>
+  const chapterIsolatedRuntimeRoot = (project = false) =>
     join(
       host.userHome,
       '.ultimate/automations',
-      host.chapter.name === FIRST_CHAPTER
+      project || host.chapter.name === FIRST_CHAPTER
         ? basename(host.home)
         : `${basename(host.home)}@${host.chapter.name}`,
     )
-  const folder = (id: string) => join(chapterIsolatedRuntimeRoot(), id)
+  const folder = (id: string) => join(chapterIsolatedRuntimeRoot(isSlug(id)), id)
+  async function stateDir(sub: Pick<Automation, 'id' | 'scope'>) {
+    const dir = folder(sub.id)
+    const state = join(dir, 'state')
+    await mkdir(state, { recursive: true })
+    if (sub.scope !== 'project') return state
+    const adopted = join(dir, '.state-adopted')
+    if (await exists(adopted)) return state
+    if ((await readdir(state)).length) return state
+    let newest: { path: string; at: number } | undefined
+    for (const entry of await readdir(join(host.userHome, '.ultimate/automations'), {
+      withFileTypes: true,
+    })) {
+      if (!entry.isDirectory() || !entry.name.startsWith(`${basename(host.home)}@`)) continue
+      const path = join(host.userHome, '.ultimate/automations', entry.name, sub.id, 'state')
+      if (!(await exists(path))) continue
+      const files = await readdir(path, { recursive: true })
+      if (!files.length) continue
+      const times = await Promise.all(
+        [path, ...files.map((file) => join(path, file))].map((file) => stat(file)),
+      )
+      const at = Math.max(...times.map((file) => file.mtimeMs))
+      if (!newest || at > newest.at) newest = { path, at }
+    }
+    if (newest) {
+      const staging = await mkdtemp(join(dir, '.state-adopt-'))
+      try {
+        await cp(newest.path, join(staging, 'state'), { recursive: true })
+        await rename(join(staging, 'state'), state)
+        await writeFile(adopted, '')
+      } finally {
+        await rm(staging, { recursive: true, force: true })
+      }
+    }
+    return state
+  }
   const projectDir = (id: string) => join(host.projectRoot, '.ultimate/automations', id)
   const runPath = (sub: Pick<Automation, 'id' | 'scope'>) =>
     join(sub.scope === 'project' ? projectDir(sub.id) : folder(sub.id), 'run')
@@ -188,6 +253,8 @@ export function supervisor(
         sub.script!.once,
         sub.script!.secrets,
         sub.script!.to,
+        sub.schedule,
+        sub.script!.timeout,
       ])
     const differs = (subs: Record<string, Automation>) =>
       [...found].some(([id, m]) => {
@@ -195,7 +262,8 @@ export function supervisor(
         return (
           !sub ||
           (sub.scope === 'project' &&
-            fields(sub) !== JSON.stringify([m.name, m.ask, m.once, m.secrets, m.to]))
+            fields(sub) !==
+              JSON.stringify([m.name, m.ask, m.once, m.secrets, m.to, m.schedule, m.timeout]))
         )
       }) || Object.values(subs).some(gone)
     const current =
@@ -216,9 +284,11 @@ export function supervisor(
             scope: 'project',
             name: m.name,
             enabled: false,
+            ...(m.schedule ? { schedule: m.schedule } : {}),
             script: {
               ask: m.ask,
               once: m.once,
+              ...(m.timeout ? { timeout: m.timeout } : {}),
               ...(m.secrets ? { secrets: m.secrets } : {}),
               to: m.to,
               conversationId: await agentConversation(tx, prepared, id, m.name, host.projectRoot),
@@ -231,6 +301,22 @@ export function supervisor(
             fires: 0,
           }
         else if (sub?.scope === 'project') {
+          if (
+            JSON.stringify([sub.schedule, sub.script!.timeout, sub.script!.ask]) !==
+            JSON.stringify([m.schedule, m.timeout, m.ask])
+          ) {
+            sub.enabled = false
+            sub.script!.state = 'stopped'
+            if (sub.script!.check?.result === 'running') sub.script!.check.result = 'stopped'
+            const scheduler = sub.scheduler
+            delete sub.scheduler
+            delete sub.nextAt
+            stops.push({ id, action: 'pause', previousPid: sub.script!.pid, scheduler })
+            delete sub.script!.pid
+          }
+          delete sub.schedule
+          delete sub.script!.timeout
+          if (m.schedule) sub.schedule = m.schedule
           const before = sub.script!.to
           sub.subscribers = [...new Set([...sub.subscribers.filter((s) => s !== before), m.to])]
           delete sub.script!.secrets
@@ -238,6 +324,7 @@ export function supervisor(
           Object.assign(sub.script!, {
             ask: m.ask,
             once: m.once,
+            ...(m.timeout ? { timeout: m.timeout } : {}),
             to: m.to,
             ...(m.secrets ? { secrets: m.secrets } : {}),
           })
@@ -252,6 +339,7 @@ export function supervisor(
         stops.push({
           id: sub.id,
           action: 'pause',
+          ...(sub.scheduler ? { scheduler: sub.scheduler } : {}),
           ...(sub.script!.pid ? { previousPid: sub.script!.pid } : {}),
         })
       }
@@ -293,10 +381,11 @@ export function supervisor(
     [
       `You own automation ${sub.id} "${sub.name}".`,
       `Ask: ${sub.script!.ask}`,
-      `Mode: ${sub.script!.once ? 'one-shot' : 'recurring'}`,
+      `Mode: ${sub.script!.once ? 'one-shot' : 'recurring'}${sub.schedule ? ` scheduled check (${JSON.stringify(sub.schedule)}), timeout ${sub.script!.timeout ?? 300}s; exit 0 quietly when nothing changed, never sleep or loop` : ''}`,
       `Named secret environment variables: ${sub.script!.secrets?.join(', ') || 'none'}`,
       `Executable: ${runPath(sub)}`,
-      `Persistent memory: ${join(folder(sub.id), 'state')} ($AUTOMATION_STATE).`,
+      `Persistent memory: ${join(folder(sub.id), 'state')} ($AUTOMATION_STATE): a directory the supervisor creates for the script's own files, not a file.`,
+      'Before resume, run the script once against that layout with the interpreter its shebang declares (macOS ships bash 3.2: no readarray or mapfile unless the shebang names an interpreter that has them), covering the quiet, FIRE and DONE paths.',
       ...(sub.scope === 'project'
         ? [
             `This is a project automation: run and ${MANIFEST} are committed in ${projectDir(sub.id)}, and run starts in ${host.projectRoot}. After you change run, say that the change is uncommitted in the project checkout.`,
@@ -329,7 +418,7 @@ export function supervisor(
     phases: {
       deliver: async (task, runtime, ctx) => {
         const { sub, event, kind, text, targets } = task.input
-        if (kind === 'writing') await mkdir(join(folder(sub.id), 'state'), { recursive: true })
+        if (kind === 'writing') await stateDir(sub)
         const content =
           kind === 'writing'
             ? `${brief(sub)}\nWrite and briefly test run, then use automation resume {id:"${sub.id}"}. Ending your turn before resume or escalate escalates it.`
@@ -414,11 +503,11 @@ export function supervisor(
     )
   }
   const readPid = (id: string) => readPidFile(join(folder(id), 'pid'))
-  function cleanup(id: string, pid: number, run?: Run): Promise<void> {
+  function cleanup(id: string, pid: number, run?: Run, dir = folder(id)): Promise<void> {
     if (run?.cleanup) return run.cleanup
     const work = (async () => {
       await stopGroup(pid, {
-        pidFile: join(folder(id), 'pid'),
+        pidFile: join(dir, 'pid'),
         leader: run?.group,
       }).catch((error: unknown) => {
         throw new Error(`Automation ${id}: ${String(error)}`)
@@ -450,6 +539,7 @@ export function supervisor(
     code: number | null,
     signal?: string,
     error?: string,
+    scheduler = run?.scheduler,
   ) {
     if (run?.finished) return
     if (run) {
@@ -461,22 +551,48 @@ export function supervisor(
     if (reloadStableProcessState.closing && !run) return
     await host.harness().commit(async (tx) => {
       const sub = (await tx.doc(Automations)).automations[id]
-      if (!sub || (run && sub.script!.pid !== run.child.pid)) return
+      if (
+        !sub ||
+        (scheduler !== undefined && sub.scheduler !== scheduler) ||
+        (run && sub.script!.pid !== run.child.pid)
+      )
+        return
       const done = sub.script!.once && sub.script!.state === 'done'
       const stopped = !!run?.stopped || reloadStableProcessState.closing
       if (!stopped && sub.script!.state !== 'running' && !done) return
       const said = run?.done
       const cleanRecurringExit =
-        !sub.script!.once && !stopped && !done && said !== undefined && code === 0
+        !stopped &&
+        !done &&
+        said !== undefined &&
+        code === 0 &&
+        !error &&
+        (!!sub.schedule || !sub.script!.once)
+      const quiet =
+        !!sub.schedule && !stopped && !done && !cleanRecurringExit && code === 0 && !error
       const now = Date.now()
-      const failed = !cleanRecurringExit && !stopped && !done
+      const failed = !quiet && !cleanRecurringExit && !stopped && !done
+      if (
+        sub.schedule &&
+        sub.script!.check &&
+        run?.stopped !== 'shutdown' &&
+        !reloadStableProcessState.closing
+      ) {
+        const outcome = sub.script!.check
+        outcome.ms = now - outcome.at
+        outcome.result = stopped ? 'stopped' : failed ? 'failed' : outcome.fired ? 'fired' : 'quiet'
+      }
+      if (quiet) delete sub.script!.failures
       if (cleanRecurringExit) {
         sub.script!.state = 'stopped'
         sub.enabled = false
       } else if (failed) {
         sub.script!.state = 'investigating'
+        if (sub.schedule) sub.enabled = false
         const ranLongEnoughToResetFailures =
-          !!sub.script!.startedAt && now - sub.script!.startedAt >= FAILURE_RESET_AFTER_RUNNING_MS
+          !!run &&
+          !!sub.script!.startedAt &&
+          now - sub.script!.startedAt >= FAILURE_RESET_AFTER_RUNNING_MS
         sub.script!.failures = ranLongEnoughToResetFailures ? 1 : (sub.script!.failures ?? 0) + 1
       }
       sub.updatedAt = sub.script!.exitedAt = now
@@ -513,7 +629,7 @@ export function supervisor(
     } else if ((await readPid(id)) === pid) await cleanup(id, pid)
   }
   async function launch(id: string, previousPid?: number) {
-    const work = launchRun(id, previousPid)
+    const work = launchRun(id, previousPid).then(() => {})
     launches.add(work)
     try {
       await work
@@ -521,23 +637,32 @@ export function supervisor(
       launches.delete(work)
     }
   }
-  async function launchRun(id: string, previousPid?: number) {
+  async function launchRun(
+    id: string,
+    previousPid?: number,
+    scheduler?: TaskId,
+  ): Promise<Run | undefined> {
     if (reloadStableProcessState.closing) throw new Error('Automation supervisor is closing')
     const sub = await snapshot(id)
-    if (!sub.enabled || sub.script!.state !== 'running') return
+    if (
+      !sub.enabled ||
+      sub.script!.state !== 'running' ||
+      (scheduler !== undefined && sub.scheduler !== scheduler)
+    )
+      return undefined
     const current = runs.get(id)
     const replayAlreadyLaunchedProcess =
       current?.active && current.child.pid === sub.script!.pid && current.child.pid !== previousPid
-    if (replayAlreadyLaunchedProcess) return
+    if (replayAlreadyLaunchedProcess) return current
     await stopProcess(id, current?.child.pid, 'restart')
     const recorded = await readPid(id)
     if (recorded) await cleanup(id, recorded)
     const dir = folder(id)
-    await mkdir(join(dir, 'state'), { recursive: true })
+    const state = await stateDir(sub)
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       AUTOMATION_ID: id,
-      AUTOMATION_STATE: join(dir, 'state'),
+      AUTOMATION_STATE: state,
     }
     for (const name of sub.script!.secrets ?? []) {
       const value = await readSecret(host.userHome, name)
@@ -562,6 +687,7 @@ export function supervisor(
     const run: Run = {
       child,
       group,
+      scheduler,
       active: true,
       afterFire: false,
       queue: Promise.resolve(),
@@ -575,7 +701,12 @@ export function supervisor(
     })
     const committedPidAndStarted = host.harness().commit(async (tx) => {
       const saved = (await tx.doc(Automations)).automations[id]
-      if (!saved || !saved.enabled || saved.script!.state !== 'running') {
+      if (
+        !saved ||
+        !saved.enabled ||
+        saved.script!.state !== 'running' ||
+        (scheduler !== undefined && saved.scheduler !== scheduler)
+      ) {
         run.active = false
         return
       }
@@ -613,11 +744,20 @@ export function supervisor(
       if (done !== undefined) run.done = done
       await host.harness().commit(async (tx) => {
         const saved = (await tx.doc(Automations)).automations[id]
-        if (!saved || saved.script!.pid !== child.pid || saved.script!.state !== 'running') return
+        if (
+          !saved ||
+          saved.script!.pid !== child.pid ||
+          saved.script!.state !== 'running' ||
+          (scheduler !== undefined && saved.scheduler !== scheduler)
+        )
+          return
         saved.script!.lastOutputAt = saved.updatedAt = Date.now()
         if (fire === undefined || run.afterFire) return
         resetFailuresOnSuccessfulFire(saved)
+        const before = saved.fires
         await fireAutomation(tx, saved, Date.now(), fire)
+        if (saved.fires > before && saved.script!.check && scheduler !== undefined)
+          saved.script!.check.fired = (saved.script!.check.fired ?? 0) + 1
         if (!saved.enabled) {
           run.stopped = 'pause'
           run.afterFire = true
@@ -656,13 +796,65 @@ export function supervisor(
         if (pending) enqueue(() => line(pending, stdout))
       })
     }
-    await run.queue
+    if (scheduler === undefined) await run.queue
     if (!run.active && !run.afterFire) await stopProcess(id, child.pid)
+    return run
+  }
+  async function check(id: string, scheduler: TaskId, signal: AbortSignal) {
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT)
+    const readiness = reloadStableProcessState.ready
+    await awaitWithContext(readiness.promise, ctx)
+    const sub = await snapshot(id)
+    if (sub.scheduler !== scheduler || !sub.enabled || sub.script!.check?.result !== 'running')
+      return true
+    let run: Run | undefined
+    let cancelDeadline: Cancel | undefined
+    const halt = () => {
+      if (run?.child.pid)
+        void stopProcess(id, run.child.pid).catch((error: unknown) => host.notice(String(error)))
+    }
+    const work = (async () => {
+      try {
+        signal.throwIfAborted()
+        run = await launchRun(id, undefined, scheduler)
+        if (!run) return
+        signal.addEventListener('abort', halt, { once: true })
+        if (signal.aborted) halt()
+        cancelDeadline = deadline((sub.script!.timeout ?? 300) * 1000, () => {
+          run!.error = `Check timed out after ${sub.script!.timeout ?? 300}s`
+          if (run!.child.pid)
+            void cleanup(id, run!.child.pid, run).catch((error: unknown) =>
+              host.notice(String(error)),
+            )
+        })
+        await run.group.closed
+        await run.queue
+        signal.throwIfAborted()
+      } catch (error) {
+        if (signal.aborted) throw error
+        await finish(id, run, null, undefined, String(error), scheduler)
+      } finally {
+        cancelDeadline?.()
+        signal.removeEventListener('abort', halt)
+      }
+    })()
+    launches.add(work)
+    try {
+      await work
+    } finally {
+      launches.delete(work)
+    }
+    if (reloadStableProcessState.ready !== readiness) {
+      await awaitWithContext(reloadStableProcessState.ready.promise, ctx)
+      return false
+    }
+    return true
   }
   function resetFailuresOnSuccessfulFire(sub: Automation) {
     delete sub.script!.failures
   }
   async function effect(value: Effect) {
+    if (value.scheduler) await host.harness().abortTask(value.scheduler, BACKGROUND_CONTEXT)
     if (value.action === 'resume') {
       try {
         await launch(value.id, value.previousPid)
@@ -691,7 +883,7 @@ export function supervisor(
       const sub = Object.values((await tx.doc(Automations)).automations).find(
         (a) => a.script?.conversationId === conversationId,
       )
-      if (!sub?.enabled || !['writing', 'investigating'].includes(sub.script!.state)) return
+      if (!sub?.script || !['writing', 'investigating'].includes(sub.script.state)) return
       if ((await tx.doc(InboxDoc, conversationId)).items.length) return
       for (const live of ['pending', 'running'] as const) {
         let cursor: Cursor | undefined
@@ -712,7 +904,7 @@ export function supervisor(
       await escalate(
         tx,
         sub,
-        `The watcher stopped while the script was ${sub.script!.state}${said ? `: ${said}` : ''}`,
+        `The watcher stopped while the script was ${sub.script.state}${said ? `: ${said}` : ''}`,
       )
     }, BACKGROUND_CONTEXT)
   }
@@ -723,31 +915,35 @@ export function supervisor(
   }
   const close = async () => {
     reloadStableProcessState.closing = true
+    reloadStableProcessState.ready = Promise.withResolvers<void>()
+    for (const [id, run] of runs) await stopProcess(id, run.child.pid, 'shutdown')
     await Promise.allSettled(launches)
     for (const [id, run] of runs) await stopProcess(id, run.child.pid, 'shutdown')
   }
   const open = async () => {
     reloadStableProcessState.closing = false
-    let runtimeFoldersBeyondLedger: Dirent[]
-    try {
-      runtimeFoldersBeyondLedger = await readdir(chapterIsolatedRuntimeRoot(), {
-        withFileTypes: true,
-      })
-    } catch (error) {
-      if (!isMissing(error)) throw error
-      runtimeFoldersBeyondLedger = []
-    }
-    for (const entry of runtimeFoldersBeyondLedger) {
-      if (!entry.isDirectory() || !isId(entry.name)) continue
-      const pid = await readPid(entry.name)
-      if (pid) await cleanup(entry.name, pid, runs.get(entry.name))
+    for (const root of new Set([chapterIsolatedRuntimeRoot(), chapterIsolatedRuntimeRoot(true)])) {
+      let folders: Dirent[]
+      try {
+        folders = await readdir(root, { withFileTypes: true })
+      } catch (error) {
+        if (!isMissing(error)) throw error
+        folders = []
+      }
+      for (const entry of folders) {
+        if (!entry.isDirectory() || !isId(entry.name)) continue
+        if (root !== chapterIsolatedRuntimeRoot() && !isSlug(entry.name)) continue
+        const dir = join(root, entry.name)
+        const pid = await readPidFile(join(dir, 'pid'))
+        if (pid) await cleanup(entry.name, pid, runs.get(entry.name), dir)
+      }
     }
     await discover()
     const restartStateAfterDiscovery = await host
       .harness()
       .snapshot(Automations, BACKGROUND_CONTEXT)
     for (const sub of Object.values(restartStateAfterDiscovery?.automations ?? {})) {
-      if (sub.script?.state !== 'running' || !sub.enabled) continue
+      if (sub.script?.state !== 'running' || !sub.enabled || sub.schedule) continue
       try {
         await launch(sub.id)
       } catch (error) {
@@ -755,9 +951,11 @@ export function supervisor(
         await finish(sub.id, undefined, null, undefined, String(error))
       }
     }
+    reloadStableProcessState.ready.resolve()
   }
   return {
     Deliver,
+    check,
     status,
     apply,
     escalate,

@@ -4,7 +4,7 @@ import {
   defineTask,
   ROOT_CONVERSATION_ID,
 } from '@earendil-works/pi-durable'
-import type { ConversationId, Cursor, Tx } from '@earendil-works/pi-durable'
+import type { ConversationId, Cursor, TaskId, Tx } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { SubagentsApi } from '../subagents/api.ts'
 import { discoverAgents, hostDefault } from '../../lib/agents.ts'
@@ -43,6 +43,7 @@ export function scheduler(
     kind: 'fired' | 'escalated',
     text: string,
   ) => Promise<void>,
+  check: (id: string, scheduler: TaskId, signal: AbortSignal) => Promise<boolean>,
 ) {
   const RunTask = defineTask<
     { automation: Automation; firedAt: number; text?: string },
@@ -229,13 +230,17 @@ export function scheduler(
   type FireOnceOnWake = { phase: 'fire'; until: number }
   const retiredSchedulerOnly = terminal
   const Scheduler = defineTask<
-    { id: string },
-    PlanFromNow | { phase: 'sleep'; until: number } | FireOnceOnWake,
+    { id: string; now?: number },
+    | PlanFromNow
+    | { phase: 'sleep'; until: number }
+    | FireOnceOnWake
+    | { phase: 'check'; until: number; attempt?: number },
     null
   >({
     name: 'ultimate.automation-scheduler',
     version: 1,
-    initial: () => ({ phase: 'plan' }),
+    initial: (input) =>
+      input.now !== undefined ? { phase: 'fire', until: input.now } : { phase: 'plan' },
     phases: {
       plan: (task, runtime, context) =>
         runtime.commit(async (tx) => {
@@ -261,6 +266,13 @@ export function scheduler(
         runtime.commit(async function atomicFireRunCheckpoint(tx) {
           const a = (await tx.doc(Automations)).automations[task.input.id]
           if (!a?.enabled || a.scheduler !== task.id) return retiredSchedulerOnly
+          if (a.script) {
+            a.script.check = { at: runtime.now(), result: 'running' }
+            return {
+              status: 'running',
+              checkpoint: { phase: 'check', until: task.state.checkpoint.until },
+            }
+          }
           await fire(tx, a, runtime.now())
           delete a.nextAt
           if (!a.enabled || a.schedule!.kind === 'at') {
@@ -270,6 +282,42 @@ export function scheduler(
           }
           return { status: 'running', checkpoint: { phase: 'plan' } }
         }, context),
+      check: async (task, runtime, context) => {
+        if (!(await check(task.input.id, task.id, runtime.signal))) {
+          await runtime.commit(
+            () => ({
+              status: 'running',
+              checkpoint: {
+                ...task.state.checkpoint,
+                attempt: (task.state.checkpoint.attempt ?? 0) + 1,
+              },
+            }),
+            context,
+          )
+          return
+        }
+        await runtime.commit(async (tx) => {
+          const a = (await tx.doc(Automations)).automations[task.input.id]
+          if (!a || a.scheduler !== task.id) return terminal
+          if (a.script!.check?.result === 'running')
+            throw new Error(`Automation ${a.id}: check did not finish durably`)
+          const start = a.script!.check!.at
+          const future = a.schedule!.kind === 'at' && task.state.checkpoint.until > start
+          if (!a.enabled || (a.schedule!.kind === 'at' && !future)) {
+            a.enabled = false
+            delete a.scheduler
+            delete a.nextAt
+            if (a.script!.state === 'running') a.script!.state = 'stopped'
+            return terminal
+          }
+          a.nextAt = future
+            ? task.state.checkpoint.until
+            : a.schedule!.kind === 'every'
+              ? Math.max(start + a.schedule!.ms, runtime.now())
+              : nextAt(a.schedule!, runtime.now(), start)
+          return { status: 'running', checkpoint: { phase: 'plan' } }
+        }, context)
+      },
     },
     abort: (_task, runtime, context) =>
       runtime.commit(() => ({ status: 'terminal', outcome: { status: 'aborted' } }), context),

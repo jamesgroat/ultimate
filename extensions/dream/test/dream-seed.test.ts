@@ -23,6 +23,11 @@ import { applySeed, buildSeed, SeedState, writeSeed } from '../seed.ts'
 import { CloudApi } from '../../cloud/api.ts'
 import type { CloudService, LastBackup } from '../../cloud/api.ts'
 import { temp, until, eventHost } from '../../../test/helpers.ts'
+import { BuiltInDoc, PauseDoc } from '../built-ins.ts'
+
+type Script = Seed['scripts'][number] &
+  Pick<Automation, 'enabled'> &
+  Partial<Pick<Automation, 'schedule' | 'subscribers'>>
 
 const openedHosts: OpenHost[] = []
 afterEach(async () => {
@@ -39,7 +44,7 @@ async function fixture() {
   })
   let opened: OpenHost
   let opener: () => Promise<void>
-  let scripts: (Seed['scripts'][number] & { enabled: boolean })[] = []
+  let scripts: Script[] = []
   /** A faked `CloudApi`: never the real Worker. */
   let cloud: CloudService | undefined
   const tokens = [...lineageDocs, Messages, Todos, Next]
@@ -53,7 +58,11 @@ async function fixture() {
     return action === 'list'
       ? [
           ...(result as Automation[]),
-          ...scripts.map(({ ask, ...item }) => ({ ...item, script: { ask } })),
+          ...scripts.map(({ ask, timeout, ...item }) => ({
+            subscribers: [],
+            ...item,
+            script: { ask, ...(timeout !== undefined ? { timeout } : {}) },
+          })),
         ]
       : result
   })
@@ -120,7 +129,7 @@ async function fixture() {
     get harness() {
       return opened.harness
     },
-    scripts: (items: (Seed['scripts'][number] & { enabled: boolean })[]) => {
+    scripts: (items: Script[]) => {
       scripts = items
     },
     cloud: (service: CloudService | undefined) => {
@@ -183,6 +192,104 @@ async function fixture() {
   }
 }
 
+// #127232: a user-created A5 disappeared across repeated chapters; built-in dream carryover alone missed it.
+it('keeps a user-created A5 schedule through repeated chapters and explicit pause/resume', async () => {
+  const f = await fixture()
+  await f.source()
+  const signal = new AbortController().signal
+  const call = { host: f.host } as ActionContext
+  for (let i = 0; i < 4; i++) {
+    const unused = (await f.host.invoke(
+      'automations',
+      'create',
+      {
+        name: `Unused ${i}`,
+        schedule: 'every 1d',
+        subscribers: ['@ultimate'],
+      },
+      signal,
+    )) as Automation
+    await automationActions.delete({ id: unused.id }, call)
+  }
+  const user = (await f.host.invoke(
+    'automations',
+    'create',
+    {
+      name: 'Daily update',
+      schedule: 'cron "0 7 * * *" UTC',
+      subscribers: ['@ultimate'],
+    },
+    signal,
+  )) as Automation
+  expect(user.id).toBe('A5')
+  expect(user.scope).not.toBe('project')
+  await automationActions.pause({ id: user.id }, call)
+  expect((await buildSeed(f.host, PREPARED)).automations).toEqual([])
+  await automationActions.resume({ id: user.id }, call)
+
+  for (const chapter of ['next', 'next-again', 'third']) {
+    const seed = await buildSeed(f.host, { ...PREPARED, chapter })
+    expect(seed.automations).toEqual([
+      {
+        name: user.name,
+        schedule: user.schedule,
+        subscribers: ['@ultimate'],
+      },
+    ])
+    await writeSeed(join(f.home, 'chapters', chapter), seed)
+    await f.close()
+    await requestChapter(f.home, chapter)
+    await f.open()
+    await f.reopen()
+    const records = Object.values((await f.harness.snapshot(Automations, context))!.automations)
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      name: user.name,
+      enabled: true,
+      schedule: user.schedule,
+      subscribers: ['@ultimate'],
+    })
+    const id = records[0].id
+    await automationActions.pause({ id }, call)
+    expect((await f.harness.snapshot(Automations, context))!.automations[id].enabled).toBe(false)
+    await automationActions.resume({ id }, call)
+    expect((await f.harness.snapshot(Automations, context))!.automations[id].enabled).toBe(true)
+  }
+})
+
+it('keeps a user scheduled check’s timing in its recreation task without starting it', async () => {
+  const f = await fixture()
+  await f.source()
+  const schedule = { kind: 'every' as const, ms: 900000 }
+  f.scripts([
+    {
+      id: 'A5',
+      name: 'Build check',
+      ask: 'Check the build once.',
+      schedule,
+      timeout: 42,
+      enabled: true,
+    },
+  ])
+  const seed = await buildSeed(f.host, PREPARED)
+  expect(seed.automations).toEqual([])
+  expect(seed.scripts).toEqual([
+    { id: 'A5', name: 'Build check', ask: 'Check the build once.', schedule, timeout: 42 },
+  ])
+  await writeSeed(join(f.home, 'chapters', 'fresh-roots'), seed)
+  await f.close()
+  await requestChapter(f.home, 'fresh-roots')
+  await f.open()
+  const todos = (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!
+  expect(todos.items).toContainEqual(
+    expect.objectContaining({
+      owner: 'ultimate',
+      text: 'Recreate scheduled check A5 (Build check): Check the build once. · schedule: {"kind":"every","ms":900000} · timeout: 42s',
+    }),
+  )
+  expect(f.invoke.mock.calls.filter(([, action]) => action === 'create')).toEqual([])
+})
+
 /** What @ultimate prepared before Fall asleep. */
 const PREPARED = {
   chapter: 'fresh-roots',
@@ -200,10 +307,37 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
     { name: 'Daily', prompt: 'Review', schedule: 'every 1d' },
     new AbortController().signal,
   )
+  for (const [doc, name, enabled] of [
+    [BuiltInDoc, 'Dream before compaction', true],
+    [PauseDoc, 'Dream after a pause', false],
+  ] as const) {
+    const automation = (await f.host.invoke(
+      'automations',
+      'create',
+      {
+        name,
+        condition: { metric: 'context', of: '@ultimate', above: 70 },
+        subscribers: ['@ultimate'],
+      },
+      new AbortController().signal,
+    )) as Automation
+    await f.harness.commit(async (tx) => {
+      ;(await tx.doc(doc, ROOT_CONVERSATION_ID)).id = automation.id
+      ;(await tx.doc(Automations)).automations[automation.id].enabled = enabled
+    }, context)
+  }
   f.scripts([
     { id: 'A1', name: 'Watch it', ask: 'Watch the build', prompt: 'Summarise', enabled: true },
-    { id: 'build-watch', scope: 'project', name: 'Project watch', ask: 'Watch CI', enabled: true },
-    { id: 'A2', name: 'Stopped', ask: 'Ignore', enabled: false },
+    {
+      id: 'disk-space-guard',
+      scope: 'project',
+      name: 'Disk space guard',
+      ask: 'Check available disk space. FIRE with a short summary only when free space is low.',
+      schedule: { kind: 'every', ms: 21600000 },
+      subscribers: ['@ultimate'],
+      enabled: true,
+    },
+    { id: 'stopped-guard', scope: 'project', name: 'Stopped', ask: 'Ignore', enabled: false },
   ])
   const seed = await buildSeed(f.host, PREPARED)
   expect(seed.counts).toEqual({
@@ -223,6 +357,9 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
     { text: 'Question 103', ref: '#103' },
   ])
   expect(seed.todos).toEqual([{ text: 'Keep this', owner: 'ultimate' }])
+  expect(seed.builtIn).toEqual({ enabled: true })
+  expect(seed.builtInPause).toEqual({ enabled: false })
+  expect(seed.scripts.map(({ id }) => id)).toEqual(['A1', 'disk-space-guard'])
   expect(seed.automations).toEqual([
     { name: 'Daily', prompt: 'Review', schedule: { kind: 'every', ms: 86400000 } },
   ])
@@ -251,8 +388,18 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
       text: 'Recreate script A1 (Watch it): Watch the build · prompt: Summarise',
       owner: 'ultimate',
     },
+    {
+      text: 'Resume project script disk-space-guard (Disk space guard): paused after chapter change.',
+      owner: 'ultimate',
+    },
   ])
-  expect(after.todos.next).toBe(5)
+  expect(after.todos.next).toBe(6)
+  expect(Object.values(after.automations.automations).map(({ name }) => name)).toEqual(['Daily'])
+  expect(
+    f.invoke.mock.calls
+      .filter(([, action]) => action === 'create')
+      .map(([, , args]) => (args as { name: string }).name),
+  ).not.toContain('Disk space guard')
   expect(after.seed.applied).toBeGreaterThan(0)
   expect(after.seed.automations).toEqual(['Daily'])
   const chapterEntries = async () => {

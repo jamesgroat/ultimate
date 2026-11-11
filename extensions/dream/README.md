@@ -65,9 +65,10 @@ made active again (`lib/chapters.ts`).
 root's memories (slug collisions keep the newest `updated`; a lost `about-*` memory fails the seed), open to-dos and
 questions, and enabled automations and scripts, with counts. The built-in dream automations are not among them: the
 seed says only whether each was enabled, and the new chapter makes its own. Conversation docs are read through the
-host's exported tokens; both trigger kinds are read through the single automations list action. Enabled schedule
-records keep name, optional prompt, schedule and run profile, but no subscribers: conversation ids do not survive a
-chapter. Schedules without a prompt become recreation to-dos.
+host's exported tokens; all trigger kinds are read through the single automations list action. Enabled non-script
+triggers keep their name, optional prompt, trigger, run profile and standing-agent (`@name`) subscribers. Numeric
+conversation subscribers do not survive a chapter. Triggers without a prompt or standing subscriber, and context
+conditions targeting a numbered conversation, become recreation to-dos.
 
 On open, dream applies a chapter's seed in one commit with `dream.seed.applied` on conversation 1: memories keep
 their sources, to-dos get fresh ids, questions become user-owned to-dos naming the old chapter and message id, and a
@@ -77,9 +78,13 @@ that work. Reopening does not reapply those documents.
 
 Automations are recreated through their create action after the commit, with per-name receipts in `dream.seed`.
 A seed carries at most one enabled automation per name: building rejects duplicates. The destination starts empty;
-before each create, dream checks existing names, so a create committed just before a crash is not repeated when its
-receipt is missing. Project scripts are rediscovered, stopped, from trusted `.ultimate/automations` manifests by
-automations' own open hook; each enabled user script becomes an @ultimate-owned "Recreate script" to-do.
+each create uses a chapter-and-name idempotency key, so a create committed just before a crash is not repeated when
+its receipt is missing. Scripts, including scheduled checks, are carried only in the script inventory, never as ordinary
+triggers. Project scripts are rediscovered, paused, from trusted `.ultimate/automations` manifests by automations'
+own open hook. Each previously enabled project script becomes one Ultimate-owned "Resume project script" to-do
+noting that it is paused after the chapter change; it is neither recreated nor automatically resumed. Each enabled
+user script still becomes a recreation to-do; scheduled checks retain their schedule and timeout in both the seed
+and that task, without starting automatically.
 
 ### Fall asleep and switch
 
