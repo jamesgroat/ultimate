@@ -165,6 +165,8 @@ it('starts on a project enable, takes the allowlist only from user settings and 
   const status = async () =>
     (await post(server, '/api/extensions/tailscale/actions/status', { args: null })).data
       .result as Status
+  // A startup reload can leave the live facet opening when createServer returns (#144363).
+  await until(async () => (await status()).state === 'ready')
   expect(await status()).toMatchObject({ state: 'ready', allow: ['owner@example.com'] })
   expect(server.system.current().access.origins).toHaveLength(1)
   await writeFile(
