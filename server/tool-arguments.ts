@@ -164,12 +164,23 @@ const CODES = new Set([
 ])
 
 /**
+ * Codes for failures whose message carries no code word, by its fixed opening. Pi upstream:
+ * @earendil-works/pi-claude-code@0.1.0 src/claude-cli.ts writes these messages.
+ */
+const PHRASES: [RegExp, string][] = [
+  [/^Incomplete Claude Code (?:upstream )?response\b/, 'incomplete_response'],
+  [/^claude auth status gave no status\b/, 'empty_auth_status'],
+]
+
+/**
  * What a failed model row stores instead of the provider's message, which can echo the request: the stop reason, then
- * the HTTP status when the message starts with one or names it (`status 401`, `HTTP 429`) and the allowlisted codes it
- * contains, in order, at most four.
+ * the code of a known phrase it opens with, the HTTP status when the message starts with one or names it (`status 401`,
+ * `HTTP 429`) and the allowlisted codes it contains, in order, at most four.
  */
 export function classify(stopReason: string, message = '') {
   const parts = [stopReason]
+  const phrase = PHRASES.find(([pattern]) => pattern.test(message))
+  if (phrase) parts.push(phrase[1])
   const status = /^\s*([45]\d\d)\b|\b(?:status|http)[\s:=]*([45]\d\d)\b/i.exec(message)
   if (status) parts.push(status[1] ?? status[2])
   for (const word of message.split(/[^A-Za-z_]+/)) {
