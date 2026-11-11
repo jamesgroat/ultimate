@@ -55,7 +55,7 @@ import { shortTitle } from '../../lib/title.ts'
 import { WorkspacesApi } from '../workspaces/api.ts'
 import { ConversationsApi, Marks } from '../conversations/api.ts'
 import type { AgentMarkStyle } from '../conversations/refs.ts'
-import { Family, Pin } from '../models/api.ts'
+import { Family, Pin, Selection } from '../models/api.ts'
 import { Profile, Runs, Standing, Subagents, SubagentsApi } from './api.ts'
 import { definitionRuns, refName, refOf } from '../../lib/families.ts'
 import { readFamilies } from '../../lib/families-settings.ts'
@@ -672,9 +672,12 @@ export default function subagents(
           id = created.id
           index[name] = id
         }
-        const change = definitionAgent(definition, base, host.modelRuntime)
+        let change = definitionAgent(definition, base, host.modelRuntime)
+        const held = !created && (await tx.doc(Selection, id)).mode
+        // A manual or Auto choice outlives definition refreshes, including its recorded family, even on the same model.
+        if (held) change = { ...change, model: base.model, thinkingLevel: base.thinkingLevel }
         await configure(tx, id, { ...change, cwd: host.projectRoot })
-        ;(await tx.doc(Family, id)).name = definitionFamily(definition, change)
+        if (!held) (await tx.doc(Family, id)).name = definitionFamily(definition, change)
         Object.assign(await tx.doc(host.metadata, id), { label: 'agent', title: `@${name}` })
         // A standing agent keeps its `@name`: no automatic title, summary or reply activity.
         await conversations.setAutomaticSummaries(tx, id, false)
@@ -1125,6 +1128,8 @@ export default function subagents(
                     : { fork: { conversationId: api.conversationId, at: forkAt } }),
                   cwd: parent.cwd ?? host.projectRoot,
                 })
+                if (args.model !== undefined || args.family !== undefined)
+                  (await tx.doc(Profile, child.id)).explicitModel = true
                 conversationId = child.id
                 await started(host, tx, child, label!, 'child')
                 const runs = await tx.doc(Runs, ROOT_CONVERSATION_ID)
