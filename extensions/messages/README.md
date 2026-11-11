@@ -87,6 +87,11 @@ with `questions` in its own conversation. Reports that need no answer use `reply
 One @ultimate can message another project's @ultimate, on this machine or over the tailnet; nothing else crosses, and the
 message is never the user's.
 
+For the caller: only @ultimate may call `tell`. `project` is the project's name as `ultimate.projects()` or the
+`remotes` user setting lists it, never a path; `machine` picks one machine from `remotes` when the project runs on
+several. A message from another project's @ultimate is answered by answering it: the reply returns automatically, and
+`tell` is refused while that message is open.
+
 - **Sender:** codemode `ultimate.tell({ project, text, reply? })` (@ultimate only) posts the target's `messages.remote`
   action, located as codemode's `{ project }` reads are (`lib/remote.ts`). A failed post throws a sentence naming the
   project and machine. Telling an Ultimate whose question to you is still open is refused: answer it instead.
