@@ -108,6 +108,33 @@ it('keeps drafts apart per spec and per worktree, in keys UI state accepts', () 
   expect(valid(a)).toBe(true)
 })
 
+it('keeps source drafts separate with bounded keys and checks source ids without trusting browser metadata', () => {
+  const keys = [
+    draftsKey('uncommitted'),
+    draftsKey('uncommitted', undefined, 'repo:a'),
+    draftsKey('uncommitted', undefined, 'repo:b'),
+    draftsKey('uncommitted', 12, 'repo:a'),
+    draftsKey('HEAD', undefined, 'repo:a'),
+  ]
+  expect(new Set(keys).size).toBe(keys.length)
+  for (const key of [...keys, draftsKey('x'.repeat(500), 12, 'ü/'.repeat(500))])
+    expect(valid(key)).toBe(true)
+  const input = {
+    spec: 'HEAD',
+    source: 'repo:a',
+    sourceLabel: 'Untrusted',
+    cwd: '/untrusted',
+    comments: [{ file: 'a', side: 'new', start: 1, end: 1, excerpt: '', text: 'Fix.' }],
+  }
+  expect(checkReview(input)).toEqual({
+    spec: input.spec,
+    source: input.source,
+    comments: input.comments,
+  })
+  for (const source of ['', '  ', null, 12])
+    expect(() => checkReview({ ...input, source })).toThrow('source must be a non-empty string')
+})
+
 it('hashes with SHA-256', () => {
   expect(sha256('')).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
   expect(sha256('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')

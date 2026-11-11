@@ -26,6 +26,7 @@ import {
   api,
   cn,
   errorMessage,
+  Provided,
   useAction,
   useExtensionUiState,
   useStore,
@@ -42,13 +43,14 @@ import type { Draft, Drafts } from './drafts.ts'
 import { Footer } from './footer.tsx'
 import { commentRange, excerptFor } from './lines.ts'
 import type { CommentLines } from './lines.ts'
-import { reachedTarget, useSpec, useTarget } from './link.tsx'
+import { reachedTarget, useSource, useSpec, useTarget } from './link.tsx'
 import type { ReviewTarget } from './link.tsx'
 import { Frame, Loading, Notice } from './parts.tsx'
 import { Recipient } from './recipient.tsx'
 import { DiffAction, RecipientAction, SendAction } from './refs.ts'
 import type { ReviewDiff, ReviewFile } from './refs.ts'
 import { Selector } from './selector.tsx'
+import { SourcePicker } from './ui.tsx'
 
 /**
  * Our theme for the viewer, inside its shadow root: our page's tokens inherit into it, so the code takes our mono
@@ -479,29 +481,73 @@ function Sent({
 /** The Review surface: a spec's diff, its files on the left and their changes stacked on the right. */
 export default function ReviewSurface() {
   const [spec, setSpec] = useSpec()
+  const [source, setSource] = useSource()
+  const [sending, setSending] = useState(false)
+  const { conversationId } = useUltimate()
+  return (
+    <ReviewSession
+      key={draftsKey(spec, source === undefined ? conversationId : undefined, source)}
+      spec={spec}
+      source={source}
+      setSpec={setSpec}
+      selectSource={(next) => {
+        setSource(next)
+        setSpec('uncommitted')
+      }}
+      sending={sending}
+      setSending={setSending}
+    />
+  )
+}
+
+/** A diff/draft identity stays fixed across asynchronous sends, even while another source is opened. */
+function ReviewSession({
+  spec,
+  source,
+  setSpec,
+  selectSource,
+  sending,
+  setSending,
+}: {
+  spec: string
+  source?: string
+  setSpec: (spec: string) => void
+  selectSource: (source: string | undefined) => void
+  sending: boolean
+  setSending: (sending: boolean) => void
+}) {
   const [stored, setLayout] = useExtensionUiState('layout', 'split')
   const layout = stored === 'unified' ? 'unified' : 'split'
   const phone = useViewport() === 'phone'
   const { conversationId, switchConversation, showSurface } = useUltimate()
-  // Review reads the checkout of the conversation you are in: a project root that is no repository of its own keeps
-  // its work in subfolder repositories, and the one to review is your conversation's.
-  const args: { spec: string; conversation?: number } = { spec, conversation: conversationId }
+  // Native specs follow the active conversation's checkout. A trusted source selects its own checkout instead.
+  const args = source === undefined ? { spec, conversation: conversationId } : { spec, source }
   const diff = useAction(DiffAction, args, { onError: () => undefined })
-  const github = useGithubRepo()
-  const [drafts, update] = useDrafts(draftsKey(spec, conversationId))
+  const nativeGithub = useGithubRepo()
+  const [drafts, update] = useDrafts(
+    draftsKey(spec, source === undefined ? conversationId : undefined, source),
+  )
   const suggested = useAction(RecipientAction, args, { onError: () => undefined })
   const to = drafts.to ?? suggested.data?.conversation
-  const [sending, setSending] = useState(false)
   const [sent, setSent] = useState<{ conversation: number } | { error: string }>()
-  const data = diff.data?.spec === spec ? diff.data : undefined
+  const data = diff.data?.spec === spec && diff.data.source === source ? diff.data : undefined
   // A branch gone without a landing shows another spec: follow it rather than ask for the deleted ref again.
-  const moved = diff.data && diff.data.spec !== spec ? diff.data.spec : undefined
+  const moved =
+    diff.data && diff.data.source === source && diff.data.spec !== spec ? diff.data.spec : undefined
   useEffect(() => {
     if (moved) setSpec(moved)
   }, [moved, setSpec])
+  const ready =
+    !!data &&
+    !diff.loading &&
+    !diff.error &&
+    !suggested.loading &&
+    !suggested.error &&
+    to !== undefined
+  const github = source === undefined ? nativeGithub : data?.github
   const parsed = useMemo(() => (data ? parse(data) : new Map<string, FileDiffMetadata>()), [data])
   const send = async () => {
-    if (to === undefined) return
+    if (!ready || sending || to === undefined) return
     setSending(true)
     setSent(undefined)
     // What goes out: drafts added or a note changed while it is on its way stay pending.
@@ -509,8 +555,10 @@ export default function ReviewSurface() {
     const note = drafts.note
     try {
       const result = await api.action(SendAction, {
+        // The checkout conversation in diff args is not the user's chosen recipient.
         conversation: to,
         spec,
+        ...(source !== undefined && { source }),
         // Drafts keep no excerpt: it is read now from the diff on screen.
         comments: drafts.comments.map(({ id: _id, ...comment }) => ({
           ...comment,
@@ -534,6 +582,7 @@ export default function ReviewSurface() {
     drafts.comments.length > 0 ? (
       <Footer
         drafts={drafts}
+        disabled={!ready}
         error={sent && 'error' in sent ? sent.error : undefined}
         onSend={() => void send()}
         sending={sending}
@@ -563,8 +612,24 @@ export default function ReviewSurface() {
       : undefined
   return (
     <Frame
+      extras={
+        phone && (
+          <Provided point={SourcePicker} input={{ source, select: selectSource }}>
+            {(picker) =>
+              picker && (
+                <div className="shrink-0 border-b border-border/70 px-2 py-1.5">{picker}</div>
+              )
+            }
+          </Provided>
+        )
+      }
       controls={
         <>
+          {!phone && (
+            <Provided point={SourcePicker} input={{ source, select: selectSource }}>
+              {(picker) => picker}
+            </Provided>
+          )}
           <Selector
             conversation={conversationId}
             onChange={(next) => {
@@ -572,6 +637,7 @@ export default function ReviewSurface() {
               setSpec(next)
             }}
             spec={spec}
+            source={source}
             title={data?.title}
           />
           {data && totals && (
