@@ -1,6 +1,18 @@
 import { constants } from 'node:fs'
 import type { Dirent } from 'node:fs'
-import { access, appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import {
+  access,
+  appendFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import {
   awaitWithContext,
@@ -159,18 +171,55 @@ export function supervisor(
     ready: Promise.withResolvers<void>(),
   }))
   const { runs, launches, effects } = shared
-  // home is the stable project state directory (~/.ultimate/projects/<name>-<hash>), not a worktree cwd. Ids restart in
-  // each chapter, so a later chapter keeps its scripts apart as `<key>@<chapter>`, like its cloud backup; the first
-  // chapter keeps the project key. Chapter and host restart together, so reading it here is stable.
-  const scriptsRoot = () =>
+  // Numbered ids restart in each chapter; project slugs instead share runtime files across chapters.
+  // home is the stable project state directory, not a worktree cwd. Chapter and host restart together.
+  const scriptsRoot = (project = false) =>
     join(
       host.userHome,
       '.ultimate/automations',
-      host.chapter.name === FIRST_CHAPTER
+      project || host.chapter.name === FIRST_CHAPTER
         ? basename(host.home)
         : `${basename(host.home)}@${host.chapter.name}`,
     )
-  const folder = (id: string) => join(scriptsRoot(), id)
+  const folder = (id: string) => join(scriptsRoot(isSlug(id)), id)
+  async function stateDir(sub: Pick<Automation, 'id' | 'scope'>) {
+    const dir = folder(sub.id)
+    const state = join(dir, 'state')
+    await mkdir(state, { recursive: true })
+    if (sub.scope !== 'project') return state
+    const adopted = join(dir, '.state-adopted')
+    if (await exists(adopted)) return state
+    if ((await readdir(state)).length) return state
+    // #139819: chapter isolation split project watchers' deduplication state and re-fired handled work.
+    // Adopt the newest complete state tree, including arbitrary script files, without changing its old copy.
+    let newest: { path: string; at: number } | undefined
+    for (const entry of await readdir(join(host.userHome, '.ultimate/automations'), {
+      withFileTypes: true,
+    })) {
+      if (!entry.isDirectory() || !entry.name.startsWith(`${basename(host.home)}@`)) continue
+      const path = join(host.userHome, '.ultimate/automations', entry.name, sub.id, 'state')
+      if (!(await exists(path))) continue
+      const files = await readdir(path, { recursive: true })
+      if (!files.length) continue
+      const times = await Promise.all(
+        [path, ...files.map((file) => join(path, file))].map((file) => stat(file)),
+      )
+      const at = Math.max(...times.map((file) => file.mtimeMs))
+      if (!newest || at > newest.at) newest = { path, at }
+    }
+    if (newest) {
+      const staging = await mkdtemp(join(dir, '.state-adopt-'))
+      try {
+        await cp(newest.path, join(staging, 'state'), { recursive: true })
+        // rename replaces only an empty destination: never overwrite state written during the copy.
+        await rename(join(staging, 'state'), state)
+        await writeFile(adopted, '')
+      } finally {
+        await rm(staging, { recursive: true, force: true })
+      }
+    }
+    return state
+  }
   // A project automation's `run` and manifest are committed in the host checkout; its runtime stays in folder().
   const projectDir = (id: string) => join(host.projectRoot, '.ultimate/automations', id)
   const runPath = (sub: Pick<Automation, 'id' | 'scope'>) =>
@@ -398,7 +447,7 @@ export function supervisor(
     phases: {
       deliver: async (task, runtime, ctx) => {
         const { sub, event, kind, text, targets } = task.input
-        if (kind === 'writing') await mkdir(join(folder(sub.id), 'state'), { recursive: true })
+        if (kind === 'writing') await stateDir(sub)
         const content =
           kind === 'writing'
             ? `${brief(sub)}\nWrite and briefly test run, then use automation resume {id:"${sub.id}"}. Ending your turn before resume or escalate escalates it.`
@@ -479,13 +528,13 @@ export function supervisor(
   }
   const readPid = (id: string) => readPidFile(join(folder(id), 'pid'))
   /** Pause, relaunch, delete, disable/release and shutdown all stop a script here: SIGTERM, three seconds, SIGKILL. */
-  function cleanup(id: string, pid: number, run?: Run): Promise<void> {
+  function cleanup(id: string, pid: number, run?: Run, dir = folder(id)): Promise<void> {
     if (run?.cleanup) return run.cleanup
     const work = (async () => {
       // The pid file stays until the whole group is confirmed gone, and never names a replacement when removed.
       // A run's own group is identified by its unreaped leader, a crashed host's by its pid file.
       await stopGroup(pid, {
-        pidFile: join(folder(id), 'pid'),
+        pidFile: join(dir, 'pid'),
         leader: run?.group,
       }).catch((error: unknown) => {
         throw new Error(`Automation ${id}: ${String(error)}`)
@@ -638,11 +687,11 @@ export function supervisor(
     const recorded = await readPid(id)
     if (recorded) await cleanup(id, recorded)
     const dir = folder(id)
-    await mkdir(join(dir, 'state'), { recursive: true })
+    const state = await stateDir(sub)
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       AUTOMATION_ID: id,
-      AUTOMATION_STATE: join(dir, 'state'),
+      AUTOMATION_STATE: state,
     }
     for (const name of sub.script!.secrets ?? []) {
       const value = await readSecret(host.userHome, name)
@@ -921,18 +970,23 @@ export function supervisor(
   }
   const open = async () => {
     shared.closing = false
-    let folders: Dirent[]
-    try {
-      folders = await readdir(scriptsRoot(), { withFileTypes: true })
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      folders = []
-    }
     // Sweep files, not ledger records: stop/delete may have committed just before a crash.
-    for (const entry of folders) {
-      if (!entry.isDirectory() || !isId(entry.name)) continue
-      const pid = await readPid(entry.name)
-      if (pid) await cleanup(entry.name, pid, runs.get(entry.name))
+    // Include the stable project root, but never another chapter's numbered user scripts.
+    for (const root of new Set([scriptsRoot(), scriptsRoot(true)])) {
+      let folders: Dirent[]
+      try {
+        folders = await readdir(root, { withFileTypes: true })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        folders = []
+      }
+      for (const entry of folders) {
+        if (!entry.isDirectory() || !isId(entry.name)) continue
+        if (root !== scriptsRoot() && !isSlug(entry.name)) continue
+        const dir = join(root, entry.name)
+        const pid = await readPidFile(join(dir, 'pid'))
+        if (pid) await cleanup(entry.name, pid, runs.get(entry.name), dir)
+      }
     }
     // A project automation whose folder is gone, or whose project is no longer chosen, is forgotten before restarts.
     await discover()

@@ -290,7 +290,7 @@ it('times out a bounded check as a failure and wakes only its watcher', async ()
   expect(await f.entries(f.caller.id, 'automations.fired')).toHaveLength(0)
 })
 
-it('rediscovers a project check paused in the next chapter and resumes only on request in its own state folder', async () => {
+it('rediscovers a project check paused in the next chapter and resumes only on request with its shared state', async () => {
   const f = await fixture()
   const dir = join(f.root, '.ultimate/automations/guard')
   await mkdir(dir, { recursive: true })
@@ -333,12 +333,13 @@ it('rediscovers a project check paused in the next chapter and resumes only on r
     'guard',
   )
   await expect(readFile(join(folder, 'state/n'))).rejects.toThrow('ENOENT')
+  expect(await readFile(join(f.folder('guard'), 'state/n'), 'utf8')).toBe('1\n')
   await invoke('resume')
   expect((await get()).enabled).toBe(true)
   await invoke('run')
   await until(async () => (await get()).script!.check?.result === 'quiet')
-  expect(await readFile(join(folder, 'state/n'), 'utf8')).toBe('1\n')
-  expect(await readFile(join(f.folder('guard'), 'state/n'), 'utf8')).toBe('1\n')
+  await expect(readFile(join(folder, 'state/n'))).rejects.toThrow('ENOENT')
+  expect(await readFile(join(f.folder('guard'), 'state/n'), 'utf8')).toBe('2\n')
   await invoke('pause')
 })
 

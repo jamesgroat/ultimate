@@ -449,6 +449,7 @@ it("keeps a user script through a chapter switch, isolated from the later chapte
   const sub = await create(server)
   expect(sub.id).toBe(original.id)
   const folder = join(userHome, '.ultimate/automations', `${basename(home)}@next`, sub.id)
+  await expect(readFile(join(folder, 'state/n'))).rejects.toMatchObject({ code: 'ENOENT' })
   await writeRun(folder, 'echo later > "$AUTOMATION_STATE/n"; echo later; sleep 60')
   await call(server, 'resume', sub.id)
   laterReady.resolve()
@@ -606,6 +607,46 @@ it('discovers a committed project automation by slug only in a chosen project, a
   // A removed folder forgets the record.
   await rm(join(root, '.ultimate/automations/prs'), { recursive: true })
   expect(await list(app)).toEqual([])
+})
+
+it('shares a project script runtime and its state across chapters', async () => {
+  const first = await fixture()
+  await committed(
+    first.root,
+    'prs',
+    'n=$(($(cat "$AUTOMATION_STATE/n" 2>/dev/null || echo 0) + 1)); echo $n > "$AUTOMATION_STATE/n"; echo "$AUTOMATION_STATE" > "$AUTOMATION_STATE/path"; echo DONE $n',
+  )
+  const run = async (app: NonNullable<typeof server>, n: number) => {
+    await call(app, 'resume', 'prs')
+    await until(async () => {
+      const sub = (await app.harness.snapshot(Automations, context))!.automations.prs
+      return sub.script!.state === 'stopped' && sub.script!.exitCode === 0
+    })
+    const state = join(first.folder('prs'), 'state')
+    expect(await readFile(join(state, 'n'), 'utf8')).toBe(`${n}\n`)
+    expect(await readFile(join(state, 'path'), 'utf8')).toBe(`${state}\n`)
+    expect((await call(app, 'log', 'prs')) as { text: string }).toEqual({
+      text: Array.from({ length: n }, (_, i) => `DONE ${i + 1}`).join('\n'),
+    })
+    await expect(readFile(join(first.folder('prs'), 'pid'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  }
+  await run(first.app, 1)
+  await first.app.close()
+  server = undefined
+  for (const [index, chapter] of ['next', 'later'].entries()) {
+    await requestChapter(first.home, chapter)
+    server = await fauxServer(first.options)
+    expect((await list(server))[0]).toMatchObject({
+      id: 'prs',
+      enabled: false,
+      script: { state: 'stopped' },
+    })
+    await run(server, index + 2)
+    await server.close()
+    server = undefined
+  }
 })
 
 it('creates a project automation in the checkout with a committed manifest', async () => {
