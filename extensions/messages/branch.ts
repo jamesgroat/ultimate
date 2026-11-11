@@ -89,6 +89,7 @@ export const branchTool = (host: ExtensionHost) =>
             by: from,
             receipt: { taskId: api.taskId, callId: api.callId },
             ...(model ? { model } : {}),
+            ...(input.family === undefined ? { automaticModel: true as const } : {}),
             ...(thinkingLevel ? { thinkingLevel } : {}),
           },
           ctx,

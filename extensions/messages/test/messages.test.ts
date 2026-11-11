@@ -44,7 +44,9 @@ import type { MessagesService } from '../api.ts'
 import { BranchReceipts, Tally, rootOf, startBranch } from '../../lineage/server.ts'
 import type { BranchInput } from '../../lineage/server.ts'
 import { Branch, Roots } from '../../lineage/api.ts'
-import { Standing, Subagents } from '../../subagents/api.ts'
+import { Profile, Standing, Subagents } from '../../subagents/api.ts'
+import { Family, Selection } from '../../models/api.ts'
+import { writeFamilies } from '../../../lib/families-settings.ts'
 import { Workspaces } from '../../workspaces/workspaces.ts'
 import { concludedIn } from '../../conversations/server.ts'
 import { UiState } from '../../../server/ui-state.ts'
@@ -1146,6 +1148,8 @@ it.each([false, true])(
     }
     const created = await branches()
     expect(created).toHaveLength(1)
+    const profile = await f.opened.harness.snapshot(Profile, created[0], context)
+    expect(profile).toEqual({ createdAt: expect.any(Number) })
     expect(pause.taskId).toBeDefined()
     const receipt = await f.opened.harness.snapshot(BranchReceipts, pause.taskId!, context)
     expect(Object.values(receipt!.branches)).toEqual(created)
@@ -1155,6 +1159,7 @@ it.each([false, true])(
     pause.gate.release()
     await until(async () => (await replies(f)).length === 1)
     expect(await branches()).toEqual(created)
+    expect(await f.opened.harness.snapshot(Profile, created[0], context)).toEqual(profile)
     await f.opened.root.waitForIdle(context)
     expect(await f.opened.harness.snapshot(BranchReceipts, pause.taskId!, context)).toBeUndefined()
     expect((await f.log())!.messages.filter((message) => message.to === created[0])).toMatchObject([
@@ -1335,6 +1340,45 @@ async function branched(f: Awaited<ReturnType<typeof fixture>>, prompt = 'Explor
   await settled()
   return { id, branch, from, later, settled }
 }
+it.each([undefined, 'default', 'review'])(
+  'distinguishes an explicit branch family (%s) from automatic coordinator resolution, even on the same model',
+  async (family) => {
+    const f = await fixture()
+    await writeFamilies(f.host.userHome, f.host.projectRoot, {
+      families: { review: { model: 'faux/faux-1', color: 'violet' } },
+    })
+    const tool = (await f.opened.root.agent(context)).deferred.find(
+      (candidate) => candidate.name === 'branch',
+    )!
+    await f.opened.harness.commit(async (tx) => {
+      ;(await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots = [1]
+      await configure(tx, f.opened.root.id, { modelTools: { add: [tool] } })
+    }, context)
+    const prompt = `Family ${family ?? 'automatic'}`
+    const before = (await replies(f)).length
+    await f.opened.root.submit(
+      { type: 'input', content: 'BRANCH ' + JSON.stringify({ prompt, family, isolated: false }) },
+      context,
+    )
+    await until(async () => (await replies(f)).length === before + 1)
+    await f.opened.root.waitForIdle(context)
+    const id = (await f.log())!.messages.find(
+      (message) => message.from === 1 && message.text === prompt,
+    )!.to as ConversationId
+    expect(await f.opened.harness.snapshot(Profile, id, context)).toEqual({
+      createdAt: expect.any(Number),
+      ...(family === undefined ? {} : { explicitModel: true }),
+    })
+    expect(await f.opened.harness.snapshot(Family, id, context)).toEqual({
+      name: family ?? 'default',
+    })
+    expect(await f.opened.harness.snapshot(Selection, id, context)).toBeUndefined()
+    expect(
+      (await (await f.opened.harness.conversation(id, context))!.agent(context)).model,
+    ).toEqual({ provider: 'faux', modelId: 'faux-1' })
+  },
+)
+
 it('lets a branch ask the user directly and leaves passive question and answer notes for @ultimate', async () => {
   const f = await fixture()
   const b = await branched(f)

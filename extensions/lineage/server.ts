@@ -41,7 +41,8 @@ import { SubmissionLanded, WorkspacesApi } from '../workspaces/api.ts'
 import type { LandedData } from '../workspaces/api.ts'
 import { Branch, Branched, LineageApi, Rooted, Roots } from './api.ts'
 import { ConversationsApi, Trees } from '../conversations/api.ts'
-import { Standing, Started } from '../subagents/api.ts'
+import { Profile, Standing, Started } from '../subagents/api.ts'
+import { Family } from '../models/api.ts'
 import { spawn } from 'node:child_process'
 import { CompactAction, ForgetAction, OpenEditorAction, RecentAction, TallyDoc } from './refs.ts'
 import {
@@ -687,6 +688,8 @@ type PromptInput = {
   thinkingLevel?: ModelThinkingLevel
 }
 export type BranchInput = PromptInput & {
+  /** The supplied model was resolved automatically, not explicitly requested by the caller. */
+  automaticModel?: true
   from: number
   at?: number
   deliver?: false
@@ -812,6 +815,10 @@ async function forkBranch(
     caller = `#${input.by}${name ? ` (@${name})` : ''}`
   }
   const fork = await tx.forkConversation(from, at, { ownership: { kind: 'ownerless' } })
+  Object.assign(await tx.doc(Profile, fork.id), {
+    createdAt: Date.now(),
+    ...(input.model && !input.automaticModel ? { explicitModel: true } : {}),
+  })
   // Without a model given, the fork keeps its source's as of `at` while that has a login here, else the default.
   const source = (await tx.doc(AgentDoc, fork.id)).model
   const model =
@@ -824,6 +831,8 @@ async function forkBranch(
     ...(model ? { model } : {}),
     ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
   })
+  // An override or missing-login replacement no longer runs as the inherited family.
+  if (model) (await tx.doc(Family, fork.id)).name = null
   // A branch gets ordinary tools whatever its source ran with.
   const agent = await tx.doc(AgentDoc, fork.id)
   delete agent.tools
