@@ -53,8 +53,10 @@ export function excerptOf(lines: readonly string[]) {
   return kept.join('\n')
 }
 
-/** Where drafts of `spec` are kept: per spec, and per the conversation whose worktree the diff came from. */
-export function draftsKey(spec: string, conversation?: number) {
+/** Drafts stay apart by source, spec and conversation; source-less keys retain their exact native form. */
+export function draftsKey(spec: string, conversation?: number, source?: string) {
+  if (source !== undefined)
+    return `drafts:source:sha256-${sha256(JSON.stringify([source, spec, conversation ?? null]))}`
   // UI state keys allow `[A-Za-z0-9_.:-]`, 200 characters: escape the rest (and `_`) as `_<hex>_`, one to one. A spec
   // too long for that is named by the SHA-256 of all of it, as `sha256-<hex>`: the escaped form never holds a `-`.
   const safe = spec.replace(/[^A-Za-z0-9.]/g, (char) => `_${char.codePointAt(0)!.toString(16)}_`)
@@ -67,10 +69,18 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const line = (value: unknown) =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 
+/** Optional opaque source id: retain it exactly, but reject empty or non-text input. */
+export function checkSource(source: unknown): string | undefined {
+  if (source !== undefined && (typeof source !== 'string' || !source.trim()))
+    throw new Error('source must be a non-empty string')
+  return source
+}
+
 /** `input` as a review, or throws naming what is wrong with it. */
 export function checkReview(input: unknown): ReviewComments {
   if (!record(input)) throw new Error('Expected { spec, comments, note? }')
   const { spec, comments, note } = input
+  const source = checkSource(input.source)
   if (typeof spec !== 'string' || !spec.trim()) throw new Error('spec must be a non-empty string')
   if (!Array.isArray(comments) || comments.length === 0)
     throw new Error('comments must be a non-empty list')
@@ -96,7 +106,12 @@ export function checkReview(input: unknown): ReviewComments {
       throw new Error(`${at}.excerpt is larger than ${limits.excerptBytes / 1024} KB`)
     return { file, side, start, end, excerpt, text }
   })
-  return { spec, comments: checked, ...(note?.trim() ? { note: note.trim() } : {}) }
+  return {
+    spec,
+    comments: checked,
+    ...(source === undefined ? {} : { source }),
+    ...(note?.trim() ? { note: note.trim() } : {}),
+  }
 }
 
 const languages: Record<string, string> = {
@@ -161,8 +176,10 @@ const fence = (text: string) =>
 const plural = (count: number) => `${count} comment${count === 1 ? '' : 's'}`
 
 /** The review as the model reads it: a header, the overall note, then each comment's place, excerpt and text. */
-export function reviewText({ spec, comments, note }: ReviewComments) {
+export function reviewText({ spec, comments, note, source, sourceLabel, cwd }: ReviewComments) {
   const parts = [`Review of ${code(spec)} (${plural(comments.length)})`]
+  if (source !== undefined)
+    parts.push(`Source: ${code(sourceLabel ?? source)}${cwd ? `\nCheckout: ${code(cwd)}` : ''}`)
   if (note) parts.push(note)
   for (const comment of comments) {
     const quote = fence(comment.excerpt)
