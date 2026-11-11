@@ -33,7 +33,9 @@ import type { OpenHost } from '../../../server/harness.ts'
 import subagents, { actions } from '../server.ts'
 import watchdog from '../../watchdog/server.ts'
 import type { ExtensionHost } from '../../../server/extensions.ts'
-import { Runs, Started, Subagents } from '../api.ts'
+import { Profile, Runs, Started, Subagents } from '../api.ts'
+import { Family, Selection } from '../../models/api.ts'
+import { createChild } from '../children.ts'
 import type { ActionContext } from '../../../server/actions.ts'
 import codemode from '../../codemode/server.ts'
 import { Metadata } from '../../../server/metadata.ts'
@@ -436,9 +438,64 @@ it('makes an agent on the fly from the call, read-only without a worktree, and r
   expect(await f.opened.harness.snapshot(Runs, f.opened.root.id, context)).toEqual({
     [child.conversationId]: { model: 'faux-1', adhoc: true },
   })
+  expect(await f.opened.harness.snapshot(Profile, child.conversationId, context)).toEqual({
+    adhoc: true,
+    createdAt: expect.any(Number),
+    explicitModel: true,
+  })
   expect(await f.opened.harness.snapshot(Metadata, child.conversationId, context)).toMatchObject({
     label: 'dead-code scan',
   })
+})
+
+it('records caller overrides on named children, not inherited model intent, and synchronizes their family', async () => {
+  const f = await fixture()
+  for (const choice of [{}, { model: 'faux/faux-1' }, { family: 'default' }]) {
+    const before = (await children(f.opened)).length
+    await call(f.opened, { action: 'start', agent: 'scout', ...choice, task: 'Scan' })
+    const created = await children(f.opened)
+    expect(created).toHaveLength(before + 1)
+    const child = created.at(-1)!
+    expect(await f.opened.harness.snapshot(Profile, child.conversationId, context)).toEqual({
+      definition: 'scout',
+      createdAt: expect.any(Number),
+      ...(Object.keys(choice).length ? { explicitModel: true } : {}),
+    })
+    expect(await f.opened.harness.snapshot(Family, child.conversationId, context)).toEqual({
+      name: 'model' in choice ? null : 'default',
+    })
+    expect(
+      await f.opened.harness.snapshot(Selection, child.conversationId, context),
+    ).toBeUndefined()
+  }
+})
+
+it('records fresh child provenance for inherited and explicit models without manufacturing selection intent', async () => {
+  const f = await fixture()
+  const parent = await f.opened.root.agent(context)
+  for (const model of [undefined, { provider: 'faux', modelId: 'faux-1' }]) {
+    const child = await f.opened.harness.commit(
+      (tx) =>
+        createChild({ need: idleNeed }, tx, {
+          owner: { kind: 'ownerless' },
+          parentAgent: parent,
+          modelRuntime: f.prepared.modelRuntime,
+          metadata: Metadata,
+          label: 'worker',
+          title: 'Worker',
+          model,
+        }),
+      context,
+    )
+    expect(await f.opened.harness.snapshot(Profile, child.id, context)).toEqual({
+      createdAt: expect.any(Number),
+      ...(model ? { explicitModel: true } : {}),
+    })
+    expect(await f.opened.harness.snapshot(Selection, child.id, context)).toBeUndefined()
+    expect(
+      (await (await f.opened.harness.conversation(child.id, context))!.agent(context)).model,
+    ).toEqual(model ?? parent.model)
+  }
 })
 
 it('routes asynchronous leaf reports only to their lead, not the root', async () => {

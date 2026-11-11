@@ -2,7 +2,7 @@ import type { ConversationId } from '@earendil-works/pi-durable'
 import { useSyncExternalStore } from 'react'
 import { api, getConversation, useConversation, useDocOf, useModels, useStore } from '@/sdk'
 import type { ModelsResponse, UltimateActions } from '@/sdk'
-import { FamilyDoc, SetFamilyAction } from './refs.ts'
+import { FamilyDoc, SelectAction } from './refs.ts'
 
 export type ModelInfo = ModelsResponse['models'][number]
 export type ProviderInfo = ModelsResponse['providers'][number]
@@ -39,8 +39,11 @@ export function useCurrentModel(target?: ConversationId) {
 }
 
 export async function selectModel(model: ModelInfo, id: ConversationId | undefined) {
-  await api.configure({ model: { provider: model.provider, modelId: model.id } }, id)
-  await api.action(SetFamilyAction, { family: null }, { conversationId: id })
+  await api.action(
+    SelectAction,
+    { model: { provider: model.provider, modelId: model.id } },
+    { conversationId: id },
+  )
   notePick()
 }
 
