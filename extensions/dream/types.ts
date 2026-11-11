@@ -29,6 +29,8 @@ export type Seed = {
     scope?: 'project'
     name: string
     ask: string
+    schedule?: Schedule
+    timeout?: number
     prompt?: string
     agent?: string
     model?: { provider: string; modelId: string }

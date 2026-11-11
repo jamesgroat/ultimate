@@ -2,7 +2,7 @@ Durable schedules, domain events, context thresholds and supervised scripts, wit
 
 ## Triggers
 
-Exactly one per automation:
+Exactly one per automation (`ask` plus `schedule` forms one scheduled-check trigger):
 
 - **Schedule.** `cron "0 9 * * 1-5" Europe/Vienna`: five fields (minute, hour, day of month, month, weekday) with
   numbers, lists, ranges and steps; Sunday is 0 or 7; the timezone defaults to the machine's. `at
@@ -19,12 +19,19 @@ Exactly one per automation:
   counts from the condition's own last crossing, not manual runs. With `idleFor` (ms) it also waits until the user gave
   `of` no input for that long (`idleFor: 0` on update removes it). Dream ships two of these on `@ultimate`
   (`extensions/dream/README.md`).
-- **Script.** `ask` instead of a schedule: a `watcher` agent writes an executable `run`, tests it briefly and calls
+- **Streaming script.** `ask` alone: a `watcher` agent writes an executable `run`, tests it briefly and calls
   `automation resume {id}`. Stdout `FIRE [text]` fires; stderr and other stdout are progress. `once` (default true)
   makes the first FIRE finish the automation. A recurring script may print `DONE [text]` and exit 0 to stop cleanly.
   Any other unplanned exit wakes only the watcher, to repair or escalate. The third failure in a row (a FIRE or an hour
   of running resets the count), or a watcher whose turn ends mid-repair, escalates instead: the script stops as
   `failed`, subscribers get `automations.escalated`, and @ultimate a message.
+- **Scheduled check.** `ask` plus `schedule`: the same watcher writes a bounded script, invoked on each tick. It must
+  not loop or sleep. `timeout` is 1–3600 seconds (default 300). Quiet exit 0 wakes nobody and resets failures; stdout
+  `FIRE [text]` uses the shared delivery and prompt-run path. `once: true` finishes on the first FIRE, not the first
+  quiet check; `DONE` plus exit 0 stops cleanly. Nonzero exit, missing executable or secret, or timeout stops scheduling
+  and wakes only the watcher; three failures or an unfinished repair escalate as above. `run` checks now, without
+  consuming a future one-shot. Pause cancels an active check; resume re-arms it. An unfinished check replays after a
+  restart's orphan sweep, never as a resident streaming process. Scheduler identity fences replaced checks' output.
 
 ## Actions
 
@@ -42,21 +49,21 @@ escalating with `Fired more than 6 times in an hour; paused`.
 
 An optional `agent` runs prompt runs with that definition's instructions, tools (minus `automation` and `subagent`),
 model and thinking, discovered as in subagents; its isolate is ignored and unknown names are refused. Without one, runs
-copy the root agent minus the automation tool, on the default model. `model {provider, modelId}` and `thinking`
-override either. Enabled automations add a line each to the prompt, such as `when @ultimate context ≥ 80%`.
+copy the root agent minus the automation tool, on the default model and thinking level. `model {provider, modelId}` and
+`thinking` override either. Enabled automations add a line each to the prompt, such as `when @ultimate context ≥ 80%`.
 
 ## Tool
 
 `automation` is replay-safe and takes `events`, `list`, `create`, `update`, `pause`, `resume`, `run`, `runs`, `log`,
 `abort`, `escalate`, `subscribe`, `unsubscribe`, `delete`.
 
-- `create {name, schedule?|ask?|event?|condition?, once?, secrets?, prompt?, agent?, model?, thinking?, subscribers?,
-  scope?, slug?, to?, key?}`. `key` makes it idempotent: a key an automation already has returns that automation.
-  New ids are `A<n>`; project scripts use slugs.
-- `update {id, …}` may switch between schedule, event and condition; a script stays a script.
-- `pause` / `resume`; `run` fires now, or relaunches a script; `runs {id}`; `abort {id, runId}`; `log {id, lines?}`
-  (default 50, at most 2000); `subscribe` / `unsubscribe {id, to?}` (default the caller); `escalate {id, reason}`;
-  `delete` keeps files and conversations.
+- `create {name, schedule?|ask?|event?|condition?, once?, timeout?, secrets?, prompt?, agent?, model?, thinking?,
+  subscribers?, scope?, slug?, to?, key?}`. `key` makes it idempotent: a key an automation already has returns that
+  automation. New ids are `A<n>`; project scripts use slugs.
+- `update {id, …}` may switch between schedule, event and condition; a script stays in its streaming or scheduled mode.
+- `pause` / `resume`; `run` fires now, relaunches a streaming script or checks a scheduled script now; `runs {id}`;
+  `abort {id, runId}`; `log {id, lines?}` (default 50, at most 2000); `subscribe` / `unsubscribe {id, to?}` (default the
+  caller); `escalate {id, reason}`; `delete` keeps files and conversations.
 
 Lifecycle events: `automations.started`, `.fired` `{id, text, fire}`, `.done`, `.exited`, `.escalated`.
 
@@ -65,9 +72,9 @@ Lifecycle events: `automations.started`, `.fired` `{id, text, fire}`, `.done`, `
 User scripts live in `~/.ultimate/automations/<project>/<id>/`: executable `run`, persistent `state/`, `output.log`
 (about 2000 lines / 256 KiB) and `pid`. Ids restart in every chapter, so a chapter after the first keeps its scripts
 in `<project>@<chapter>/<id>/` instead; the first chapter's folders stay where they were, and switching chapters never
-shares a folder. Scripts get `AUTOMATION_ID` and `AUTOMATION_STATE`, plus only the named
+shares a folder. Scripts get `AUTOMATION_ID` and `AUTOMATION_STATE` (the state directory, not a file), plus only the named
 `secrets` from Secrets; records never hold their values. Script state must survive a restart: open stops leftover
-processes and relaunches enabled running scripts.
+processes and relaunches enabled running streaming scripts; scheduled checks replay through their scheduler.
 
 ### Project automations
 
@@ -79,12 +86,15 @@ Commit shared scripts as:
   automation.json     {"name":"…","ask":"…","once":false,"secrets":["GH_TOKEN"]}
 ```
 
+The manifest may also include `schedule` (cron, every or an absolute at time) and `timeout` for a scheduled check;
+relative `in` times are rejected because discovery must not move the deadline. `timeout` defaults to 300 when scheduled.
 `ask` is required; `name` defaults to its first 80 characters, `once` to true, `to` (the standing agent woken on every
-machine) to `@ultimate`. Slugs match `^[a-z][a-z0-9-]*$`, at most 63 characters. Runtime state stays machine-local.
+machine) to `@ultimate`. Slugs match `^[a-z][a-z0-9-]*$`, at most 63 characters. Runtime state stays machine-local in the
+chapter-specific script folder above.
 Discovery runs only in a project chosen as local: a new manifest becomes a stopped record with an idle watcher, never
-starting itself; changed manifests update it; a removed folder or revoked trust forgets it. `delete` forgets the record,
-not the folder. `run` executes from the host checkout; a watcher's repairs edit the committed file, and a branch's
-edits apply after landing.
+starting itself; changed manifests update it, with ask or timing changes stopping it pending explicit resume; a removed
+folder or revoked trust forgets it. `delete` forgets the record, not the folder. `run` executes from the host checkout;
+a watcher's repairs edit the committed file, and a branch's edits apply after landing.
 
 ## Service and browser API
 
@@ -99,18 +109,20 @@ exported as a document.
 
 ## UI
 
-States share one word and colour (`parts.tsx` `lookOf`), worst first: failed (red), investigating (yellow), writing or
-working (purple), watching or scheduled (green), paused and done (grey).
+States share one word and colour (`parts.tsx` `lookOf`), worst first: failed (red), investigating (yellow), writing,
+working or checking (purple), watching or scheduled (green), paused and done (grey).
 
 - **Automations tab** (right panel, after Activity; palette "Automations…"): every automation, worst first, with its
-  trigger in words, state line, what a fire does, an enable switch, Run now or Restart, Edit and Delete. A script's
-  "script" opens its watcher beside the script detail (pid, uptime, exit, fires, live output or source). Expanding a
-  row lists its runs. The panel follows the shown conversation: a watcher shows its script.
+  trigger in words, state line, what a fire does, an enable switch, Run now, Restart or Check now, Edit and Delete. A
+  script's "script" opens its watcher beside the script detail (pid, uptime, exit, fires, live output or source).
+  Scheduled checks show last outcome/duration, timeout, next check and Check now (disabled during writing/checking).
+  Expanding a row lists its prompt runs separately. The panel follows the shown conversation: a watcher shows its script.
 - **Sidebar** (`sidebar.top`): up to five active automations, hidden when none; **status-line chip**: the active count
   in the worst colour. Both open the panel.
 - **Transcript:** the `automation` call and the inputs `automations.fired`, `.failed`, `.escalated`, `.writing` render
   as folding cards.
 - **Form:** New asks the trigger first. "When something happens" takes the ask in plain words, keep-watching, "Wake
-  this conversation" (on by default) and an optional prompt; "On a schedule" takes name, prompt and a preset or raw
-  schedule with a live preview from `describe`. The agent picker's Configure opens the definition over the bus
+  this conversation" (on by default) and an optional prompt; "On a schedule" takes name and a preset or raw schedule
+  with a live preview from `describe`, then prompt-run or scheduled-check mode. Checks add ask, timeout, once/recurring,
+  optional prompt and subscribers. The agent picker's Configure opens the definition over the bus
   (`subagents:open-definition`, then `subagents:definition-closed`).
