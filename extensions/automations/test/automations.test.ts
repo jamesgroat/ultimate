@@ -233,6 +233,7 @@ it('pause keeps a running profile run alive, skips overlap, and abort cancels a 
   expect(agent.instructions).toBe('Only write the report.')
   // Labelled 'automation', the run still records the definition it runs, which fast mode reads.
   expect(await f.opened.harness.snapshot(Profile, child.id, context)).toEqual({
+    createdAt: expect.any(Number),
     definition: 'writer',
   })
   await until(async () => (await f.records())[0].runs.some((r) => r.status === 'skipped'), 2500)
@@ -339,7 +340,13 @@ it('validates one trigger, project script scope and action targets before creati
     'Exactly one',
   )
   await expect(
-    f.action('create', { name: 'Both', schedule: 'every 1d', ask: 'Watch', prompt: 'Hello' }),
+    f.action('create', {
+      name: 'Both',
+      schedule: 'every 1d',
+      ask: 'Watch',
+      event: { name: 'workspaces.check' },
+      prompt: 'Hello',
+    }),
   ).rejects.toThrow('Exactly one')
   await expect(
     f.action('create', {
@@ -355,6 +362,25 @@ it('validates one trigger, project script scope and action targets before creati
   await expect(
     f.action('create', { name: 'Bad target', schedule: 'every 1d', subscribers: [99999] }),
   ).rejects.toThrow('Unknown subscriber')
+  for (const timeout of [0, 1.5, 3601]) {
+    await expect(
+      f.action('create', {
+        name: 'Bad timeout',
+        ask: 'Check',
+        schedule: 'every 1h',
+        subscribers: [1],
+        timeout,
+      }),
+    ).rejects.toThrow('timeout must be an integer from 1 to 3600')
+  }
+  await expect(
+    f.action('create', {
+      name: 'Not a check',
+      schedule: 'every 1h',
+      prompt: 'Report',
+      timeout: 5,
+    }),
+  ).rejects.toThrow('timeout requires ask and schedule')
   expect(await f.records()).toEqual([])
   const caller = await f.opened.harness.createConversation(
     { ownership: { kind: 'ownerless' } },

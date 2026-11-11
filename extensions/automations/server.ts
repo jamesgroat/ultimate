@@ -132,7 +132,12 @@ const operations = [
   'delete',
 ] as const
 function backend(host: ExtensionHost) {
-  const schedule = scheduler(host, Automations, (...args) => scripts.deliver(...args))
+  const schedule = scheduler(
+    host,
+    Automations,
+    (...args) => scripts.deliver(...args),
+    (...args) => scripts.check(...args),
+  )
   const scripts = supervisor(host, Automations, schedule.fire)
   const trigger = triggers(host, Automations, schedule.fire, schedule.prepareFires)
   const {
@@ -204,6 +209,9 @@ function backend(host: ExtensionHost) {
         name: required(args.name, 'name'),
         ask: required(args.ask, 'ask'),
         once: args.once ?? true,
+        ...(args.schedule
+          ? { schedule: parseSchedule(args.schedule), timeout: args.timeout ?? 300 }
+          : {}),
         ...(args.secrets?.length ? { secrets: args.secrets } : {}),
         to: args.to ?? '@ultimate',
       }
@@ -256,7 +264,9 @@ function backend(host: ExtensionHost) {
     if (
       args.action === 'update' &&
       sub.scope === 'project' &&
-      [args.name, args.ask, args.once, args.secrets].some((value) => value !== undefined)
+      [args.name, args.ask, args.once, args.secrets, args.schedule, args.timeout].some(
+        (value) => value !== undefined,
+      )
     ) {
       const script = sub.script!
       // The record's own fields change with the update's commit; a discovery before then must not hide the old ask.
@@ -267,6 +277,12 @@ function backend(host: ExtensionHost) {
           name: args.name?.trim() ?? sub.name,
           ask: args.ask?.trim() ?? script.ask,
           once: args.once ?? script.once,
+          ...((args.schedule ?? sub.schedule)
+            ? {
+                schedule: args.schedule ? parseSchedule(args.schedule) : sub.schedule,
+                timeout: args.timeout ?? script.timeout ?? 300,
+              }
+            : {}),
           ...((args.secrets ?? script.secrets)?.length
             ? { secrets: args.secrets ?? script.secrets }
             : {}),
@@ -295,12 +311,27 @@ function backend(host: ExtensionHost) {
     }
     return prepared
   }
+  async function planSchedule(tx: Tx, a: Automation, now = false) {
+    a.nextAt ??= nextAt(a.schedule!, Date.now(), a.lastFireAt ?? Date.now())
+    a.scheduler = await tx.createTask(
+      schedule.Scheduler,
+      {
+        id: a.id,
+        ...(now ? { now: a.schedule!.kind === 'at' ? a.nextAt : Date.now() } : {}),
+      },
+      {
+        ownership: { kind: 'conversation' },
+        conversationId: ROOT_CONVERSATION_ID,
+        background: true,
+      },
+    )
+  }
   async function changeScript(
     tx: Tx,
     args: Args,
     prepared: Prepared,
     caller?: number,
-  ): Promise<{ result: JsonValue; effect?: Effect }> {
+  ): Promise<Change> {
     const state = await tx.doc(Automations)
     if (args.action === 'list')
       return {
@@ -359,9 +390,11 @@ function backend(host: ExtensionHost) {
         ...(args.key ? { key: args.key } : {}),
         name,
         enabled: true,
+        ...(args.schedule ? { schedule: parseSchedule(args.schedule) } : {}),
         script: {
           ask: required(args.ask, 'ask'),
           once: args.once ?? true,
+          ...(args.schedule ? { timeout: args.timeout ?? 300 } : {}),
           conversationId,
           state: 'writing',
           ...(args.secrets ? { secrets: args.secrets } : {}),
@@ -392,10 +425,31 @@ function backend(host: ExtensionHost) {
       sub.subscribers = sub.subscribers.filter((s) => s !== prepared.subscriber)
       reachesSomeone(sub)
     } else if (args.action === 'resume' || args.action === 'run') {
+      if (
+        sub.schedule &&
+        args.action === 'run' &&
+        (sub.script!.state === 'writing' || sub.script!.check?.result === 'running')
+      )
+        throw new Error('Cannot check while writing or already checking')
+      if (
+        sub.schedule?.kind === 'at' &&
+        args.action === 'resume' &&
+        Date.parse(sub.schedule.time) <= Date.now()
+      )
+        throw new Error('This one-shot time has passed; update the time first')
+      const abort = sub.scheduler
+      delete sub.scheduler
+      if (sub.script!.check?.result === 'running') sub.script!.check.result = 'stopped'
       sub.enabled = true
       sub.script!.state = 'running'
       // Retain the old pid until launch so onOpen can sweep it if the process dies before the effect.
       delete sub.script!.error
+      if (sub.schedule) {
+        delete sub.script!.pid
+        if (args.action === 'resume') delete sub.nextAt
+        await planSchedule(tx, sub, args.action === 'run')
+        return { result: sub, ...(abort ? { abort } : {}) }
+      }
       return {
         result: sub,
         effect: {
@@ -406,6 +460,11 @@ function backend(host: ExtensionHost) {
       }
     } else if (args.action === 'pause' || args.action === 'delete' || args.action === 'escalate') {
       const pid = sub.script!.pid
+      if (sub.schedule) delete sub.script!.pid
+      const abort = sub.scheduler
+      delete sub.scheduler
+      delete sub.nextAt
+      if (sub.script!.check?.result === 'running') sub.script!.check.result = 'stopped'
       if (args.action === 'escalate')
         await scripts.escalate(tx, sub, required(args.reason, 'reason'))
       else {
@@ -415,6 +474,7 @@ function backend(host: ExtensionHost) {
       if (args.action === 'delete') delete state.automations[id]
       return {
         result: args.action === 'delete' ? { id } : sub,
+        ...(abort ? { abort } : {}),
         effect: { id, action: 'pause', ...(pid ? { previousPid: pid } : {}) },
       }
     }
@@ -437,8 +497,9 @@ function backend(host: ExtensionHost) {
     if (args.action === 'create') {
       required(args.name, 'name')
       if (
-        [args.schedule, args.ask, args.event, args.condition].filter((value) => value !== undefined)
-          .length !== 1
+        [args.ask ?? args.schedule, args.event, args.condition].filter(
+          (value) => value !== undefined,
+        ).length !== 1
       )
         throw new Error('Exactly one of schedule, ask, event or condition is required')
       if (args.scope !== undefined && args.scope !== 'user' && args.scope !== 'project')
@@ -448,6 +509,12 @@ function backend(host: ExtensionHost) {
       if (args.slug !== undefined && args.scope !== 'project')
         throw new Error('slug is only for project automations')
       if (args.schedule !== undefined) parseSchedule(args.schedule)
+      if (
+        args.scope === 'project' &&
+        typeof args.schedule === 'string' &&
+        /^in\s/.test(args.schedule.trim())
+      )
+        throw new Error('Project schedules require an absolute at time, cron or every')
       if (args.ask !== undefined) required(args.ask, 'ask')
       if (!args.prompt && !args.subscribers?.length && !caller && args.scope !== 'project')
         throw new Error('At least one of prompt or subscribers is required')
@@ -482,6 +549,13 @@ function backend(host: ExtensionHost) {
     // An empty prompt on update removes the run action; create needs a real one.
     if (args.prompt !== undefined && (args.action === 'create' || args.prompt !== ''))
       required(args.prompt, 'prompt')
+    if (
+      args.timeout !== undefined &&
+      (!Number.isInteger(args.timeout) || args.timeout < 1 || args.timeout > 3600)
+    )
+      throw new Error('timeout must be an integer from 1 to 3600 seconds')
+    if (args.action === 'create' && args.timeout !== undefined && (!args.ask || !args.schedule))
+      throw new Error('timeout requires ask and schedule')
     if (args.once !== undefined && typeof args.once !== 'boolean')
       throw new Error('once must be boolean')
     if (
@@ -496,11 +570,20 @@ function backend(host: ExtensionHost) {
       const kinds = [args.schedule, args.event, args.condition].filter((v) => v !== undefined)
       if (
         (args.ask !== undefined && !a.script) ||
-        (kinds.length > 0 && !!a.script) ||
+        (!!a.script && (args.event !== undefined || args.condition !== undefined)) ||
+        (!!a.script && !a.schedule && args.schedule !== undefined) ||
         kinds.length > 1
       )
         throw new Error('Cannot change trigger kind')
       if (args.ask !== undefined) required(args.ask, 'ask')
+      if (args.timeout !== undefined && (!a.script || !(args.schedule ?? a.schedule)))
+        throw new Error('timeout requires ask and schedule')
+      if (
+        a.scope === 'project' &&
+        typeof args.schedule === 'string' &&
+        /^in\s/.test(args.schedule.trim())
+      )
+        throw new Error('Project schedules require an absolute at time, cron or every')
     }
   }
   async function prepare(args: Args, caller?: number): Promise<Prepared> {
@@ -604,6 +687,7 @@ function backend(host: ExtensionHost) {
     const abort = a.scheduler
     const oldSchedule = a.schedule && { ...a.schedule }
     const oldAsk = prepared.previousAsk ?? a.script?.ask
+    const oldTimeout = a.script?.timeout
     delete a.scheduler
     if (args.action !== 'update') delete a.nextAt
     if (args.action === 'delete') {
@@ -649,6 +733,7 @@ function backend(host: ExtensionHost) {
         if (args.ask !== undefined) a.script.ask = required(args.ask, 'ask')
         if (args.once !== undefined) a.script.once = args.once
         if (args.secrets !== undefined) a.script.secrets = args.secrets
+        if (args.timeout !== undefined) a.script.timeout = args.timeout
       }
       if (args.agent !== undefined) {
         if (args.agent) a.agent = args.agent
@@ -659,6 +744,8 @@ function backend(host: ExtensionHost) {
       if (a.script && a.script.ask !== oldAsk) {
         // The running script watches the old condition: stop it and have the watcher write run again, as at creation.
         a.script.state = 'writing'
+        a.enabled = false
+        if (a.script.check?.result === 'running') a.script.check.result = 'stopped'
         delete a.script.error
         effect = {
           id,
@@ -674,20 +761,24 @@ function backend(host: ExtensionHost) {
     if (args.action === 'create' || args.action === 'resume')
       await trigger.evaluate(tx, a, prepared.target)
     a.updatedAt = Date.now()
-    if (effect) await deliver(tx, a, `update:${a.updatedAt}`, 'writing', a.script!.ask)
-    if (!isDeepStrictEqual(a.schedule, oldSchedule)) delete a.nextAt
-    if (a.enabled && a.schedule) {
-      a.nextAt ??= nextAt(a.schedule, Date.now(), a.lastFireAt ?? Date.now())
-      a.scheduler = await tx.createTask(
-        schedule.Scheduler,
-        { id },
-        {
-          ownership: { kind: 'conversation' },
-          conversationId: ROOT_CONVERSATION_ID,
-          background: true,
-        },
-      )
+    if (effect && a.script?.state === 'writing')
+      await deliver(tx, a, `update:${a.updatedAt}`, 'writing', a.script.ask)
+    const timingChanged =
+      !isDeepStrictEqual(a.schedule, oldSchedule) || a.script?.timeout !== oldTimeout
+    if (a.script && args.action === 'update' && !timingChanged && !effect) {
+      if (abort) a.scheduler = abort
+      return { result: json(a) }
     }
+    if (timingChanged) {
+      delete a.nextAt
+      if (a.script) {
+        if (a.script.check?.result === 'running') a.script.check.result = 'stopped'
+        effect ??= { id, action: 'pause', previousPid: a.script.pid }
+      }
+    }
+    if (effect && a.script && a.schedule) delete a.script.pid
+    if (a.enabled && a.schedule && (!a.script || a.script.state === 'running'))
+      await planSchedule(tx, a)
     return { result: json(a), ...(abort ? { abort } : {}), ...(effect ? { effect } : {}) }
   }
   async function apply(receipt: Partial<Change>) {
@@ -869,7 +960,7 @@ export default function automations(host: ExtensionHost) {
         // subscribe meant to replace it and be refused for leaving nobody to wake.
         executionMode: 'sequential',
         description:
-          'Automate background work: one trigger (schedule, ask, event or condition) and one or both actions (prompt, subscribers: #id|@name). create {name, trigger, prompt?, subscribers?, key?, …}; with neither action the caller subscribes. To be reminded or woken, subscribe (cheap); add a prompt only when fresh work must run (a whole agent turn every fire). schedule: cron "0 9 * * 1-5" Europe/Vienna, at <ISO time>, in 30m, every 15m. ask: a watcher writes a supervised script that fires on stdout FIRE (tokens only for setup and repair); once defaults to true, so the first FIRE finishes it: pass once:false to keep watching. event {name,where?}: action events lists them. condition {metric:"context",of:"@name"|"#id",above}. list; these take {id}: update, pause, resume, run, runs, log, abort {runId}, escalate {reason}, subscribe/unsubscribe {to?}, delete. Details: extensions/automations/README.md in the Ultimate clone.',
+          'Automate background work: one trigger (schedule, ask, event or condition) and one or both actions (prompt, subscribers: #id|@name). create {name, trigger, prompt?, subscribers?, key?, …}; with neither action the caller subscribes. To be reminded or woken, subscribe (cheap); add a prompt only when fresh work must run (a whole agent turn every fire). schedule: cron "0 9 * * 1-5" Europe/Vienna, at <ISO time>, in 30m, every 15m. ask: a watcher writes a supervised script that fires on stdout FIRE (tokens only for setup and repair); once defaults to true, so the first FIRE finishes it: pass once:false to keep watching. ask+schedule: a bounded check per tick (timeout 1–3600s, default 300); quiet exit 0 wakes nobody; run checks now. event {name,where?}: action events lists them. condition {metric:"context",of:"@name"|"#id",above}. list; these take {id}: update, pause, resume, run, runs, log, abort {runId}, escalate {reason}, subscribe/unsubscribe {to?}, delete. Details: extensions/automations/README.md in the Ultimate clone.',
         parameters: obj({
           action: strEnum(operations),
           id: opt(str()),
@@ -892,6 +983,7 @@ export default function automations(host: ExtensionHost) {
             }),
           ),
           once: opt(bool()),
+          timeout: opt(int({ minimum: 1, maximum: 3600 })),
           secrets: opt(arr(str())),
           prompt: opt(str()),
           agent: opt(str()),

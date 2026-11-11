@@ -75,7 +75,13 @@ function call(app: NonNullable<typeof server>, action: string, id: string) {
 
 it('starts a prompt run from script FIRE with its payload', async () => {
   const { app, folder } = await fixture()
-  app.host.faux!.setResponses(Array.from({ length: 4 }, () => fauxAssistantMessage('Complete')))
+  const resumed = Promise.withResolvers<void>()
+  const answer = async () => {
+    app.host.faux!.appendResponses([answer])
+    await resumed.promise
+    return fauxAssistantMessage('Complete')
+  }
+  app.host.faux!.setResponses([answer])
   const caller = await app.harness.createConversation({ ownership: { kind: 'ownerless' } }, context)
   const a = (await app.extensions.invoke(
     'automations',
@@ -97,6 +103,7 @@ it('starts a prompt run from script FIRE with its payload', async () => {
   )
   await writeRun(folder(a.id), 'echo FIRE hello')
   await call(app, 'resume', a.id)
+  resumed.resolve()
   const record = async () => (await app.harness.snapshot(Automations, context))!.automations[a.id]
   await until(async () => !!(await record()).runs[0]?.finishedAt)
   const run = (await record()).runs[0]
@@ -410,28 +417,81 @@ it('stops a recurring script that prints DONE and exits 0 without waking anyone;
   expect(await done()).toHaveLength(2)
 })
 
-it("keeps a later chapter's scripts in their own folder, apart from the first chapter's same id", async () => {
+it("keeps a user script through a chapter switch, isolated from the later chapter's same id, and resumes its state", async () => {
   const first = await fixture()
-  const legacy = first.folder('A1')
-  await mkdir(join(legacy, 'state'), { recursive: true })
-  await writeFile(join(legacy, 'state/mark'), 'first chapter\n')
+  const ready = Promise.withResolvers<void>()
+  first.app.host.faux!.setResponses([
+    async () => {
+      await ready.promise
+      return fauxAssistantMessage('Ready')
+    },
+  ])
+  const original = await create(first.app)
+  const legacy = first.folder(original.id)
+  const source =
+    'n=$(($(cat "$AUTOMATION_STATE/n" 2>/dev/null || echo 0) + 1)); echo $n > "$AUTOMATION_STATE/n"; echo first-$n; sleep 60'
+  await writeRun(legacy, source)
+  await call(first.app, 'resume', original.id)
+  ready.resolve()
+  await (await first.app.harness.conversation(
+    original.script!.conversationId as ConversationId,
+    context,
+  ))!.waitForIdle(context)
+  await until(async () =>
+    ((await call(first.app, 'log', original.id)) as { text: string }).text.includes('first-1'),
+  )
+  await call(first.app, 'pause', original.id)
+  const saved = (await first.app.harness.snapshot(Automations, context))!.automations[original.id]
+  expect(saved.scope).not.toBe('project')
+  expect(saved).toMatchObject({ enabled: false, script: { state: 'stopped' } })
+  const executable = await readFile(join(legacy, 'run'), 'utf8')
+  const output = await readFile(join(legacy, 'output.log'), 'utf8')
   const { home, userHome } = first
-  await server?.close()
+  await first.app.close()
   server = undefined
   await requestChapter(home, 'next')
-  server = await fauxServer({ ...first.options, home, userHome })
+  server = await fauxServer(first.options)
+  const laterReady = Promise.withResolvers<void>()
+  server.host.faux!.setResponses([
+    async () => {
+      await laterReady.promise
+      return fauxAssistantMessage('Ready')
+    },
+  ])
   const sub = await create(server)
-  expect(sub.id).toBe('A1')
-  const folder = join(userHome, '.ultimate/automations', `${basename(home)}@next`, 'A1')
-  await writeRun(folder, 'echo FIRE later; sleep 60')
+  expect(sub.id).toBe(original.id)
+  const folder = join(userHome, '.ultimate/automations', `${basename(home)}@next`, sub.id)
+  await expect(readFile(join(folder, 'state/n'))).rejects.toMatchObject({ code: 'ENOENT' })
+  await writeRun(folder, 'echo later > "$AUTOMATION_STATE/n"; echo later; sleep 60')
   await call(server, 'resume', sub.id)
+  laterReady.resolve()
+  await (await server.harness.conversation(
+    sub.script!.conversationId as ConversationId,
+    context,
+  ))!.waitForIdle(context)
   await until(async () =>
-    (await readFile(join(folder, 'output.log'), 'utf8').catch(() => '')).includes('FIRE later'),
+    ((await call(server!, 'log', sub.id)) as { text: string }).text.includes('later'),
   )
-  // The first chapter's folder is untouched: no run, no log, its state kept.
-  expect(await readFile(join(legacy, 'state/mark'), 'utf8')).toBe('first chapter\n')
-  await expect(readFile(join(legacy, 'output.log'), 'utf8')).rejects.toThrow('ENOENT')
+  // Actual first-chapter files, not just a marker, survive the same id being executed in the next chapter.
+  expect(await readFile(join(legacy, 'run'), 'utf8')).toBe(executable)
+  expect(await readFile(join(legacy, 'output.log'), 'utf8')).toBe(output)
+  expect(await readFile(join(legacy, 'state/n'), 'utf8')).toBe('1\n')
   await call(server, 'pause', sub.id)
+  await server.close()
+  server = undefined
+  await requestChapter(home, 'the-beginning')
+  server = await fauxServer(first.options)
+  expect((await server.harness.snapshot(Automations, context))!.automations[original.id]).toEqual(
+    saved,
+  )
+  // Paused stays paused on open. Explicit resume uses its original run and state, not the later chapter's.
+  await call(server, 'resume', original.id)
+  await until(async () =>
+    ((await call(server!, 'log', original.id)) as { text: string }).text.includes('first-2'),
+  )
+  await call(server, 'pause', original.id)
+  expect(await readFile(join(legacy, 'state/n'), 'utf8')).toBe('2\n')
+  expect(await readFile(join(folder, 'state/n'), 'utf8')).toBe('later\n')
 })
 
 it('keeps listing and supervising scripts after a reload bumps the ledger version', async () => {
@@ -559,6 +619,46 @@ it('discovers a committed project automation by slug only in a chosen project, a
   // A removed folder forgets the record.
   await rm(join(root, '.ultimate/automations/prs'), { recursive: true })
   expect(await list(app)).toEqual([])
+})
+
+it('shares a project script runtime and its state across chapters', async () => {
+  const first = await fixture()
+  await committed(
+    first.root,
+    'prs',
+    'n=$(($(cat "$AUTOMATION_STATE/n" 2>/dev/null || echo 0) + 1)); echo $n > "$AUTOMATION_STATE/n"; echo "$AUTOMATION_STATE" > "$AUTOMATION_STATE/path"; echo DONE $n',
+  )
+  const run = async (app: NonNullable<typeof server>, n: number) => {
+    await call(app, 'resume', 'prs')
+    await until(async () => {
+      const sub = (await app.harness.snapshot(Automations, context))!.automations.prs
+      return sub.script!.state === 'stopped' && sub.script!.exitCode === 0
+    })
+    const state = join(first.folder('prs'), 'state')
+    expect(await readFile(join(state, 'n'), 'utf8')).toBe(`${n}\n`)
+    expect(await readFile(join(state, 'path'), 'utf8')).toBe(`${state}\n`)
+    expect((await call(app, 'log', 'prs')) as { text: string }).toEqual({
+      text: Array.from({ length: n }, (_, i) => `DONE ${i + 1}`).join('\n'),
+    })
+    await expect(readFile(join(first.folder('prs'), 'pid'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  }
+  await run(first.app, 1)
+  await first.app.close()
+  server = undefined
+  for (const [index, chapter] of ['next', 'later'].entries()) {
+    await requestChapter(first.home, chapter)
+    server = await fauxServer(first.options)
+    expect((await list(server))[0]).toMatchObject({
+      id: 'prs',
+      enabled: false,
+      script: { state: 'stopped' },
+    })
+    await run(server, index + 2)
+    await server.close()
+    server = undefined
+  }
 })
 
 it('creates a project automation in the checkout with a committed manifest', async () => {
