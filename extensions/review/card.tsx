@@ -12,11 +12,12 @@ import { shortSpec } from './selector.tsx'
  * place opens Review at that spec, file and line.
  */
 export function ReviewCard({ entry }: { entry: EntryRecord }) {
-  const { spec, comments, note } = entry.data as ReviewComments
+  const { spec, comments, note, source, sourceLabel, cwd } = entry.data as ReviewComments
   const title = (
     <>
       Review · {commentCount(comments.length)} on{' '}
       <span className="text-foreground/85">{shortSpec(spec)}</span>
+      {sourceLabel && <> · {sourceLabel}</>}
     </>
   )
   return (
@@ -35,7 +36,10 @@ export function ReviewCard({ entry }: { entry: EntryRecord }) {
           className="w-full max-w-2xl min-w-0 overflow-hidden rounded-lg border border-border/70 border-l-2 border-l-brand/50 bg-secondary/40"
           data-review-card={entry.id}
         >
-          <header className="flex items-center gap-2 border-b border-border/60 px-3 py-2 font-mono text-[11px] text-muted-foreground">
+          <header
+            className="flex items-center gap-2 border-b border-border/60 px-3 py-2 font-mono text-[11px] text-muted-foreground"
+            title={cwd}
+          >
             <FileDiffIcon className="size-3.5 shrink-0 text-brand" />
             <span className="min-w-0 truncate">{title}</span>
           </header>
@@ -52,11 +56,15 @@ export function ReviewCard({ entry }: { entry: EntryRecord }) {
                   className="flex max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded border border-border/70 bg-background/60 px-1.5 py-0.5 font-mono text-[11px] hover:border-brand/50 hover:text-foreground"
                   data-review-chip={location(comment)}
                   onClick={() =>
-                    openReview(spec, {
-                      file: comment.file,
-                      line: comment.start,
-                      side: comment.side,
-                    })
+                    openReview(
+                      spec,
+                      {
+                        file: comment.file,
+                        line: comment.start,
+                        side: comment.side,
+                      },
+                      source,
+                    )
                   }
                   title={`Open ${location(comment)} in Review`}
                   type="button"
