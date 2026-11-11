@@ -2,7 +2,11 @@ import { constants } from 'node:fs'
 import type { Dirent } from 'node:fs'
 import { access, appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import {
+  awaitWithContext,
+  BACKGROUND_CONTEXT,
+  withAbortSignal,
+} from '@earendil-works/chord/context'
 import { defineTask, InboxDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { Agent, ConversationId, Cursor, Tx } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
@@ -21,6 +25,7 @@ import { readSecret, validateName } from '../../lib/secrets.ts'
 import { Standing, SubagentsApi } from '../subagents/api.ts'
 import { MessagesApi } from '../messages/api.ts'
 import { Done, Escalated, Exited, Started } from './refs.ts'
+import { parseSchedule } from './schedule.ts'
 import type { Automations as Ledger } from './server.ts'
 import {
   doneText,
@@ -65,7 +70,16 @@ const exists = (path: string) =>
 /** A project automation's committed manifest, or undefined when the file is missing or malformed. */
 function manifest(value: unknown): Manifest | undefined {
   if (!value || typeof value !== 'object') return undefined
-  const { name, ask, once, secrets, to } = value as Record<string, unknown>
+  const { name, ask, once, secrets, to, schedule, timeout } = value as Record<string, unknown>
+  if (
+    timeout !== undefined &&
+    (!Number.isInteger(timeout) || Number(timeout) < 1 || Number(timeout) > 3600)
+  )
+    return undefined
+  if (timeout !== undefined && schedule === undefined) return undefined
+  // Relative times would move every time discovery reads the committed manifest.
+  if (typeof schedule === 'string' && /^in\s/.test(schedule.trim())) return undefined
+  const timing = schedule === undefined ? undefined : parseSchedule(schedule as string)
   if (typeof ask !== 'string' || !ask.trim()) return undefined
   if (name !== undefined && (typeof name !== 'string' || !name.trim())) return undefined
   if (once !== undefined && typeof once !== 'boolean') return undefined
@@ -79,6 +93,7 @@ function manifest(value: unknown): Manifest | undefined {
     name: name?.trim() ?? ask.trim().slice(0, 80),
     ask: ask.trim(),
     once: once ?? true,
+    ...(timing ? { schedule: timing, timeout: Number(timeout ?? 300) } : {}),
     ...(secrets?.length ? { secrets: secrets as string[] } : {}),
     // A committed script wakes someone on every machine: a standing agent, @ultimate unless it names another.
     to: to ?? '@ultimate',
@@ -114,6 +129,7 @@ export type Prepared = {
 }
 type Run = {
   child: GroupProcess
+  scheduler?: number
   group: Group
   active: boolean
   afterFire: boolean
@@ -133,13 +149,14 @@ export function supervisor(
 ) {
   // Only process state is reload-stable: running children and in-flight work. The functions below are rebuilt on each
   // install, so they always use the current ledger token and fire callback.
-  // A new key: a process still holding the old `automations.supervisor` object (the whole supervisor) gets fresh
-  // state on the first reload; the old facet's close stops its scripts and this one's open relaunches them.
-  const shared = host.resource('automations.supervisor.state', () => ({
+  // v2 adds the reload readiness gate. The deployed v1 resource has no gate: use fresh process state on upgrade;
+  // the old facet's close drains its children, then this facet's open sweeps pid files and resumes enabled scripts.
+  const shared = host.resource('automations.supervisor.state.v2', () => ({
     runs: new Map<string, Run>(),
     launches: new Set<Promise<void>>(),
     effects: new Map<string, Promise<void>>(),
     closing: false,
+    ready: Promise.withResolvers<void>(),
   }))
   const { runs, launches, effects } = shared
   // home is the stable project state directory (~/.ultimate/projects/<name>-<hash>), not a worktree cwd. Ids restart in
@@ -211,6 +228,8 @@ export function supervisor(
         sub.script!.once,
         sub.script!.secrets,
         sub.script!.to,
+        sub.schedule,
+        sub.script!.timeout,
       ])
     const differs = (subs: Record<string, Automation>) =>
       [...found].some(([id, m]) => {
@@ -218,7 +237,8 @@ export function supervisor(
         return (
           !sub ||
           (sub.scope === 'project' &&
-            fields(sub) !== JSON.stringify([m.name, m.ask, m.once, m.secrets, m.to]))
+            fields(sub) !==
+              JSON.stringify([m.name, m.ask, m.once, m.secrets, m.to, m.schedule, m.timeout]))
         )
       }) || Object.values(subs).some(gone)
     const current =
@@ -239,9 +259,11 @@ export function supervisor(
             scope: 'project',
             name: m.name,
             enabled: false,
+            ...(m.schedule ? { schedule: m.schedule } : {}),
             script: {
               ask: m.ask,
               once: m.once,
+              ...(m.timeout ? { timeout: m.timeout } : {}),
               ...(m.secrets ? { secrets: m.secrets } : {}),
               to: m.to,
               conversationId: await agentConversation(tx, prepared, id, m.name, host.projectRoot),
@@ -254,6 +276,22 @@ export function supervisor(
             fires: 0,
           }
         else if (sub?.scope === 'project') {
+          if (
+            JSON.stringify([sub.schedule, sub.script!.timeout, sub.script!.ask]) !==
+            JSON.stringify([m.schedule, m.timeout, m.ask])
+          ) {
+            sub.enabled = false
+            sub.script!.state = 'stopped'
+            if (sub.script!.check?.result === 'running') sub.script!.check.result = 'stopped'
+            const scheduler = sub.scheduler
+            delete sub.scheduler
+            delete sub.nextAt
+            stops.push({ id, action: 'pause', previousPid: sub.script!.pid, scheduler })
+            delete sub.script!.pid
+          }
+          delete sub.schedule
+          delete sub.script!.timeout
+          if (m.schedule) sub.schedule = m.schedule
           const before = sub.script!.to
           sub.subscribers = [...new Set([...sub.subscribers.filter((s) => s !== before), m.to])]
           delete sub.script!.secrets
@@ -261,6 +299,7 @@ export function supervisor(
           Object.assign(sub.script!, {
             ask: m.ask,
             once: m.once,
+            ...(m.timeout ? { timeout: m.timeout } : {}),
             to: m.to,
             ...(m.secrets ? { secrets: m.secrets } : {}),
           })
@@ -275,6 +314,7 @@ export function supervisor(
         stops.push({
           id: sub.id,
           action: 'pause',
+          ...(sub.scheduler ? { scheduler: sub.scheduler } : {}),
           ...(sub.script!.pid ? { previousPid: sub.script!.pid } : {}),
         })
       }
@@ -321,10 +361,11 @@ export function supervisor(
     [
       `You own automation ${sub.id} "${sub.name}".`,
       `Ask: ${sub.script!.ask}`,
-      `Mode: ${sub.script!.once ? 'one-shot' : 'recurring'}`,
+      `Mode: ${sub.script!.once ? 'one-shot' : 'recurring'}${sub.schedule ? ` scheduled check (${JSON.stringify(sub.schedule)}), timeout ${sub.script!.timeout ?? 300}s; exit 0 quietly when nothing changed, never sleep or loop` : ''}`,
       `Named secret environment variables: ${sub.script!.secrets?.join(', ') || 'none'}`,
       `Executable: ${runPath(sub)}`,
-      `Persistent memory: ${join(folder(sub.id), 'state')} ($AUTOMATION_STATE).`,
+      `Persistent memory: ${join(folder(sub.id), 'state')} ($AUTOMATION_STATE): a directory the supervisor creates for the script's own files, not a file.`,
+      'Before resume, run the script once against that layout with the interpreter its shebang declares (macOS ships bash 3.2: no readarray or mapfile unless the shebang names an interpreter that has them), covering the quiet, FIRE and DONE paths.',
       ...(sub.scope === 'project'
         ? [
             `This is a project automation: run and ${MANIFEST} are committed in ${projectDir(sub.id)}, and run starts in ${host.projectRoot}. After you change run, say that the change is uncommitted in the project checkout.`,
@@ -478,6 +519,7 @@ export function supervisor(
     code: number | null,
     signal?: string,
     error?: string,
+    scheduler = run?.scheduler,
   ) {
     if (run?.finished) return
     if (run) {
@@ -489,24 +531,44 @@ export function supervisor(
     if (shared.closing && !run) return
     await host.harness().commit(async (tx) => {
       const sub = (await tx.doc(Automations)).automations[id]
-      if (!sub || (run && sub.script!.pid !== run.child.pid)) return
+      if (
+        !sub ||
+        (scheduler !== undefined && sub.scheduler !== scheduler) ||
+        (run && sub.script!.pid !== run.child.pid)
+      )
+        return
       const done = sub.script!.once && sub.script!.state === 'done'
       const stopped = !!run?.stopped || shared.closing
       if (!stopped && sub.script!.state !== 'running' && !done) return
       // A recurring script that printed DONE and exited 0 asked to stop: the same state as pause, with nobody woken.
       const said = run?.done
-      const finished = !sub.script!.once && !stopped && !done && said !== undefined && code === 0
+      const finished =
+        !stopped &&
+        !done &&
+        said !== undefined &&
+        code === 0 &&
+        !error &&
+        (!!sub.schedule || !sub.script!.once)
+      const quiet = !!sub.schedule && !stopped && !done && !finished && code === 0 && !error
       // A fired one-shot is already done in its FIRE commit, so any other unplanned exit is a failure.
       // Shutdown keeps running automations enabled for reopen.
       const now = Date.now()
-      const failed = !finished && !stopped && !done
+      const failed = !quiet && !finished && !stopped && !done
+      if (sub.schedule && sub.script!.check && run?.stopped !== 'shutdown' && !shared.closing) {
+        const outcome = sub.script!.check
+        outcome.ms = now - outcome.at
+        outcome.result = stopped ? 'stopped' : failed ? 'failed' : outcome.fired ? 'fired' : 'quiet'
+      }
+      if (quiet) delete sub.script!.failures
       if (finished) {
         sub.script!.state = 'stopped'
         sub.enabled = false
       } else if (failed) {
         sub.script!.state = 'investigating'
+        if (sub.schedule) sub.enabled = false
         // A script that ran for an hour worked: this exit starts a new count.
-        const healthy = !!sub.script!.startedAt && now - sub.script!.startedAt >= HEALTHY_MS
+        const healthy =
+          !!run && !!sub.script!.startedAt && now - sub.script!.startedAt >= HEALTHY_MS
         sub.script!.failures = healthy ? 1 : (sub.script!.failures ?? 0) + 1
       }
       sub.updatedAt = sub.script!.exitedAt = now
@@ -543,7 +605,7 @@ export function supervisor(
     } else if ((await readPid(id)) === pid) await cleanup(id, pid)
   }
   async function launch(id: string, previousPid?: number) {
-    const work = launchRun(id, previousPid)
+    const work = launchRun(id, previousPid).then(() => {})
     launches.add(work)
     try {
       await work
@@ -551,10 +613,19 @@ export function supervisor(
       launches.delete(work)
     }
   }
-  async function launchRun(id: string, previousPid?: number) {
+  async function launchRun(
+    id: string,
+    previousPid?: number,
+    scheduler?: number,
+  ): Promise<Run | undefined> {
     if (shared.closing) throw new Error('Automation supervisor is closing')
     const sub = await snapshot(id)
-    if (!sub.enabled || sub.script!.state !== 'running') return
+    if (
+      !sub.enabled ||
+      sub.script!.state !== 'running' ||
+      (scheduler !== undefined && sub.scheduler !== scheduler)
+    )
+      return undefined
     const current = runs.get(id)
     // A replay of a start receipt (including after onOpen reconciliation) reuses this process.
     if (
@@ -562,7 +633,7 @@ export function supervisor(
       current.child.pid === sub.script!.pid &&
       current.child.pid !== previousPid
     )
-      return
+      return current
     await stopProcess(id, current?.child.pid, 'restart')
     const recorded = await readPid(id)
     if (recorded) await cleanup(id, recorded)
@@ -597,6 +668,7 @@ export function supervisor(
     const run: Run = {
       child,
       group,
+      scheduler,
       active: true,
       afterFire: false,
       queue: Promise.resolve(),
@@ -611,7 +683,12 @@ export function supervisor(
     // Hold output until the pid and Started event are committed, even for an immediately exiting script.
     run.queue = host.harness().commit(async (tx) => {
       const saved = (await tx.doc(Automations)).automations[id]
-      if (!saved || !saved.enabled || saved.script!.state !== 'running') {
+      if (
+        !saved ||
+        !saved.enabled ||
+        saved.script!.state !== 'running' ||
+        (scheduler !== undefined && saved.scheduler !== scheduler)
+      ) {
         run.active = false
         return
       }
@@ -649,12 +726,21 @@ export function supervisor(
       if (done !== undefined) run.done = done
       await host.harness().commit(async (tx) => {
         const saved = (await tx.doc(Automations)).automations[id]
-        if (!saved || saved.script!.pid !== child.pid || saved.script!.state !== 'running') return
+        if (
+          !saved ||
+          saved.script!.pid !== child.pid ||
+          saved.script!.state !== 'running' ||
+          (scheduler !== undefined && saved.scheduler !== scheduler)
+        )
+          return
         saved.script!.lastOutputAt = saved.updatedAt = Date.now()
         if (fire === undefined || run.afterFire) return
         // A FIRE is the script doing its job: earlier failures no longer count toward escalation.
         delete saved.script!.failures
+        const before = saved.fires
         await fireAutomation(tx, saved, Date.now(), fire)
+        if (saved.fires > before && saved.script!.check && scheduler !== undefined)
+          saved.script!.check.fired = (saved.script!.check.fired ?? 0) + 1
         if (!saved.enabled) {
           run.stopped = 'pause'
           run.afterFire = true
@@ -694,10 +780,71 @@ export function supervisor(
         if (pending) enqueue(() => line(pending, stdout))
       })
     }
-    await run.queue
+    // Bounded callers attach their deadline immediately, without waiting behind script output.
+    if (scheduler === undefined) await run.queue
     if (!run.active && !run.afterFire) await stopProcess(id, child.pid)
+    return run
+  }
+  /** One bounded execution through the common process path; false means retry on a replacement facet. */
+  async function check(id: string, scheduler: number, signal: AbortSignal) {
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT)
+    // Tasks may replay as soon as the harness opens, before the facet's orphan sweep has finished.
+    const readiness = shared.ready
+    await awaitWithContext(readiness.promise, ctx)
+    const sub = await snapshot(id)
+    if (sub.scheduler !== scheduler || !sub.enabled || sub.script!.check?.result !== 'running')
+      return true
+    let run: Run | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const halt = () => {
+      if (run?.child.pid)
+        void stopProcess(id, run.child.pid).catch((error: unknown) => host.notice(String(error)))
+    }
+    const work = (async () => {
+      try {
+        signal.throwIfAborted()
+        run = await launchRun(id, undefined, scheduler)
+        if (!run) return
+        signal.addEventListener('abort', halt, { once: true })
+        if (signal.aborted) halt()
+        timer = setTimeout(
+          () => {
+            run!.error = `Check timed out after ${sub.script!.timeout ?? 300}s`
+            // A timeout is a failure, not a manual stop.
+            if (run!.child.pid)
+              void cleanup(id, run!.child.pid, run).catch((error: unknown) =>
+                host.notice(String(error)),
+              )
+          },
+          (sub.script!.timeout ?? 300) * 1000,
+        )
+        await run.group.closed
+        await run.queue
+        signal.throwIfAborted()
+      } catch (error) {
+        if (signal.aborted) throw error
+        await finish(id, run, null, undefined, String(error), scheduler)
+      } finally {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', halt)
+      }
+    })()
+    launches.add(work)
+    try {
+      await work
+    } finally {
+      launches.delete(work)
+    }
+    // Shutdown cancels this waiter; facet reload instead opens a replacement supervisor. In that case retry the
+    // same durable phase through its new definition, never spawn again through this disposed facet's functions.
+    if (shared.ready !== readiness) {
+      await awaitWithContext(shared.ready.promise, ctx)
+      return false
+    }
+    return true
   }
   async function effect(value: Effect) {
+    if (value.scheduler) await host.harness().abortTask(value.scheduler, BACKGROUND_CONTEXT)
     if (value.action === 'resume') {
       try {
         await launch(value.id, value.previousPid)
@@ -731,7 +878,7 @@ export function supervisor(
       const sub = Object.values((await tx.doc(Automations)).automations).find(
         (a) => a.script?.conversationId === conversationId,
       )
-      if (!sub?.enabled || !['writing', 'investigating'].includes(sub.script!.state)) return
+      if (!sub?.script || !['writing', 'investigating'].includes(sub.script.state)) return
       if ((await tx.doc(InboxDoc, conversationId as ConversationId)).items.length) return
       // A brief or failure committed but not yet delivered is still coming: the watcher will look again.
       for (const live of ['pending', 'running'] as const) {
@@ -755,7 +902,7 @@ export function supervisor(
       await escalate(
         tx,
         sub,
-        `The watcher stopped while the script was ${sub.script!.state}${said ? `: ${said}` : ''}`,
+        `The watcher stopped while the script was ${sub.script.state}${said ? `: ${said}` : ''}`,
       )
     }, BACKGROUND_CONTEXT)
   }
@@ -766,7 +913,9 @@ export function supervisor(
   }
   const close = async () => {
     shared.closing = true
-    // A pending launch may be reading secrets or checking its executable; it must settle before cleanup.
+    shared.ready = Promise.withResolvers<void>()
+    // Stop bounded executions before waiting for their completion, too.
+    for (const [id, run] of runs) await stopProcess(id, run.child.pid, 'shutdown')
     await Promise.allSettled(launches)
     for (const [id, run] of runs) await stopProcess(id, run.child.pid, 'shutdown')
   }
@@ -789,7 +938,7 @@ export function supervisor(
     await discover()
     const state = await host.harness().snapshot(Automations, BACKGROUND_CONTEXT)
     for (const sub of Object.values(state?.automations ?? {})) {
-      if (sub.script?.state !== 'running' || !sub.enabled) continue
+      if (sub.script?.state !== 'running' || !sub.enabled || sub.schedule) continue
       try {
         await launch(sub.id)
       } catch (error) {
@@ -797,9 +946,11 @@ export function supervisor(
         await finish(sub.id, undefined, null, undefined, String(error))
       }
     }
+    shared.ready.resolve()
   }
   return {
     Deliver,
+    check,
     status,
     apply,
     escalate,

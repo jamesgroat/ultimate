@@ -91,6 +91,7 @@ export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promis
           item.id !== own &&
           item.id !== ownPause &&
           item.enabled &&
+          !item.script &&
           (item.schedule || item.event || item.condition),
       )
       .map((item) => {
@@ -133,11 +134,12 @@ export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promis
     }
     const watchers = automations
       .filter((item) => item.enabled && item.script)
-      .map(({ id, scope, name, script, prompt, agent, model, thinking }) => ({
+      .map(({ id, scope, name, script, schedule, prompt, agent, model, thinking }) => ({
         id,
         ...(scope ? { scope } : {}),
         name,
         ask: script!.ask,
+        ...(schedule ? { schedule, timeout: script!.timeout ?? 300 } : {}),
         ...(prompt ? { prompt } : {}),
         ...(agent ? { agent } : {}),
         ...(model ? { model } : {}),
@@ -224,13 +226,13 @@ export async function applySeed(host: ExtensionHost) {
           owner: 'user' as const,
           text: `Open question (${seed.from.name}${ref}): ${text}`,
         })),
-        // Project manifests are rediscovered by automations onOpen; user scripts need recreating.
-        ...seed.scripts
-          .filter((item) => item.scope !== 'project')
-          .map(({ id, name, ask, prompt, agent }) => ({
-            owner: 'ultimate' as const,
-            text: `Recreate script ${id} (${name}): ${ask}${prompt ? ` · prompt: ${prompt}${agent ? ` (agent ${agent})` : ''}` : ''}`,
-          })),
+        ...seed.scripts.map(({ id, scope, name, ask, schedule, timeout, prompt, agent }) => ({
+          owner: 'ultimate' as const,
+          text:
+            scope === 'project'
+              ? `Resume project script ${id} (${name}): paused after chapter change.`
+              : `Recreate ${schedule ? 'scheduled check' : 'script'} ${id} (${name}): ${ask}${schedule ? ` · schedule: ${JSON.stringify(schedule)} · timeout: ${timeout ?? 300}s` : ''}${prompt ? ` · prompt: ${prompt}${agent ? ` (agent ${agent})` : ''}` : ''}`,
+        })),
         ...seed.automations
           .filter((item) => !carries(item))
           .map(({ name, schedule, event, condition }) => ({
