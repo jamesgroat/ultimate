@@ -2,12 +2,14 @@ import {
   ArrowLeftIcon,
   CheckIcon,
   ChevronRightIcon,
+  CircleAlertIcon,
   ExternalLinkIcon,
   GitBranchIcon,
   InboxIcon,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { MarkdownSource } from '@/components/ai/message'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import {
@@ -18,6 +20,7 @@ import {
   formatTime,
   Header,
   provide,
+  Provided,
   Sidebar,
   useDocOf,
   useEvent,
@@ -31,16 +34,36 @@ import type { Message } from '../messages/refs.ts'
 import { MessageQuestions } from '../questions/ui.tsx'
 import { UnderUltimate } from '../sidebar/ui.tsx'
 import { talkToUltimate } from '../subagents/ui.tsx'
-import { answeredToday, inboxItems, lead, previewUrl, selection } from './items.tsx'
+import { answeredToday, inboxItems, itemKey, lead, previewUrl, selection } from './items.tsx'
+import { InboxSource } from './ui.tsx'
+import type { InboxBoard, InboxItem, InboxStatus } from './ui.tsx'
 
 const SURFACE = 'inbox'
 const HOUR = 60 * 60_000
 const amber = stateTone.waits
 
-/** The messages that wait on the user, oldest first, read live from the Messages log. */
-function useItems() {
-  const log = useDocOf(1, MessagesDoc) ?? emptyMessages
-  return { items: inboxItems(log.messages), messages: log.messages }
+function InboxData({
+  children,
+}: {
+  children: (board: InboxBoard, messages: readonly Message[]) => ReactNode
+}) {
+  const log = useDocOf(1, MessagesDoc)
+  const messages = log?.messages ?? emptyMessages.messages
+  const local: InboxBoard = {
+    items: inboxItems(messages).map((message) => ({ message })),
+    status: { state: log === undefined ? 'loading' : 'complete' },
+  }
+  return (
+    <Provided point={InboxSource} input={local}>
+      {(provided) => {
+        const board = provided ?? local
+        return children(
+          { ...board, items: board.items.toSorted((a, b) => a.message.at - b.message.at) },
+          messages,
+        )
+      }}
+    </Provided>
+  )
 }
 
 /** Who asks, as the sidebar draws a branch: its feature chip (or a standing agent's `@name`) and `#id`. */
@@ -54,6 +77,29 @@ function Asker({ id }: { id: Message['from'] }) {
       {feature && <FeatureTag className="max-w-40 shrink" feature={feature} />}
       {agent && <span className="shrink-0 text-foreground/80">{agent}</span>}
       <span className="shrink-0">#{id}</span>
+    </span>
+  )
+}
+
+function ItemAsker({ item }: { item: InboxItem }) {
+  if (item.source === undefined) {
+    const asker = <Asker id={item.message.from} />
+    if (!item.sourceLabel) return asker
+    return (
+      <span className="flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] text-muted-foreground/70">
+        <span className="truncate" title={item.sourceLabel}>
+          {item.sourceLabel}
+        </span>
+        {asker}
+      </span>
+    )
+  }
+  return (
+    <span className="flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] text-muted-foreground/70">
+      <span className="truncate" title={item.sourceLabel}>
+        {item.sourceLabel}
+      </span>
+      <span className="shrink-0">{item.asker ?? `#${item.message.from}`}</span>
     </span>
   )
 }
@@ -86,13 +132,14 @@ function Row({
   selected,
   onSelect,
 }: {
-  item: Message
+  item: InboxItem
   now: number
   selected: boolean
   onSelect: () => void
 }) {
-  const gist = item.questions?.[0]?.text
-  const more = (item.questions?.length ?? 0) > 1 ? ` +${item.questions!.length - 1}` : ''
+  const message = item.message
+  const gist = message.questions?.[0]?.text
+  const more = (message.questions?.length ?? 0) > 1 ? ` +${message.questions!.length - 1}` : ''
   return (
     <button
       aria-current={selected ? 'true' : undefined}
@@ -100,7 +147,7 @@ function Row({
         'flex w-full cursor-pointer flex-col gap-1 rounded-md px-3 py-2.5 text-left outline-none hover:bg-accent/40 focus-visible:ring-1 focus-visible:ring-ring',
         selected && 'bg-accent/60 hover:bg-accent/60',
       )}
-      data-inbox-row={item.id}
+      data-inbox-row={item.source === undefined ? message.id : itemKey(item)}
       onClick={(event) => {
         // A focused row would keep the answer card's keys for itself (the card leaves other buttons theirs).
         event.currentTarget.blur()
@@ -109,14 +156,14 @@ function Row({
       type="button"
     >
       <span className="flex min-w-0 items-center gap-2">
-        <Asker id={item.from} />
+        <ItemAsker item={item} />
         <span className="ml-auto flex shrink-0 items-center gap-2">
-          <KindTag text={item.text} />
-          <Waited at={item.at} now={now} />
+          <KindTag text={message.text} />
+          <Waited at={message.at} now={now} />
         </span>
       </span>
       <span className="truncate text-[13px] font-medium text-foreground">
-        {lead(item.text).title}
+        {lead(message.text).title}
       </span>
       {gist && (
         <span className="truncate text-[12px] text-muted-foreground">
@@ -139,10 +186,10 @@ function List({
   onSelect,
   phone,
 }: {
-  items: Message[]
+  items: readonly InboxItem[]
   now: number
-  selected: number | undefined
-  onSelect: (id: number) => void
+  selected: string | undefined
+  onSelect: (id: string) => void
   phone: boolean
 }) {
   return (
@@ -157,10 +204,10 @@ function List({
         {items.map((item) => (
           <Row
             item={item}
-            key={item.id}
+            key={itemKey(item)}
             now={now}
-            onSelect={() => onSelect(item.id)}
-            selected={item.id === selected}
+            onSelect={() => onSelect(itemKey(item))}
+            selected={itemKey(item) === selected}
           />
         ))}
       </div>
@@ -185,11 +232,13 @@ function List({
 /** Opens the asking conversation at the message, as the To-dos rows did: messages scrolls to its card. */
 function useOpenBranch() {
   const { showSurface, switchConversation } = useUltimate()
-  return (item: Message) => {
-    if (typeof item.from !== 'number') return
-    events.emit('messages:open', { conversation: item.from, message: item.id })
+  return (item: InboxItem) => {
+    if (item.source !== undefined) return item.openBranch?.()
+    const message = item.message
+    if (typeof message.from !== 'number') return
+    events.emit('messages:open', { conversation: message.from, message: message.id })
     showSurface('agent')
-    switchConversation(item.from)
+    switchConversation(message.from)
   }
 }
 
@@ -199,22 +248,38 @@ function Reading({
   phone,
   onBack,
 }: {
-  item: Message
+  item: InboxItem
   now: number
   phone: boolean
   onBack: () => void
 }) {
   const openBranch = useOpenBranch()
-  const { title, body } = lead(item.text)
-  const preview = previewUrl(item.text)
+  if (item.source !== undefined && !item.transport)
+    throw new Error('Remote Inbox item requires an answer transport')
+  const message = item.message
+  const { title, body } = lead(message.text)
+  const preview =
+    item.preview === undefined
+      ? item.source === undefined
+        ? previewUrl(message.text)
+        : undefined
+      : item.preview
+  const images =
+    item.source === undefined
+      ? message.images &&
+        typeof message.from === 'number' && (
+          <MessageImages conversation={message.from} entry={message.images.entry} />
+        )
+      : item.images
+  const canOpen = item.source === undefined ? typeof message.from === 'number' : !!item.openBranch
   const top = (
     <>
       <header className="flex min-w-0 flex-wrap items-center gap-2 font-mono text-[11px] text-muted-foreground">
-        <Asker id={item.from} />
+        <ItemAsker item={item} />
         <span>·</span>
-        <KindTag text={item.text} />
+        <KindTag text={message.text} />
         <span className="ml-auto flex items-center gap-1">
-          waited <Waited at={item.at} now={now} />
+          waited <Waited at={message.at} now={now} />
         </span>
       </header>
       <h2 className="mt-3 text-[17px] leading-7 font-semibold tracking-[-0.01em]">{title}</h2>
@@ -224,9 +289,9 @@ function Reading({
           <Body text={body} />
         </div>
       )}
-      {item.images && typeof item.from === 'number' && (
+      {images && (
         <div className="mt-4 overflow-hidden rounded-lg border border-border/70 bg-card/60 [&>div]:border-t-0">
-          <MessageImages conversation={item.from} entry={item.images.entry} />
+          {images}
         </div>
       )}
       <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -238,7 +303,15 @@ function Reading({
             </a>
           </Button>
         )}
-        {typeof item.from === 'number' && (
+        {item.source !== undefined && item.sourceHref && (
+          <Button asChild size="sm" variant="outline">
+            <a href={item.sourceHref} rel="noreferrer" target="_blank">
+              <ExternalLinkIcon className="size-3.5" />
+              {item.sourceLabel}
+            </a>
+          </Button>
+        )}
+        {canOpen && (
           <Button
             className="text-muted-foreground"
             onClick={() => openBranch(item)}
@@ -246,7 +319,7 @@ function Reading({
             variant="ghost"
           >
             <GitBranchIcon className="size-3.5" />
-            Open in branch #{item.from}
+            Open in branch #{message.from}
           </Button>
         )}
       </div>
@@ -256,45 +329,82 @@ function Reading({
   // item starts with a fresh draft.
   const answer = (
     <div className="overflow-hidden rounded-lg border border-border/70 bg-card/60">
-      <MessageQuestions key={item.id} keys={!phone} message={item} />
+      <MessageQuestions
+        key={itemKey(item)}
+        identity={item.source === undefined ? undefined : `inbox:${itemKey(item)}`}
+        keys={!phone}
+        message={message}
+        transport={item.source === undefined ? undefined : item.transport}
+      />
     </div>
   )
-  if (phone)
-    return (
-      <div className="flex min-h-0 flex-1 flex-col" data-inbox-item={item.id}>
-        <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/70 px-2">
-          <Button aria-label="Back to the Inbox" onClick={onBack} size="icon" variant="ghost">
-            <ArrowLeftIcon className="size-4" />
-          </Button>
-          <span className="section-label">Inbox</span>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          {top}
-          <div className="mt-5">{answer}</div>
-        </div>
+  const content = phone ? (
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      data-inbox-item={item.source === undefined ? message.id : itemKey(item)}
+    >
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/70 px-2">
+        <Button aria-label="Back to the Inbox" onClick={onBack} size="icon" variant="ghost">
+          <ArrowLeftIcon className="size-4" />
+        </Button>
+        <span className="section-label">Inbox</span>
       </div>
-    )
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto" data-inbox-item={item.id}>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        {top}
+        <div className="mt-5">{answer}</div>
+      </div>
+    </div>
+  ) : (
+    <div
+      className="min-h-0 flex-1 overflow-y-auto"
+      data-inbox-item={item.source === undefined ? message.id : itemKey(item)}
+    >
       <div className="mx-auto w-full max-w-[44rem] px-8 pt-8 pb-12">
         {top}
         <div className="mt-6">{answer}</div>
       </div>
     </div>
   )
+  return item.source === undefined ? (
+    content
+  ) : (
+    <MarkdownSource url={item.sourceHref} preview={item.preview}>
+      {content}
+    </MarkdownSource>
+  )
 }
 
-function Zero({ messages, now }: { messages: readonly Message[]; now: number }) {
+function Zero({
+  messages,
+  now,
+  status,
+}: {
+  messages: readonly Message[]
+  now: number
+  status: InboxStatus
+}) {
   const actions = useUltimate()
   const today = answeredToday(messages, now)
+  const complete = status.state === 'complete'
   return (
     <div className="flex min-h-0 flex-1 overflow-y-auto" data-inbox-zero>
       <div className="m-auto flex w-full max-w-md flex-col items-center px-6 py-12 text-center">
         <span className="flex size-10 items-center justify-center rounded-full bg-muted/60">
-          <CheckIcon className="size-5 text-muted-foreground" />
+          {complete ? (
+            <CheckIcon className="size-5 text-muted-foreground" />
+          ) : (
+            <CircleAlertIcon className="size-5 text-muted-foreground" />
+          )}
         </span>
-        <h2 className="mt-4 text-[17px] font-semibold tracking-[-0.01em]">Nothing waits on you</h2>
-        <p className="mt-1 text-[14px] text-muted-foreground">Every branch has what it needs.</p>
+        <h2 className="mt-4 text-[17px] font-semibold tracking-[-0.01em]">
+          {complete ? 'Nothing waits on you' : 'Inbox not up to date'}
+        </h2>
+        <p className="mt-1 text-[14px] text-muted-foreground" role="status">
+          {status.text ??
+            (complete
+              ? 'Every branch has what it needs.'
+              : 'Some sources are not yet known. There may be more waiting on you.')}
+        </p>
         <Button
           className="mt-6"
           // oxlint-disable-next-line typescript/no-floating-promises -- an uncaught action failure becomes a notice.
@@ -327,23 +437,28 @@ function Zero({ messages, now }: { messages: readonly Message[]; now: number }) 
 }
 
 /** A link's or a push's wish to show one item, held until the surface mounts and reads it. */
-let wanted: number | undefined
+let wanted: string | undefined
 
-function Inbox() {
+function InboxView({ board, messages }: { board: InboxBoard; messages: readonly Message[] }) {
   const phone = useViewport() === 'phone'
   const now = useNow(60_000)
-  const { items, messages } = useItems()
+  const { items, status } = board
   const openBranch = useOpenBranch()
   // What the user picked, and where it stood: when it leaves (answered), the one now at that place is shown.
-  const [picked, setPicked] = useState<number | null>(() => wanted ?? null)
+  const [picked, setPicked] = useState<string | null>(() => wanted ?? null)
+  const [requested, setRequested] = useState(() => wanted)
   const [index, setIndex] = useState(0)
   // On a phone the list comes first; an item opens full screen only once tapped or linked.
   const [open, setOpen] = useState(() => wanted !== undefined)
   useEffect(() => {
     wanted = undefined
   }, [])
-  const selected = selection(items, picked, index)
-  const at = items.findIndex((candidate) => candidate.id === selected)
+  const pendingLink =
+    requested !== undefined &&
+    status.state !== 'complete' &&
+    !items.some((candidate) => itemKey(candidate) === requested)
+  const selected = pendingLink ? undefined : selection(items, picked, index, itemKey)
+  const at = items.findIndex((candidate) => itemKey(candidate) === selected)
   const item = items[at]
   // Hold on to the item shown, also one that took an answered item's place, so a later change elsewhere in the list
   // does not move the selection (and drop a half-answered card).
@@ -351,13 +466,19 @@ function Inbox() {
     if (at >= 0) setIndex(at)
     if (selected !== undefined && selected !== picked) setPicked(selected)
   }, [at, selected, picked])
-  const select = (id: number) => {
+  useEffect(() => {
+    if (requested !== undefined && !pendingLink) setRequested(undefined)
+  }, [pendingLink, requested])
+  const select = (id: string) => {
+    setRequested(undefined)
     setPicked(id)
     setOpen(true)
   }
   useEvent('inbox:show', (id) => {
     wanted = undefined
-    select(id as number)
+    setRequested(id as string)
+    setPicked(id as string)
+    setOpen(true)
   })
 
   // j/k move the selection, ⇧O opens the branch; the answer card keeps 1–9, letters and Enter.
@@ -388,7 +509,8 @@ function Inbox() {
         event.preventDefault()
         const step = event.key === 'j' ? 1 : -1
         const next = Math.max(0, Math.min(current.items.length - 1, current.at + step))
-        setPicked(current.items[next].id)
+        setRequested(undefined)
+        setPicked(itemKey(current.items[next]))
       }
     }
     // Capture: a choice letter j or k on the card stays j/k here, the Inbox's own navigation.
@@ -407,15 +529,29 @@ function Inbox() {
   )
   // Keyed by message: each item starts fresh, its images included.
   const reading = item && (
-    <Reading item={item} key={item.id} now={now} onBack={() => setOpen(false)} phone={phone} />
+    <Reading
+      item={item}
+      key={itemKey(item)}
+      now={now}
+      onBack={() => setOpen(false)}
+      phone={phone}
+    />
   )
   return (
     <div className="flex min-h-0 flex-1">
       <Sidebar />
       <main className="flex min-w-0 flex-1 flex-col">
         {!(phone && open && item) && <Header>{title}</Header>}
+        {items.length > 0 && (status.text || status.state !== 'complete') && (
+          <div
+            className="border-b border-border/70 px-5 py-2 text-[12px] text-muted-foreground"
+            role="status"
+          >
+            {status.text ?? 'Some sources are not yet known. This list may be incomplete.'}
+          </div>
+        )}
         {!items.length ? (
-          <Zero messages={messages} now={now} />
+          <Zero messages={messages} now={now} status={status} />
         ) : phone ? (
           open && item ? (
             reading
@@ -435,11 +571,17 @@ function Inbox() {
   )
 }
 
+function Inbox() {
+  return (
+    <InboxData>{(board, messages) => <InboxView board={board} messages={messages} />}</InboxData>
+  )
+}
+
 /** Shows the Inbox at `message`: a mounted Inbox selects it, else the one about to mount starts there. */
-function show(message: number | undefined, showSurface: (id: string) => void) {
+function show(message: number | undefined, showSurface: (id: string) => void, source?: string) {
   if (message !== undefined) {
-    wanted = message
-    events.emit('inbox:show', message)
+    wanted = itemKey({ message: { id: message }, source })
+    events.emit('inbox:show', wanted)
   }
   showSurface(SURFACE)
 }
@@ -450,23 +592,29 @@ function show(message: number | undefined, showSurface: (id: string) => void) {
  */
 function InboxLink() {
   const { showSurface } = useUltimate()
-  useEvent('inbox:open', (value) => show((value as { message?: number }).message, showSurface))
+  useEvent('inbox:open', (value) => {
+    const { message, source } = value as { message?: number; source?: string }
+    show(message, showSurface, source)
+  })
   useEffect(() => {
     const url = new URL(location.href)
     if (!url.searchParams.has('inbox')) return
     const message = Number(url.searchParams.get('inbox'))
+    const source = url.searchParams.get('inboxSource') ?? undefined
     url.searchParams.delete('inbox')
+    url.searchParams.delete('inboxSource')
     history.replaceState(history.state, '', url)
-    show(Number.isSafeInteger(message) && message > 0 ? message : undefined, showSurface)
+    show(Number.isSafeInteger(message) && message > 0 ? message : undefined, showSurface, source)
   }, [showSurface])
   return null
 }
 
 /** The sidebar row under @ultimate's: amber with the count and the oldest wait while anything waits on the user. */
-function useInboxRow(): ReactNode {
+function InboxRow({ board }: { board: InboxBoard }) {
   const actions = useUltimate()
   const now = useNow(60_000)
-  const { items } = useItems()
+  const { items, status } = board
+  const incomplete = status.state !== 'complete'
   const active = actions.surface === SURFACE
   const oldest = items[0]
   return (
@@ -477,6 +625,7 @@ function useInboxRow(): ReactNode {
         active && 'bg-sidebar-accent',
       )}
       data-inbox-sidebar
+      title={status.text}
       onClick={() => actions.showSurface(SURFACE)}
       type="button"
     >
@@ -487,16 +636,20 @@ function useInboxRow(): ReactNode {
           oldest ? amber : 'text-foreground/70',
         )}
       >
-        Inbox{oldest && ` · ${items.length}`}
+        Inbox{oldest ? ` · ${items.length}${incomplete ? '+' : ''}` : incomplete ? ' · ?' : ''}
       </span>
       {oldest && (
         <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-          oldest {formatAgo(oldest.at, now)}
+          oldest {formatAgo(oldest.message.at, now)}
         </span>
       )}
       <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/60" />
     </button>
   )
+}
+
+function useInboxRow(): ReactNode {
+  return <InboxData>{(board) => <InboxRow board={board} />}</InboxData>
 }
 
 export default defineWebExtension({

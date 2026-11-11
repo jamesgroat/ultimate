@@ -53,6 +53,31 @@ and sends from the last one; ⇧Enter accepts every pick and sends; `/` focuses 
 conversation's newest open card takes these keys; they leave alone input/textarea editing and keys pressed in another
 card, on another control or in the panel, whose cards take no global keys.
 
+## Browser transport
+
+`questions/ui.tsx` exports `MessageQuestions` and `MessageQuestionsTransport`. The card accepts optional `transport`
+and `identity` props; omit both for unchanged local `questions/answer`, `questions/dismiss` actions and
+`message:<id>` card identity. An Inbox source supplies a namespaced identity and transport without changing the
+message's numeric ID:
+
+```ts
+type MessageQuestionsTransport = {
+  answer(
+    args: { messageId: number; answers?: Answer[]; note?: string; text?: string },
+    options?: { keepalive?: boolean },
+  ): Promise<unknown>
+  dismiss(args: { messageId: number }): Promise<unknown>
+}
+```
+
+`Answer` is `{ question: string; answer: string }`. Answer routing covers structured answers plus optional note and
+plain text replies; dismiss closes the same source's message. Reject failures so the card shows its existing error
+state. The undo window remains inside the shared card. It flushes pending structured answers on unmount and page exit;
+forward `options.keepalive` to the browser request so page exit does not drop the answer. Refresh source data after a
+successful action so the answered item leaves the Inbox. A remote HTTP `questions/answer` already attributes the reply
+to the user; no protocol or attribution override is needed. `identity` only namespaces browser card identity, not the
+message ID sent to the transport. Pass `keys` explicitly when rendering outside the local transcript.
+
 ## Where open questions wait
 
 The Inbox (`extensions/inbox`) lists every message that waits on the user, oldest first, and shows this card under the

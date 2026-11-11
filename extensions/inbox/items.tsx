@@ -9,14 +9,20 @@ export const inboxItems = (messages: readonly Message[]) => waiting(messages).to
  * The item to show: `selected` while it still waits, else the one that took its place (`index`, where it was), so
  * answering an item moves on to the next oldest; the newest when it was the last. None on an empty Inbox.
  */
-export function selection(
-  items: readonly { id: number }[],
-  selected: number | null,
+export function selection<T, K>(
+  items: readonly T[],
+  selected: K | null,
   index: number,
+  key: (item: T) => K,
 ) {
-  if (selected !== null && items.some((item) => item.id === selected)) return selected
-  return items[Math.min(Math.max(index, 0), items.length - 1)]?.id
+  if (selected !== null && items.some((item) => key(item) === selected)) return selected
+  const item = items[Math.min(Math.max(index, 0), items.length - 1)]
+  return item === undefined ? undefined : key(item)
 }
+
+/** Stable UI identity, separate from each source's numeric message ID and connection URL. */
+export const itemKey = (item: { source?: string; message: { id: number } }) =>
+  JSON.stringify([item.source ?? null, item.message.id])
 
 /** A local preview the text links to (`http://127.0.0.1:…` or `localhost`), which makes the item a preview. */
 export const previewUrl = (text: string) =>
