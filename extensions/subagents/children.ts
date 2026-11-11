@@ -84,8 +84,11 @@ export async function createChild(
     label: options.label,
     title: options.title,
   })
-  if (options.adhoc) (await tx.doc(Profile, child.id)).adhoc = true
-  else if (definition) (await tx.doc(Profile, child.id)).definition = definition.name
+  Object.assign(await tx.doc(Profile, child.id), {
+    createdAt: Date.now(),
+    ...(options.adhoc ? { adhoc: true } : definition ? { definition: definition.name } : {}),
+    ...(options.model ? { explicitModel: true } : {}),
+  })
   if (definition?.summaries === false)
     await host.need(ConversationsApi).setAutomaticSummaries(tx, child.id, false)
   return child
