@@ -9,10 +9,13 @@ import {
 } from '@earendil-works/pi-ai/providers/faux'
 import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
 import { awaitWithContext } from '@earendil-works/chord/context'
+import type { JsonValue } from '@earendil-works/chord/json'
+import type { Task } from '@earendil-works/pi-durable'
 import {
   defineExtension,
   GenerationTask,
   hook,
+  LiveDoc,
   ROOT_CONVERSATION_ID,
 } from '@earendil-works/pi-durable'
 import { context, prepareHarness } from '../../../server/harness.ts'
@@ -25,6 +28,7 @@ import messages from '../../messages/server.ts'
 import { Messages } from '../../messages/api.ts'
 import { Standing } from '../../subagents/api.ts'
 import questions from '../server.ts'
+import watchdog from '../../watchdog/server.ts'
 
 const ASK = 'Want me to run the QA re-check now, or wait until the change is merged?'
 const card = fauxAssistantMessage(
@@ -42,7 +46,9 @@ afterEach(async () => {
   for (const close of cleanups.splice(0).toReversed()) await close()
 })
 
-async function fixture(options: { off?: boolean; noMessage?: boolean; restart?: boolean } = {}) {
+async function fixture(
+  options: { off?: boolean; noMessage?: boolean; restart?: boolean; retry?: boolean } = {},
+) {
   const home = await temp('ultimate-final-ask-')
   cleanups.push(() => removeTemp(home))
   if (options.off) {
@@ -78,6 +84,11 @@ async function fixture(options: { off?: boolean; noMessage?: boolean; restart?: 
   const backend = messages(host)
   prepared.registry.install(options.noMessage ? { ...backend, tools: [] } : backend)
   prepared.registry.install(questions(host))
+  const retry = options.retry
+    ? (watchdog({ ...host, onOpen: () => {}, onClose: () => {}, onRelease: () => {} })
+        .tasks![0] as Task<JsonValue, { phase: string }, null, object>)
+    : undefined
+  if (retry) prepared.registry.install(defineExtension({ name: 'retry-probe', tasks: [retry] }))
   let blocked = false
   const release = Promise.withResolvers<void>()
   let requests = 0
@@ -123,6 +134,7 @@ async function fixture(options: { off?: boolean; noMessage?: boolean; restart?: 
     run,
     log,
     prepared,
+    retry,
     get opened() {
       return opened
     },
@@ -225,6 +237,62 @@ it('excludes peer/branch origins, injected user-role notes and non-primary agent
     ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = other.id
   }, context)
   await f.run([fauxAssistantMessage([fauxText(ASK)])])
+  expect((await f.log())?.messages ?? []).toHaveLength(0)
+})
+
+it('does not nudge a watchdog retry of a failed automation-origin run admitted as pi.user', async () => {
+  const f = await fixture({ retry: true })
+  f.prepared.settings.applyOverrides({ retry: { enabled: false } })
+  const error = 'Incomplete Claude Code upstream response (status 200, dropped stream)'
+  await f.run([fauxAssistantMessage('', { stopReason: 'error', errorMessage: error })], {
+    kind: 'automations.fired',
+    data: {},
+  })
+  const failure = (await f.opened.harness.snapshot(LiveDoc, f.opened.root.id, context))!.runFailure!
+  expect(failure.reason).toBe('model_error')
+  let turns = 0
+  f.prepared.faux!.setResponses([
+    () => {
+      turns++
+      return fauxAssistantMessage([fauxText(ASK)])
+    },
+    () => {
+      turns++
+      return card
+    },
+  ])
+  // Exercise the production retry phase, not a manually tagged replacement input. Its scheduler
+  // delay is already elapsed; failure detection itself belongs to watchdog's tests.
+  const task = await f.opened.harness.commit(
+    (tx) =>
+      tx.createTask(
+        f.retry!,
+        {
+          conversation: f.opened.root.id,
+          failedTask: failure.taskId,
+          recipient: f.opened.root.id,
+          title: 'Automation result',
+          error,
+          step: 'model request',
+          retried: false,
+          temporary: true,
+          until: 0,
+        },
+        { conversationId: f.opened.root.id, ownership: { kind: 'conversation' }, background: true },
+      ),
+    context,
+  )
+  await f.opened.harness.waitForTask(task, context)
+  await f.opened.root.waitForIdle(context)
+  const input = await f.opened.harness.commit(
+    (tx) => tx.submissionByRequest(f.opened.root.id, `watchdog-retry:${failure.taskId}`),
+    context,
+  )
+  expect(input).toMatchObject({ type: 'input', status: 'done' })
+  if (input?.type !== 'input' || input.status !== 'done') throw new Error('Retry did not finish')
+  const entry = await f.opened.harness.commit((tx) => tx.entry(input.entry), context)
+  expect(entry?.kind).toBe('pi.user')
+  expect(turns).toBe(1)
   expect((await f.log())?.messages ?? []).toHaveLength(0)
 })
 

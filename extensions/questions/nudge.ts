@@ -62,6 +62,9 @@ export function finalAskNudge(host: ExtensionHost) {
       for (const id of run.inputs) {
         const input = await (await host.harness().submission(id, ctx))?.status(ctx)
         if (input?.type !== 'input' || input.status !== 'placed') return undefined
+        // Review #147613: watchdog/server.ts retries any origin as pi.user. Its durable request
+        // prefix, not that entry kind, identifies this automatic wake until the producer tags it.
+        if (input.requestId?.startsWith('watchdog-retry:')) return undefined
         const entry = await api.entry(input.entry, ctx)
         if (
           entry?.kind !== 'pi.user' &&

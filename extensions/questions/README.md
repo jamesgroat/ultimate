@@ -43,7 +43,9 @@ repository's prompt-only behavioural policy, not a guarantee that every question
 
 Only current runs whose placed inputs all come from the user qualify (typed input, a voice utterance, or a Messages
 input attributed to the user). Peer, branch, subagent, automation and unknown or mixed origins are excluded, regardless
-of their model role. The message tool must be available and the conversation must have no open native answer card.
+of their model role. Watchdog's automatic retry submissions are excluded by their `watchdog-retry:` request provenance,
+even though they use the same `pi.user` entry kind as typed input. The message tool must be available and the
+conversation must have no open native answer card.
 The heuristic ignores code and quoted text and does not treat arbitrary question marks as asks.
 
 The nudge asks the model to send its actual decision through `message` with `questions` if an answer is needed, or to
