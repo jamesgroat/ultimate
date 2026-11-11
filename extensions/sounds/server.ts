@@ -1,9 +1,12 @@
 import diagnostics from 'node:diagnostics_channel'
 import { defineExtension } from '@earendil-works/pi-durable'
+import type { JsonObject } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { readSecret } from '../../lib/secrets.ts'
-import { SayAction } from './refs.ts'
+import { readSettings, userSettingsPath } from '../../lib/settings.ts'
+import { localAvailable, narrate } from './local.ts'
+import { SayAction, StatusAction } from './refs.ts'
 
 const MODEL = 'gpt-realtime-2.1-mini'
 const TIMEOUT_MS = 20_000
@@ -101,25 +104,101 @@ export function speak(key: string, text: string, signal: AbortSignal) {
   })
 }
 
-/** Lines said before, by text: most repeat ("Ultimate has a question."), and a repeat then plays at once. */
+async function settings(host: ExtensionHost) {
+  const user = await readSettings(userSettingsPath(host.userHome))
+  const project = await host.projectSettings()
+  const config: JsonObject = {}
+  for (const { sounds } of [user, project])
+    if (sounds && typeof sounds === 'object' && !Array.isArray(sounds))
+      Object.assign(config, sounds)
+  const voice: 'openai' | 'local' | 'off' =
+    config.voice === 'local' || config.voice === 'off' ? config.voice : 'openai'
+  return {
+    voice,
+    narratorVoice:
+      typeof config.narratorVoice === 'string' && config.narratorVoice.trim()
+        ? config.narratorVoice
+        : 'af_heart',
+    narratorRate:
+      typeof config.narratorRate === 'number' &&
+      Number.isFinite(config.narratorRate) &&
+      config.narratorRate > 0
+        ? config.narratorRate
+        : 1,
+    idleMinutes:
+      typeof config.idleMinutes === 'number' &&
+      Number.isFinite(config.idleMinutes) &&
+      config.idleMinutes > 0
+        ? config.idleMinutes
+        : 15,
+  }
+}
+
+/** Lines said before, by voice configuration and text: a repeat plays at once. */
 const said = new Map<string, string>()
 
 export default defineExtension({ name: 'sounds' })
 
 export const actions = {
+  status: implementAction(StatusAction, async (_args, { host }) => {
+    const { voice } = await settings(host)
+    const available = await localAvailable(host.userHome)
+    return {
+      voice,
+      localAvailable: available,
+      ...(voice === 'local' && !available
+        ? { hint: 'Set up local voice · see Sounds README' }
+        : {}),
+    }
+  }),
   say: implementAction(SayAction, async (args, { host, signal }) => {
     const text = args && typeof args === 'object' && !Array.isArray(args) ? args.text : undefined
     if (typeof text !== 'string' || !text.trim() || text.length > 300)
       throw new Error('Expected { text } of at most 300 characters')
-    const cached = said.get(text)
+    const config = await settings(host)
+    signal.throwIfAborted()
+    if (config.voice === 'off') return { audio: null }
+    const cacheKey = JSON.stringify([config.voice, config.narratorVoice, config.narratorRate, text])
+    const cached = said.get(cacheKey)
     if (cached) return { audio: cached }
-    const key = await apiKey(host, signal)
-    if (!key) return { audio: null }
-    const audio = (
-      await speak(key, text, AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]))
-    ).toString('base64')
-    said.set(text, audio)
-    if (said.size > 50) said.delete(said.keys().next().value!)
+    const speaking = AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)])
+    let pcm: Buffer | undefined
+    let usedLocal = false
+    if (config.voice === 'local') {
+      try {
+        pcm = await narrate(
+          host.userHome,
+          host.ultimateRoot,
+          text,
+          config.narratorVoice,
+          config.narratorRate,
+          config.idleMinutes,
+          speaking,
+        )
+        usedLocal = pcm !== undefined
+      } catch {
+        // A local voice failure leaves OpenAI and the browser available.
+      }
+    }
+    signal.throwIfAborted()
+    if (speaking.aborted) return { audio: null }
+    if (!pcm) {
+      try {
+        const key = await apiKey(host, speaking)
+        speaking.throwIfAborted()
+        if (key) pcm = await speak(key, text, speaking)
+      } catch (error) {
+        // Preserve upstream transport diagnostics while leaving browser speech available.
+        console.warn('Narrator voice failed', error)
+      }
+    }
+    signal.throwIfAborted()
+    if (!pcm || speaking.aborted) return { audio: null }
+    const audio = pcm.toString('base64')
+    if (config.voice === 'openai' || usedLocal) {
+      said.set(cacheKey, audio)
+      if (said.size > 50) said.delete(said.keys().next().value!)
+    }
     return { audio }
   }),
 }
