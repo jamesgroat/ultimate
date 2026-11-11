@@ -7,6 +7,7 @@ import { implementAction } from '../../lib/actions.ts'
 import { openQuestion as open } from '../../lib/message-state.ts'
 import { AnswerAction, DismissAction } from './refs.ts'
 import type { Answer } from './refs.ts'
+import { finalAskNudge } from './nudge.ts'
 
 const NOT_OPEN = 'These questions are no longer open'
 
@@ -106,5 +107,5 @@ export const actions = {
 export default function questionsExtension(host: ExtensionHost) {
   // Core, always on; resolved where it is called, declared here so the catalogue lists it.
   host.need(MessagesApi)
-  return defineExtension({ name: 'questions' })
+  return defineExtension({ name: 'questions', hooks: [finalAskNudge(host)] })
 }
