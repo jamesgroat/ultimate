@@ -219,8 +219,8 @@ it('counts pre-spawn failures after an older quiet check instead of treating idl
   await f.app.harness.commit(async (tx) => {
     const saved = (await tx.doc(Automations)).automations[a.id]
     saved.script!.startedAt = Date.now() - 3600001
+    saved.script!.secrets = ['CHECK_SECRET']
   }, context)
-  await chmod(join(f.folder(a.id), 'run'), 0o600)
   for (const failures of [1, 2, 3]) {
     await f.invoke('run', { id: a.id })
     await until(async () => {

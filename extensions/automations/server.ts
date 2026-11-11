@@ -290,7 +290,7 @@ function backend(host: ExtensionHost) {
         }),
       )
     }
-    if ((args.action === 'resume' || args.action === 'run') && sub.script && !sub.schedule) {
+    if ((args.action === 'resume' || args.action === 'run') && sub.script) {
       try {
         await access(runPath(sub), constants.X_OK)
       } catch {
