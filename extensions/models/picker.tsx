@@ -136,7 +136,12 @@ export function ModelPicker() {
     )
       .toSorted((a, b) => runnableSubscriptionFirstRank(a) - runnableSubscriptionFirstRank(b))
       .slice(0, LIMIT)
-    return [...Map.groupBy(found, (model) => model.provider)]
+    const grouped = [...Map.groupBy(found, (model) => model.provider)]
+    const anthropic = grouped.findIndex(([provider]) => provider === 'anthropic')
+    const code = grouped.findIndex(([provider]) => provider === 'claude-code')
+    if (anthropic !== -1 && code > anthropic)
+      grouped.splice(anthropic, 0, ...grouped.splice(code, 1))
+    return grouped
   }, [models, query])
   const current = familyOf(families, ref, thinking, recorded)
   const shownFamilies = (families?.families ?? []).filter((family) => {
@@ -327,16 +332,15 @@ export function ModelPicker() {
 
 function ProviderHeading({ id, provider }: { id: string; provider: ProviderInfo | undefined }) {
   const label = authLabel(provider)
+  const name = id === 'anthropic' ? 'paid API' : provider?.name
   return (
     <span className="flex items-center gap-2">
       {id}
-      {provider && provider.name !== id && (
-        <span className="truncate text-muted-foreground/60">{provider.name}</span>
-      )}
+      {name && name !== id && <span className="truncate text-muted-foreground/60">{name}</span>}
       {label ? (
         <span className="ml-auto text-success/80">
           ✓ {label}
-          {provider?.isUsingSubscription ? ' · subscription' : ''}
+          {id !== 'anthropic' && provider?.isUsingSubscription ? ' · subscription' : ''}
         </span>
       ) : id === 'claude-code' ? (
         <span className="ml-auto flex items-center gap-1 text-warning/80">
