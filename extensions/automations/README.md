@@ -71,8 +71,9 @@ Lifecycle events: `automations.started`, `.fired` `{id, text, fire}`, `.done`, `
 
 User scripts live in `~/.ultimate/automations/<project>/<id>/`: executable `run`, persistent `state/`, `output.log`
 (about 2000 lines / 256 KiB) and `pid`. Ids restart in every chapter, so a chapter after the first keeps its scripts
-in `<project>@<chapter>/<id>/` instead; the first chapter's folders stay where they were, and switching chapters never
-shares a folder. Scripts get `AUTOMATION_ID` and `AUTOMATION_STATE` (the state directory, not a file), plus only the named
+in `<project>@<chapter>/<id>/` instead; the first chapter's folders stay where they were. Numbered user scripts never
+share folders across chapters; project slugs share the chapter-less runtime folder below. Scripts get `AUTOMATION_ID`
+and `AUTOMATION_STATE` (the state directory, not a file), plus only the named
 `secrets` from Secrets; records never hold their values. Script state must survive a restart: open stops leftover
 processes and relaunches enabled running streaming scripts; scheduled checks replay through their scheduler.
 
@@ -89,8 +90,10 @@ Commit shared scripts as:
 The manifest may also include `schedule` (cron, every or an absolute at time) and `timeout` for a scheduled check;
 relative `in` times are rejected because discovery must not move the deadline. `timeout` defaults to 300 when scheduled.
 `ask` is required; `name` defaults to its first 80 characters, `once` to true, `to` (the standing agent woken on every
-machine) to `@ultimate`. Slugs match `^[a-z][a-z0-9-]*$`, at most 63 characters. Runtime state stays machine-local in the
-chapter-specific script folder above.
+machine) to `@ultimate`. Slugs match `^[a-z][a-z0-9-]*$`, at most 63 characters. Runtime files stay machine-local in
+`~/.ultimate/automations/<project>/<slug>/` in every chapter. If its `state/` is empty or missing, the supervisor adopts
+the newest chapter-suffixed copy's entire state directory once, publishing it by atomic rename and leaving the old
+copy untouched. Newest means the latest modification time anywhere in that state tree; existing stable state wins.
 Discovery runs only in a project chosen as local: a new manifest becomes a stopped record with an idle watcher, never
 starting itself; changed manifests update it, with ask or timing changes stopping it pending explicit resume; a removed
 folder or revoked trust forgets it. `delete` forgets the record, not the folder. `run` executes from the host checkout;
