@@ -77,7 +77,6 @@ export function ModelRow({
         </span>
       )}
       <span className="ml-auto flex shrink-0 items-center gap-3 pl-3 text-[11px] text-muted-foreground tabular-nums">
-        {model.provider === 'anthropic' && <span className="text-warning/80">paid API</span>}
         {model.reasoning ? (
           <span
             className="flex items-center gap-1"
@@ -127,7 +126,7 @@ export function ModelPicker() {
     const all = models?.models ?? []
     // Without a query: what can run now. With one: everything that matches, runnable and direct matches first
     // (`claude-opus-4-8` before a reseller's `eu.anthropic.claude-opus-4-8`). A Claude model Claude Code also offers
-    // puts its group before the paid Anthropic API even while logged out.
+    // puts its group before Pi's Anthropic route even while logged out.
     const claude = new Set(
       all.filter((model) => model.provider === 'claude-code').map((model) => model.id),
     )
@@ -340,7 +339,13 @@ export function ModelPicker() {
 
 function ProviderHeading({ id, provider }: { id: string; provider: ProviderInfo | undefined }) {
   const label = authLabel(provider)
-  const name = id === 'anthropic' ? 'paid API' : provider?.name
+  const name = provider?.name
+  const billing =
+    provider?.billing === 'subscription'
+      ? 'Subscription'
+      : provider?.billing === 'paid-api'
+        ? 'Paid API'
+        : 'Unknown'
   return (
     <span className="flex items-center gap-2">
       {id}
@@ -348,7 +353,10 @@ function ProviderHeading({ id, provider }: { id: string; provider: ProviderInfo 
       {label ? (
         <span className="ml-auto text-success/80">
           ✓ {label}
-          {id !== 'anthropic' && provider?.isUsingSubscription ? ' · subscription' : ''}
+          {' · '}
+          <span className={provider?.billing === 'paid-api' ? 'text-warning/80' : undefined}>
+            {billing}
+          </span>
         </span>
       ) : id === 'claude-code' ? (
         <span className="ml-auto flex items-center gap-1 text-warning/80">

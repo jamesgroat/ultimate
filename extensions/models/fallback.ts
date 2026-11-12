@@ -9,22 +9,11 @@ import { AgentDoc } from '@earendil-works/pi-durable'
 import type { ConversationId, EntryDraft, Tx } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { configuredModel, familyDefault, hasLogin } from '../../lib/agents.ts'
-import { Family, Pin } from './api.ts'
+import { BeforeInput, Family, Pin } from './api.ts'
 import type { Fallback } from './refs.ts'
 
 type Ref = { provider: string; modelId: string }
 const name = (ref: Ref) => `${ref.provider}/${ref.modelId}`
-
-/**
- * Claude runs on its subscription only through Claude Code, never inside Pi; Pi marks its `anthropic` OAuth a
- * subscription, but here that provider is the pay-per-token Anthropic API, so a fallback never treats it as one.
- */
-const BILLED = new Set(['anthropic'])
-
-/** Whether `provider`'s login is a subscription, as Pi marks it: an OAuth login whose provider says `isSubscription`. */
-function subscription(host: ExtensionHost, provider: string) {
-  return !BILLED.has(provider) && host.modelRuntime.isUsingSubscription(provider)
-}
 
 export async function fallback(
   host: ExtensionHost,
@@ -45,20 +34,25 @@ export async function fallback(
   if (!runtime.getProvider(from.provider) || (await mayHaveLogin(host, from.provider)))
     return undefined
   const fresh = runtime.getAvailableSnapshot()
-  const paid = wasSubscription(host, from.provider)
+  const subscription = wasSubscription(host, from.provider)
   // Same model elsewhere first, then the definition's pin, then the configured default; a subscription takes only
-  // another subscription.
-  const allowed = (provider: string) => !paid || subscription(host, provider)
+  // another subscription. Input policy may independently disallow a route, whatever its billing type.
+  const policy = host.want(BeforeInput)
+  const allowed = (ref: Ref) =>
+    (!subscription || runtime.isUsingSubscription(ref.provider)) &&
+    (policy?.allowsFallback?.(ref) ?? true)
   const same = fresh.find(
     (model) =>
-      model.id === from.modelId && model.provider !== from.provider && allowed(model.provider),
+      model.id === from.modelId &&
+      model.provider !== from.provider &&
+      allowed({ provider: model.provider, modelId: model.id }),
   )
   const candidates: [Ref | undefined, Fallback['reason']][] = [
     [same && { provider: same.provider, modelId: same.id }, 'same'],
     [await host.want(Pin)?.pin(tx, conversationId), 'pin'],
     [configuredModel(fresh, host.settings, await familyDefault(host)), 'default'],
   ]
-  const found = candidates.find(([ref]) => hasLogin(fresh, ref) && allowed(ref!.provider))
+  const found = candidates.find(([ref]) => hasLogin(fresh, ref) && allowed(ref!))
   const data: Fallback = found
     ? { from: name(from), to: name(found[0]!), reason: found[1] }
     : { from: name(from), reason: 'none' }
@@ -74,7 +68,7 @@ export async function fallback(
   }
   const content = found
     ? `Model ${data.from} has no login here; this conversation now runs on ${data.to}.`
-    : `Model ${data.from} has no login here and no subscription login can replace it, so this conversation keeps it until the user logs in to ${from.provider} or picks another model.`
+    : `Model ${data.from} has no login here and no allowed login can replace it, so this conversation keeps it until the user logs in to ${from.provider} or picks another model.`
   return {
     entries: [
       { kind: 'models.fallback', data, model: [{ role: 'user', content, timestamp: Date.now() }] },
@@ -105,10 +99,7 @@ async function mayHaveLogin(host: ExtensionHost, provider: string) {
  * method says `isSubscription`.
  */
 function wasSubscription(host: ExtensionHost, provider: string) {
-  return (
-    !BILLED.has(provider) &&
-    host.modelRuntime.getProvider(provider)?.auth.oauth?.isSubscription === true
-  )
+  return host.modelRuntime.getProvider(provider)?.auth.oauth?.isSubscription === true
 }
 
 /** Whether this conversation's newest fallback entry already asks about `from`, so each next input says it once. */

@@ -50,6 +50,8 @@ export const Selection = defineDoc<{
 export type BeforeInputService = {
   /** Apply optional model policy inside the input transaction, before the independent missing-login fallback. */
   beforeInput(tx: Tx, conversationId: ConversationId): Promise<void>
+  /** Optional synchronous policy for missing-login replacement candidates, after input policy has run. */
+  allowsFallback?(model: { provider: string; modelId: string }): boolean
 }
 /** Optional input-time model policy; implementations use transactional writes only, not network I/O. */
 // oxlint-disable-next-line ultimate/api-naming -- matches the transactional beforeInput hook this point extends.
