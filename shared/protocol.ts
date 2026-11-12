@@ -188,6 +188,7 @@ export interface ModelsResponse {
     authTypes: { type: AuthType; name: string }[]
     status: ReturnType<ModelRuntime['getProviderAuthStatus']>
     isUsingSubscription: boolean
+    billing: 'subscription' | 'paid-api' | 'unknown'
   }[]
   models: {
     provider: string

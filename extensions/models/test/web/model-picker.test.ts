@@ -89,6 +89,7 @@ beforeEach(() => {
         name: 'Anthropic (Claude Pro/Max)',
         authTypes: [],
         isUsingSubscription: true,
+        billing: 'subscription',
         status: { configured: true, source: 'stored' },
       },
       {
@@ -96,6 +97,7 @@ beforeEach(() => {
         name: 'Claude Code',
         authTypes: [],
         isUsingSubscription: true,
+        billing: 'subscription',
         status: { configured: true, source: 'stored' },
       },
     ],
@@ -130,14 +132,24 @@ it.each([true, false])(
   },
 )
 
-it('labels Anthropic as paid API despite subscription metadata, keeping Claude Code subscription text', () => {
-  const headings = [...renderToStaticMarkup(h(ModelPicker)).matchAll(/<h2>(.*?)<\/h2>/g)].map(
-    ([, heading]) => heading.replace(/<[^>]+>/g, ''),
-  )
-  expect(headings).toContain('anthropicpaid API✓ stored')
-  expect(headings).toContain('claude-codeClaude Code✓ stored · subscription')
-  expect(headings.join(' ')).not.toContain('Claude Pro/Max')
-})
+it.each([
+  ['subscription', 'Subscription'],
+  ['paid-api', 'Paid API'],
+  ['unknown', 'Unknown'],
+] as const)(
+  'labels Anthropic by its resolved billing (%s), not its provider name',
+  (billing, label) => {
+    harness.models.providers[0].billing = billing
+    harness.models.providers[0].isUsingSubscription = billing === 'subscription'
+    const html = renderToStaticMarkup(h(ModelPicker))
+    const headings = [...html.matchAll(/<h2>(.*?)<\/h2>/g)].map(([, heading]) =>
+      heading.replace(/<[^>]+>/g, ''),
+    )
+    expect(headings).toContain(`anthropicAnthropic (Claude Pro/Max)✓ stored · ${label}`)
+    expect(headings).toContain('claude-codeClaude Code✓ stored · Subscription')
+    expect(html.includes('Paid API')).toBe(billing === 'paid-api')
+  },
+)
 
 it('highlights the recorded family among families sharing a model and selects it with one atomic intent action', () => {
   harness.query = ''
