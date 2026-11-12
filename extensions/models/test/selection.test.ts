@@ -134,7 +134,7 @@ it('selects family, model and thinking atomically and keeps the chosen family ac
 it('runs optional policy before the independent login fallback in the input transaction', async () => {
   const f = await fixture(`
     (await tx.doc(Selection, id)).mode = 'auto'
-    ;(await tx.doc(AgentDoc, id)).model = { provider: 'anthropic', modelId: 'claude-opus-5.5' }
+    ;(await tx.doc(AgentDoc, id)).model = { provider: 'openrouter', modelId: 'missing-model' }
   `)
   await writeFile(f.file, definition('Pinned', 'model: faux/faux-1\n'))
   const id = await f.standing()
@@ -150,7 +150,7 @@ it('runs optional policy before the independent login fallback in the input tran
   )
   expect(
     entries.filter((entry) => entry.kind === 'models.fallback').map((entry) => entry.data),
-  ).toEqual([{ from: 'anthropic/claude-opus-5.5', to: 'faux/faux-1', reason: 'pin' }])
+  ).toEqual([{ from: 'openrouter/missing-model', to: 'faux/faux-1', reason: 'pin' }])
   expect(await f.server.harness.snapshot(Family, id, context)).toEqual({ name: null })
   expect(await f.server.harness.snapshot(Profile, id, context)).toEqual({ definition: 'dice' })
 })
