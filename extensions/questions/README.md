@@ -78,6 +78,13 @@ What the user picked and typed on a card lives in durable UI state, by message (
 surface for another, a reload or another window or device shows it again where they left it; it goes as soon as the
 message settles (answered, dismissed, or settled for them by @ultimate).
 
+`MessageQuestions` also accepts an optional `transport` (`answer(args, { keepalive? })`, `dismiss(args)`) and a stable
+`identity` for remote cards. The transport keeps the original numeric message id; the identity namespaces durable
+picks separately from local `message:<id>` cards. Remote providers own settlement of their card state, using
+`useForgetQuestionCards()` with a predicate matching only confirmed settled identities; the local Messages log only
+sweeps local card identities. Scope remote bodies and option previews with `MarkdownSource` so
+local link, code and conversation renderers never interpret remote references.
+
 ## Where open questions wait
 
 The Inbox (`extensions/inbox`) lists every message that waits on the user, oldest first, and shows this card under the
