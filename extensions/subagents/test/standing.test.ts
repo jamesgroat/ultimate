@@ -4,7 +4,7 @@ import { eventHost, idleNeed, temp, removeTemp } from '../../../test/helpers.ts'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { obj } from '@earendil-works/pi-schema'
 import {
@@ -181,6 +181,39 @@ it('reads, saves and publishes a standing agent mark and title', async () => {
   await writeFile(file, definition('Instructions'))
   await service.standing('x', ctx)
   expect(await host.harness.snapshot(Marks, ROOT_CONVERSATION_ID, ctx)).toEqual({})
+})
+
+// #164289: an independent standing refresh could restore an overlay removed before a newer refresh committed.
+it('does not restore a removed overlay when an earlier standing refresh resumes', async () => {
+  const { service, host, path } = await fixture()
+  const overlay = join(path, '.ultimate/agents/x.md')
+  await mkdir(join(path, '.ultimate/agents'), { recursive: true })
+  await writeFile(overlay, '---\nname: x\naddTools: []\n---\nUser additions\n')
+  const id = await service.standing('x', ctx)
+  const conversation = (await host.harness.conversation(id, ctx))!
+  expect((await conversation.agent(ctx)).instructions).toContain('User additions')
+
+  const original = host.harness.conversation.bind(host.harness)
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const lookup = vi.spyOn(host.harness, 'conversation').mockImplementationOnce(async (...args) => {
+    entered.resolve()
+    await release.promise
+    return original(...args)
+  })
+  const delayed = service.standing('x', ctx)
+  try {
+    await entered.promise
+    await rm(overlay)
+    expect(await service.standing('x', ctx)).toBe(id)
+    expect((await conversation.agent(ctx)).instructions).toBe('Original')
+    release.resolve()
+    await delayed
+    expect((await conversation.agent(ctx)).instructions).toBe('Original')
+  } finally {
+    release.resolve()
+    await delayed.finally(() => lookup.mockRestore())
+  }
 })
 
 it('keeps one ownerless standing conversation, refreshes its definition and recreates deleted records', async () => {
