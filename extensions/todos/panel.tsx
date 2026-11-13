@@ -3,7 +3,8 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Checkbox } from '@/components/ui/checkbox'
 import { api, cn, errorMessage, events, formatAgo, useDocOf, useNow, useUltimate } from '@/sdk'
-import { Waiting } from '../inbox/ui.tsx'
+import { inboxCount, Waiting } from '../inbox/ui.tsx'
+import type { InboxStatus } from '../inbox/ui.tsx'
 import { stateTone } from '../messages/ui.tsx'
 import { StandingAction } from '../subagents/ui.tsx'
 import { AddAction, DoneAction, ReopenAction, TodosDoc } from './refs.ts'
@@ -20,10 +21,14 @@ const owners: { id: Todo['owner']; label: string }[] = [
  * ones folded away. Inbox entries are answered in the Inbox.
  */
 export function Todos() {
-  return <Waiting>{(entries) => <List questions={entries} />}</Waiting>
+  return (
+    <Waiting>
+      {(entries, _messages, status) => <List questions={entries} status={status} />}
+    </Waiting>
+  )
 }
 
-function List({ questions }: { questions: readonly unknown[] }) {
+function List({ questions, status }: { questions: readonly unknown[]; status: InboxStatus }) {
   const items = useDocOf(1, TodosDoc)?.items ?? []
   const now = useNow(60_000)
   const [error, setError] = useState<string>()
@@ -32,6 +37,7 @@ function List({ questions }: { questions: readonly unknown[] }) {
   const ultimate = open.filter((todo) => todo.owner === 'ultimate')
   const done = items.filter((todo) => todo.done).toReversed()
   const count = questions.length + open.length
+  const hasInbox = questions.length > 0 || status.state !== 'complete'
 
   const run = (action: Promise<unknown>) => {
     setError(undefined)
@@ -67,26 +73,26 @@ function List({ questions }: { questions: readonly unknown[] }) {
       <div className="flex items-center gap-2 px-3 pb-2 section-label">
         To-dos
         <span className="ml-auto text-muted-foreground/70">
-          {questions.length > 0 && (
+          {hasInbox && (
             <span className="text-amber-700 dark:text-amber-300">
-              {questions.length} in Inbox
+              {inboxCount(questions.length, status)} in Inbox
               {open.length > 0 && ' · '}
             </span>
           )}
-          {open.length ? `${open.length} open` : questions.length ? '' : 'none open'}
+          {open.length ? `${open.length} open` : hasInbox ? '' : 'none open'}
         </span>
       </div>
       <AddTodo add={(text, owner) => run(api.action(AddAction, { text, owner }))} />
       {error && <p className="px-3 pt-1.5 font-mono text-[11px] break-words text-error">{error}</p>}
-      {count === 0 ? (
+      {count === 0 && !hasInbox ? (
         <p className="flex items-center gap-2 px-3 py-6 text-xs text-muted-foreground">
           <CheckIcon className="size-3.5 text-success" />
           Nothing open for you or @ultimate.
         </p>
       ) : (
         <>
-          <Section title="For you" owner="user" empty={!questions.length && !yours.length}>
-            {questions.length > 0 && <InboxRow count={questions.length} />}
+          <Section title="For you" owner="user" empty={!hasInbox && !yours.length}>
+            {hasInbox && <InboxRow count={questions.length} status={status} />}
             {yours.map((todo) => (
               <TodoRow key={todo.id} todo={todo} now={now} toggle={toggle} start={start} />
             ))}
@@ -207,7 +213,7 @@ function TodoRow({
 }
 
 /** The questions waiting on you, as one row: a click opens the Inbox, where each is answered. */
-function InboxRow({ count }: { count: number }) {
+function InboxRow({ count, status }: { count: number; status: InboxStatus }) {
   const { showSurface } = useUltimate()
   return (
     <li data-todo-inbox>
@@ -217,7 +223,14 @@ function InboxRow({ count }: { count: number }) {
         type="button"
       >
         <InboxIcon className={cn('size-4 shrink-0', stateTone.waits)} />
-        <span className={cn('min-w-0 flex-1 text-[13px]', stateTone.waits)}>Inbox · {count}</span>
+        <span className="min-w-0 flex-1">
+          <span className={cn('text-[13px]', stateTone.waits)}>
+            Inbox · {inboxCount(count, status)}
+          </span>
+          {status.text && (
+            <span className="block text-[11px] text-muted-foreground">{status.text}</span>
+          )}
+        </span>
         <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
       </button>
     </li>
