@@ -31,6 +31,7 @@
     "extensions/dream/types.ts",
     "extensions/lineage/types.ts",
     "extensions/phase/types.ts",
+    "extensions/projects/link.ts",
     "extensions/recall/types.ts",
     "extensions/conversations/summary-model-ref.ts",
     "extensions/models/switches.ts",

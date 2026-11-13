@@ -1,9 +1,11 @@
-// The project switcher (`shell.rail`): every Ultimate running on this machine as a tile at the window's left edge.
-// Hover opens it over the app with names and ports; pin keeps it open beside the app. A tile is a link to that
-// instance's `/`, which opens its @ultimate. It steps aside for any other extension that fills `shell.rail`.
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+// The project switcher (`shell.rail`): every Ultimate running on this machine, then those on the user's other machines
+// (`remotes`), as tiles at the window's left edge. Hover opens it over the app with names and ports; pin keeps it open
+// beside the app. A tile is a link to that instance's `/`, which opens its @ultimate. It steps aside for any other
+// extension that fills `shell.rail`.
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, cn, defineWebExtension, useAction, useExtensions, useViewport } from '@/sdk'
+import { href } from './link.ts'
 import { ListAction, PinAction } from './refs.ts'
 import type { RunningProject } from './refs.ts'
 
@@ -19,7 +21,10 @@ function monogram(name: string) {
   return (words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2)).toLowerCase()
 }
 
-const port = (url: string) => new URL(url).port || '80'
+const port = (url: string) => {
+  const { port: explicit, protocol } = new URL(url)
+  return explicit || (protocol === 'https:' ? '443' : '80')
+}
 
 /**
  * The project this tab is navigating to. The old page stays until the new one paints, which takes seconds while the
@@ -109,12 +114,19 @@ function QuestionBadge({ count, className }: { count: number; className?: string
 
 function Row({ project, wide }: { project: RunningProject; wide: boolean }) {
   const here = project.current
-  const pending = useOpening() === project.url
+  // Where it is reachable from this page; the current tile names it but does not link.
+  const destination = href(project, window.location.hostname)
+  const link = here ? undefined : destination
+  const target = useOpening()
+  const pending = link !== undefined && target === link
+  const off = !here && (!project.available || link === undefined)
   const busy = (project.busy ?? 0) > 0
   const questions = project.questions ?? 0
   const title = [
     project.name,
-    `:${port(project.url)}`,
+    project.machine && `on ${project.machine}`,
+    `:${port(destination ?? project.url)}`,
+    !project.available ? 'not answering' : link === undefined && !here && 'not on the tailnet',
     questions && `${questions} for you`,
     busy && 'working',
     here && 'this tab',
@@ -128,15 +140,15 @@ function Row({ project, wide }: { project: RunningProject; wide: boolean }) {
       aria-label={title}
       className={cn(
         'group relative flex h-9 w-full items-center text-left outline-none',
-        here ? 'cursor-default' : 'cursor-pointer',
-        wide && !here && 'hover:bg-sidebar-accent/50',
+        here || link === undefined ? 'cursor-default' : 'cursor-pointer',
+        wide && link !== undefined && 'hover:bg-sidebar-accent/50',
         wide && here && 'bg-brand/10',
       )}
-      href={here ? undefined : `${project.url}/`}
+      href={link}
       onClick={(event) => {
         // A plain click navigates this tab: mark it. Mod-click and middle-click open another tab and leave this one.
         if (
-          here ||
+          link === undefined ||
           event.button !== 0 ||
           event.metaKey ||
           event.ctrlKey ||
@@ -144,14 +156,18 @@ function Row({ project, wide }: { project: RunningProject; wide: boolean }) {
           event.altKey
         )
           return
-        setOpening(project.url)
+        setOpening(link)
       }}
       title={title}
     >
       <span
         className={cn(
           'absolute left-0 w-[3px] rounded-r-full bg-brand transition-all duration-150',
-          here || pending ? 'h-6' : 'h-0 group-hover:h-2.5 group-hover:bg-muted-foreground/60',
+          here || pending
+            ? 'h-6'
+            : link === undefined
+              ? 'h-0'
+              : 'h-0 group-hover:h-2.5 group-hover:bg-muted-foreground/60',
           pending && 'animate-pulse-dot',
         )}
       />
@@ -163,7 +179,9 @@ function Row({ project, wide }: { project: RunningProject; wide: boolean }) {
               ? 'bg-brand/20 text-brand ring-1 ring-brand/50'
               : pending
                 ? 'animate-pulse-dot bg-brand/15 text-brand ring-1 ring-brand/40'
-                : 'bg-sidebar-accent/60 text-muted-foreground group-hover:text-foreground',
+                : off
+                  ? 'border border-dashed border-muted-foreground/30 text-muted-foreground/50'
+                  : 'bg-sidebar-accent/60 text-muted-foreground group-hover:text-foreground',
           )}
         >
           {monogram(project.name)}
@@ -183,7 +201,11 @@ function Row({ project, wide }: { project: RunningProject; wide: boolean }) {
           <span
             className={cn(
               'min-w-0 truncate text-[13px]',
-              here ? 'font-medium text-brand' : 'text-foreground/85',
+              here
+                ? 'font-medium text-brand'
+                : off
+                  ? 'text-muted-foreground/60'
+                  : 'text-foreground/85',
             )}
           >
             {project.name}
@@ -194,7 +216,13 @@ function Row({ project, wide }: { project: RunningProject; wide: boolean }) {
               pending ? 'text-brand' : 'text-muted-foreground/60',
             )}
           >
-            {pending ? 'opening…' : `:${port(project.url)}`}
+            {pending
+              ? 'opening…'
+              : !project.available
+                ? 'unavailable'
+                : link === undefined && !here
+                  ? 'no tailnet'
+                  : `:${port(destination ?? project.url)}`}
           </span>
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
             {busy && <BusyDot />}
@@ -203,6 +231,22 @@ function Row({ project, wide }: { project: RunningProject; wide: boolean }) {
         </span>
       )}
     </a>
+  )
+}
+
+/** Where another machine's tiles begin: a rule, and its name while the rail is open. */
+function MachineLabel({ name, wide }: { name: string; wide: boolean }) {
+  return (
+    <div className="flex h-6 items-center" title={name}>
+      <span className="flex w-[52px] shrink-0 justify-center">
+        <span className="h-px w-5 bg-border" />
+      </span>
+      {wide && (
+        <span className="min-w-0 truncate pr-3 font-mono text-[10px] text-muted-foreground/60">
+          {name}
+        </span>
+      )}
+    </div>
   )
 }
 
@@ -294,8 +338,14 @@ function Rail() {
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pt-1 pb-2 [scrollbar-width:none]">
           {loading && <RailSkeleton wide={wide} />}
           <div className={cn(waited && 'animate-fade-in')}>
-            {projects.map((project) => (
-              <Row key={project.url} project={project} wide={wide} />
+            {projects.map((project, index) => (
+              <Fragment key={`${project.machine ?? ''} ${project.url}`}>
+                {project.machine !== undefined &&
+                  project.machine !== projects[index - 1]?.machine && (
+                    <MachineLabel name={project.machine} wide={wide} />
+                  )}
+                <Row project={project} wide={wide} />
+              </Fragment>
             ))}
           </div>
         </div>
