@@ -2,8 +2,8 @@ import { ignoring, inProcess, keepLast } from '../../lib/errors.ts'
 import { deadline, every, retryAfter } from '../../lib/timers.ts'
 import { actionRef } from '../../shared/extension-api.ts'
 import { PAUSES } from './pause.ts'
-import { EndAction, HeardAction, StartLocalAction } from './refs.ts'
-import type { VoicePause } from './refs.ts'
+import { DiagnoseAction, EndAction, HeardAction, StartLocalAction } from './refs.ts'
+import type { VoicePause, VoiceTurnNote, VoiceVersion } from './refs.ts'
 import { decide, END_PHRASES, SOFT_MS } from './turn.ts'
 import type { VoiceTurns } from './turn.ts'
 import type { LiveOptions, LiveSession } from './session.ts'
@@ -100,6 +100,7 @@ function voiceOf() {
 export async function startLocal(
   options: LiveOptions & {
     onLine?: () => void
+    loaded?: VoiceVersion
   },
 ): Promise<LiveSession> {
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -147,6 +148,10 @@ export async function startLocal(
   let turns: VoiceTurns = 'auto'
   let endPhrases = END_PHRASES
   let hinted = false
+  let session = ''
+  let diagnostics = false
+  let utteranceAt = 0
+  let note: VoiceTurnNote | undefined
   let partialAt = 0
   let partialBusy = false
   let floor = 0.004
@@ -163,14 +168,25 @@ export async function startLocal(
   let spoken = 0
   let generation = 0
 
-  type Line = { raw?: string; unsure?: boolean }
+  const diagnose = (event: string, fields: Record<string, unknown> = {}) => {
+    if (!diagnostics) return
+    inProcess(
+      'diagnostics belong to the open browser page',
+      options
+        .action(DiagnoseAction, { session, event, ...fields })
+        .catch((error: unknown) => console.warn('Voice: diagnostics', error)),
+    )
+  }
+  type Line = { raw?: string; unsure?: boolean; rule?: string }
   const send = (text: string, line: Line) => {
+    const turn = diagnostics && line.rule ? { ...note, rule: line.rule } : undefined
     pending = pending
       .then(async () => {
         await options.action(HeardAction, {
           text,
           ...(line.raw ? { raw: line.raw } : {}),
           ...(line.unsure ? { unsure: true } : {}),
+          ...(turn ? { turn } : {}),
         })
       })
       .catch((error: unknown) => options.onError(errorOf(error)))
@@ -185,46 +201,68 @@ export async function startLocal(
     quietSince = 0
   }
   const finish = (text: string, line: Line = {}) => {
+    const ms = utteranceAt ? Date.now() - utteranceAt : undefined
     reset()
     if (!text) return
+    diagnose('send', { rule: line.rule, text, unsure: line.unsure === true, utteranceMs: ms })
     options.onLine?.()
     send(text, line)
+    note = undefined
   }
   const transcribe = async (turn: boolean) =>
     options.action(TranscribeAction, { pcm: toPcm(heard, audioContext.sampleRate), turn })
   let flushing = Promise.resolve()
-  const flush = () => {
+  const flush = (rule: string) => {
     if (!heard.length || cut === 'pending') return
-    if (cut === 'held') return finish(words, { raw, unsure: true })
+    if (cut === 'held') return finish(words, { raw, unsure: true, rule })
     const audio = heard
     reset()
     flushing = options
       .action(TranscribeAction, { pcm: toPcm(audio, audioContext.sampleRate), turn: false })
       .then((result) => {
-        if (result.speech && result.text) finish(result.text, { raw: result.raw, unsure: true })
+        if (result.speech && result.text)
+          finish(result.text, { raw: result.raw, unsure: true, rule })
       })
       .catch((error: unknown) => options.onError(errorOf(error)))
   }
   const cancelStallCheck = every(500, () => {
-    if (heard.length && Date.now() - frameAt > pause.cutMs + Math.max(holdMs, pause.holdMs)) flush()
+    if (heard.length && Date.now() - frameAt > pause.cutMs + Math.max(holdMs, pause.holdMs))
+      flush('stall')
   })
 
   const cutNow = () => {
     cut = 'pending'
     const length = heard.length
+    const asked = Date.now()
     inProcess(
       'a voice turn belongs to the open browser page',
       transcribe(true)
         .then((result) => {
+          diagnose('transcribed', {
+            text: result.text,
+            raw: result.raw,
+            speech: result.speech,
+            complete: result.complete,
+            probability: result.probability,
+            modelMs: result.ms,
+            roundTripMs: Date.now() - asked,
+            audioMs: Math.round(length * frameMs),
+          })
           if (releasing)
             return void (
               result.speech &&
               result.text &&
-              finish(result.text, { raw: result.raw, unsure: true })
+              finish(result.text, { raw: result.raw, unsure: true, rule: 'closed' })
             )
           if (cut !== 'pending') return
-          if (heard.length !== length && voicedAt > quietSince) return void (cut = 'none')
-          if (!result.speech) return reset()
+          if (heard.length !== length && voicedAt > quietSince) {
+            diagnose('resumed')
+            return void (cut = 'none')
+          }
+          if (!result.speech) {
+            diagnose('no speech')
+            return reset()
+          }
           const turn = decide(result.text, result, { turns, holdMs: pause.holdMs, endPhrases })
           console.info(
             'Voice: turn',
@@ -232,6 +270,18 @@ export async function startLocal(
             'why' in turn ? turn.why : turn.turns,
             result.probability,
           )
+          diagnose('decision', {
+            kind: turn.kind,
+            ...(turn.kind === 'mode' ? { turns: turn.turns } : { why: turn.why, text: turn.text }),
+            ...(turn.kind === 'hold' ? { holdMs: turn.ms } : {}),
+            probability: result.probability,
+            mode: turns,
+          })
+          note = {
+            rule: '',
+            ...('why' in turn ? { why: turn.why } : {}),
+            ...(result.probability !== undefined ? { probability: result.probability } : {}),
+          }
           if (turn.kind === 'mode') {
             reset()
             turns = turn.turns
@@ -244,7 +294,8 @@ export async function startLocal(
           }
           words = turn.text
           raw = result.raw
-          if (turn.kind === 'send') finish(turn.text, { raw })
+          if (turn.kind === 'send')
+            finish(turn.text, { raw, rule: turn.why === 'end phrase' ? 'end-phrase' : 'cut' })
           else {
             cut = 'held'
             holdMs = turn.ms
@@ -292,6 +343,7 @@ export async function startLocal(
       }
       heard = [...preroll, input]
       preroll = []
+      utteranceAt = now
       voicedAt = now
       partialAt = now
       activityAt = now
@@ -305,9 +357,10 @@ export async function startLocal(
       if (cut === 'held') cut = 'none'
     } else quietSince ||= now
     const quiet = quietSince ? now - quietSince : 0
-    if (heard.length * frameMs > MAX_MS) flush()
+    if (heard.length * frameMs > MAX_MS) flush('cap')
     else if (cut === 'none' && quiet >= pause.cutMs) cutNow()
-    else if (cut === 'held' && quiet >= pause.cutMs + holdMs) finish(words, { raw, unsure: true })
+    else if (cut === 'held' && quiet >= pause.cutMs + holdMs)
+      finish(words, { raw, unsure: true, rule: turns === 'dictation' ? 'dictation' : 'hold' })
     else if (
       cut === 'held' &&
       !hinted &&
@@ -317,6 +370,7 @@ export async function startLocal(
     ) {
       hinted = true
       holdMs += HINT_MS
+      diagnose('hint')
       speak(`Take your time. Say ${endPhrases[0] ?? 'over'} when you're done.`, { now: true })
     } else if (cut === 'none' && !quiet && !partialBusy && now - partialAt >= PARTIAL_MS) partial()
   }
@@ -471,7 +525,7 @@ export async function startLocal(
   let closePromise: Promise<void> | undefined
   const close = () =>
     (closePromise ??= (async () => {
-      if (!releasing) flush()
+      if (!releasing) flush('closed')
       await cleanup()
       await flushing
       await pending
@@ -489,6 +543,9 @@ export async function startLocal(
     pause = started.pause ?? PAUSES.relaxed
     turns = started.turns ?? 'auto'
     endPhrases = started.endPhrases ?? END_PHRASES
+    session = started.session
+    diagnostics = started.diagnostics
+    diagnose('client', { ...options.loaded, userAgent: navigator.userAgent })
     for (const track of stream.getAudioTracks())
       track.addEventListener('ended', () => {
         if (releasing) return
