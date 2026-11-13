@@ -15,11 +15,12 @@ export type LiveOptions = {
 export type LiveSession = {
   conversation: ConversationId
   analyser: AnalyserNode
-  relay: Relay
+  relay: Pick<Relay, 'hearing' | 'talking' | 'partial' | 'spokenWords' | 'idleFor'>
   send: (event: Record<string, unknown>) => void
   mute: () => void
   unmute: () => void
   speak: (text: string) => void
+  stopSpeaking?: () => void
   close: () => Promise<void>
 }
 
