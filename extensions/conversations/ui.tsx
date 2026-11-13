@@ -30,7 +30,13 @@ export const ConversationEpic = definePoint<
   { key: string; title: string; status: string; open: () => void } | undefined
 >('conversations.epic')
 
-export { ConversationRef, FeatureTag, useOverview, useStandingName } from './feature.tsx'
+export {
+  ConversationRef,
+  featureHue,
+  FeatureTag,
+  useOverview,
+  useStandingName,
+} from './feature.tsx'
 export { AgentMark, AgentTitle, useAgentTitle } from './marks.tsx'
 export type { Presence } from './marks.tsx'
 export { hiddenConversationIds } from './visible.tsx'

@@ -1,7 +1,30 @@
 /** What the Inbox lists and how its selection moves: pure, over the Messages log and the provided items. */
 import { waiting } from '../questions/ui.tsx'
 import type { Message } from '../messages/refs.ts'
-import type { InboxItem } from './ui.tsx'
+import type { InboxItem, InboxStatus } from './ui.tsx'
+
+/** Shared by every Inbox count: a partial count is a lower bound, never an all-clear. */
+export const inboxCount = (count: number, status: InboxStatus) =>
+  status.state === 'complete' ? String(count) : count ? `${count}+` : '?'
+
+/** Local document readiness and all item providers must agree before the Inbox can claim completeness. */
+export function inboxStatus(loaded: boolean, statuses: readonly InboxStatus[]): InboxStatus {
+  const all: InboxStatus[] = [...(loaded ? [] : [{ state: 'loading' as const }]), ...statuses]
+  const state =
+    (['error', 'partial', 'loading'] as const).find((candidate) =>
+      all.some((s) => s.state === candidate),
+    ) ?? 'complete'
+  const text = all
+    .flatMap((s) =>
+      s.text
+        ? [s.text]
+        : s.state === 'complete'
+          ? []
+          : ['Some sources are not yet known. There may be more waiting on you.'],
+    )
+    .join(' · ')
+  return { state, ...(text ? { text } : {}) }
+}
 
 /** One row of the Inbox: a question to the user (`message`) or another extension's item (`item`). */
 export type Entry = { key: string; at: number } & (

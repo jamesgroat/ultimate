@@ -6,7 +6,8 @@ import type { ReactNode } from 'react'
 import { AllProvided, definePoint, useDocOf } from '@/sdk'
 import { emptyMessages, MessagesDoc } from '../messages/ui.tsx'
 import type { Message } from '../messages/refs.ts'
-import { inboxItems } from './items.tsx'
+import { inboxItems, inboxStatus } from './items.tsx'
+export { inboxCount } from './items.tsx'
 import type { Entry } from './items.tsx'
 
 /** Something that waits on the user, provided by another extension; it leaves when the provider stops listing it. */
@@ -29,16 +30,39 @@ export type InboxItem = {
 /** Every provider's items; the Inbox, its sidebar row and the To-dos' "For you" count merge them with the questions. */
 export const InboxItems = definePoint<null, InboxItem[]>('inbox.items')
 
+/** Complete means every source is known fresh; all other states may have missing items, even at zero. */
+export type InboxStatus = {
+  state: 'complete' | 'loading' | 'partial' | 'error'
+  text?: string
+}
+
+/** Each item's provider reports freshness separately; it never replaces the native items or Messages log. */
+export const InboxFreshness = definePoint<null, InboxStatus>('inbox.freshness')
+
+/** Optional source identity beside the normal asker; remote items must not set a local conversation id. */
+export const InboxSourceChip = definePoint<Entry, ReactNode>('inbox.sourceChip')
+
 /** Renders with everything that waits on the user, oldest first: the open questions and every provided item. */
 export function Waiting({
   children,
 }: {
-  children: (entries: Entry[], messages: readonly Message[]) => ReactNode
+  children: (entries: Entry[], messages: readonly Message[], status: InboxStatus) => ReactNode
 }) {
-  const { messages } = useDocOf(1, MessagesDoc) ?? emptyMessages
+  const log = useDocOf(1, MessagesDoc)
+  const { messages } = log ?? emptyMessages
   return (
     <AllProvided input={null} point={InboxItems}>
-      {(provided) => children(inboxItems(messages, provided), messages)}
+      {(provided) => (
+        <AllProvided input={null} point={InboxFreshness}>
+          {(statuses) =>
+            children(
+              inboxItems(messages, provided),
+              messages,
+              inboxStatus(log !== undefined, statuses),
+            )
+          }
+        </AllProvided>
+      )}
     </AllProvided>
   )
 }
