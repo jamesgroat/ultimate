@@ -2,7 +2,13 @@
 import { actionRef } from '../../shared/extension-api.ts'
 
 /**
- * `{ text }` → the line spoken by OpenAI's realtime voice, as base64 16-bit mono PCM at 24 kHz; `{ audio: null }` without an
- * OpenAI API key, for the browser's own voice to say it.
+ * `{ text }` → the line spoken by the configured voice, as base64 16-bit mono PCM at 24 kHz;
+ * `{ audio: null }` leaves speech to the browser when voices are unavailable or the source is off.
  */
 export const SayAction = actionRef<{ text: string }, { audio: string | null }>('sounds', 'say')
+
+/** No arguments → configured source, local venv availability and a setup hint when local is not installed. */
+export const StatusAction = actionRef<
+  null,
+  { voice: 'openai' | 'local' | 'off'; localAvailable: boolean; hint?: string }
+>('sounds', 'status')
