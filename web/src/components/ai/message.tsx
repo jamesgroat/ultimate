@@ -3,7 +3,7 @@
 // the extensions' `link` renderers, inline code through their `inlineCode` renderers.
 import { cn } from 'cn'
 import type { ComponentProps, HTMLAttributes, ReactNode } from 'react'
-import { memo, useMemo } from 'react'
+import { createContext, memo, useContext, useMemo } from 'react'
 import {
   CodeBlock,
   CodeBlockCopyButton,
@@ -48,11 +48,108 @@ export const MessageContent = ({ className, ...props }: HTMLAttributes<HTMLDivEl
   />
 )
 
+type Source = { url?: string; preview?: string | null }
+const SourceContext = createContext<Source | undefined>(undefined)
+
+/** Remote Markdown: browser base for links/images, plus an explicitly usable preview URL. Presence disables local renderers and raw HTML. */
+export function MarkdownSource({ children, url, preview }: Source & { children: ReactNode }) {
+  const source = useMemo(() => ({ url, preview }), [url, preview])
+  return <SourceContext value={source}>{children}</SourceContext>
+}
+
+const loopback = (url: URL) =>
+  url.hostname === 'localhost' ||
+  url.hostname.endsWith('.localhost') ||
+  url.hostname.startsWith('127.') ||
+  url.hostname === '[::1]' ||
+  url.hostname === '0.0.0.0'
+
+function sourceHref(href: string | undefined, source: Source) {
+  if (!href || href === 'streamdown:incomplete-link') return undefined
+  const mention = parseMention(href)
+  if (mention?.entry !== undefined) return undefined
+  const target = mention ? `?conversation=${mention.conversation}` : href
+  if (!URL.canParse(target, source.url)) return undefined
+  const url = new URL(target, source.url)
+  if (!['http:', 'https:', 'mailto:', 'tel:'].includes(url.protocol)) return undefined
+  if (
+    loopback(url) &&
+    (!source.preview || !URL.canParse(source.preview) || new URL(source.preview).href !== url.href)
+  )
+    return undefined
+  return url.href
+}
+
+function sourceImage(src: string | undefined, source: Source) {
+  if (!src || !URL.canParse(src, source.url)) return undefined
+  const url = new URL(src, source.url)
+  return ['http:', 'https:'].includes(url.protocol) && !loopback(url) ? url.href : undefined
+}
+
+type SourceNode = {
+  type: string
+  url?: string
+  identifier?: string
+  alt?: string
+  value?: string
+  children?: SourceNode[]
+}
+function sourceLinks(source: Source) {
+  return (tree: SourceNode) => {
+    const definitions = new Map<string, string>()
+    const collect = (node: SourceNode) => {
+      if (
+        node.type === 'definition' &&
+        node.identifier &&
+        node.url &&
+        !definitions.has(node.identifier)
+      )
+        definitions.set(node.identifier, node.url)
+      node.children?.forEach(collect)
+    }
+    collect(tree)
+    const visit = (node: SourceNode) => {
+      node.children = node.children?.flatMap((child) => {
+        visit(child)
+        // Streamdown's rehypeRaw runs before skipHtml; remove raw nodes first (#135567).
+        if (child.type === 'html' || child.type === 'definition') return []
+        const reference = child.type === 'linkReference' || child.type === 'imageReference'
+        const url = reference ? definitions.get(child.identifier ?? '') : child.url
+        if (child.type === 'link' || child.type === 'linkReference') {
+          const href = sourceHref(url, source)
+          return href ? [{ ...child, type: 'link', url: href }] : (child.children ?? [])
+        }
+        if (child.type === 'image' || child.type === 'imageReference') {
+          const src = sourceImage(url, source)
+          return src
+            ? [{ ...child, type: 'image', url: src }]
+            : [{ type: 'text', value: child.alt ?? '' }]
+        }
+        return [child]
+      })
+    }
+    visit(tree)
+  }
+}
+
+const CoreImage = defaultComponents.img
+function Image(props: ComponentProps<'img'> & ExtraProps) {
+  const source = useContext(SourceContext)
+  if (!source) return <CoreImage {...props} />
+  const src = sourceImage(typeof props.src === 'string' ? props.src : undefined, source)
+  return src ? <CoreImage {...props} src={src} srcSet={undefined} /> : <>{props.alt}</>
+}
+
 const CoreLink = defaultComponents.a
 /** A link as the `link` renderers compose it, starting with Streamdown's, which asks before opening a new tab. */
 function Link(props: ComponentProps<'a'> & ExtraProps) {
   const renderers = linkRenderers(useExtensions())
+  const source = useContext(SourceContext)
   const { href, children } = props
+  if (source) {
+    const remote = sourceHref(href, source)
+    return remote ? <CoreLink {...props} href={remote} /> : <>{children}</>
+  }
   // A `#id` mention stays its text unless a renderer knows the conversation.
   const core = href && parseMention(href) ? <>{children}</> : <CoreLink {...props} />
   // Streamdown marks a link whose Markdown is still streaming.
@@ -96,9 +193,10 @@ const CoreCode = defaultComponents.code
 /** An inline code span as the `inlineCode` renderers compose it, starting with Streamdown's. */
 function InlineCode(props: ComponentProps<'code'> & ExtraProps) {
   const renderers = inlineCodeRenderers(useExtensions())
+  const source = useContext(SourceContext)
   const { children } = props
   const core = <CoreCode {...props} />
-  if (typeof children !== 'string') return core
+  if (source || typeof children !== 'string') return core
   return renderers.reduce<ReactNode>(
     (inner, { extension, version, component: Renderer }) => (
       <ExtensionBoundary
@@ -115,18 +213,20 @@ function InlineCode(props: ComponentProps<'code'> & ExtraProps) {
   )
 }
 
-const components = { a: Link, inlineCode: InlineCode }
+const components = { a: Link, img: Image, inlineCode: InlineCode }
 // After GFM, so autolinked URLs are links already and keep their `#fragment`.
 const remarkPlugins = [...Object.values(defaultRemarkPlugins), remarkMentions]
 
 /** A fenced code block as the `codeBlocks` renderers of its language compose it, starting with the core block. */
 function ExtensionCodeBlock({ code, language, isIncomplete }: CustomRendererProps) {
   const renderers = codeBlockRenderers(useExtensions(), language)
+  const source = useContext(SourceContext)
   const core = (
     <CodeBlock code={code} isIncomplete={isIncomplete} language={language} lineNumbers={false}>
       <CodeBlockCopyButton />
     </CodeBlock>
   )
+  if (source) return core
   return renderers.reduce<ReactNode>(
     (inner, { extension, version, component: Renderer }) => (
       <ExtensionBoundary extension={extension} fallback={inner} key={extension} version={version}>
@@ -141,7 +241,16 @@ const controls = { code: { copy: true, download: false }, table: false, mermaid:
 /** Markdown that may still be streaming. */
 export const MessageResponse = memo(
   ({ className, ...props }: ComponentProps<typeof Streamdown>) => {
-    const languages = codeBlockLanguages(useExtensions()).join(' ')
+    const extensions = useExtensions()
+    const source = useContext(SourceContext)
+    const languages = source ? '' : codeBlockLanguages(extensions).join(' ')
+    const remarks = useMemo(
+      () =>
+        source
+          ? [...remarkPlugins, [sourceLinks, source] as [typeof sourceLinks, Source]]
+          : remarkPlugins,
+      [source],
+    )
     const plugins = useMemo(
       () => ({
         code: codePlugin,
@@ -151,16 +260,19 @@ export const MessageResponse = memo(
       }),
       [languages],
     )
+    // Streamdown's memo ignores remarkPlugins; a source change must reparse links (#135567).
     return (
       <Streamdown
+        key={source ? JSON.stringify([source.url ?? null, source.preview ?? null]) : undefined}
         className={cn('markdown min-w-0', className)}
         components={components}
         controls={controls}
         lineNumbers={false}
         plugins={plugins}
-        remarkPlugins={remarkPlugins}
+        remarkPlugins={remarks}
         shikiTheme={codePlugin.getThemes()}
         {...props}
+        {...(source ? { skipHtml: true } : {})}
       />
     )
   },

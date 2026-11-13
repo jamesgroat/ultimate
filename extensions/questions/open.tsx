@@ -43,6 +43,9 @@ export function forgetSettled(cards: Record<string, CardState>, messages: readon
   const open = new Set(
     messages.flatMap((message) => (waitsOnUser(message) ? [`message:${message.id}`] : [])),
   )
-  const kept = Object.entries(cards).filter(([card]) => open.has(card))
+  // Injected transports own their identities and settlement; the local log cannot settle a remote card.
+  const kept = Object.entries(cards).filter(
+    ([card]) => !card.startsWith('message:') || open.has(card),
+  )
   return kept.length === Object.keys(cards).length ? cards : Object.fromEntries(kept)
 }
