@@ -1,9 +1,21 @@
 import { ignoring, keepLast } from '../../lib/errors.ts'
+import { deadline, every, retryAfter } from '../../lib/timers.ts'
 import { actionRef } from '../../shared/extension-api.ts'
+import { PAUSES } from './pause.ts'
 import { EndAction, HeardAction, StartLocalAction } from './refs.ts'
+import type { VoicePause } from './refs.ts'
+import { decide, END_PHRASES, SOFT_MS } from './turn.ts'
+import type { VoiceTurns } from './turn.ts'
 import type { LiveOptions, LiveSession } from './session.ts'
 
-type Transcript = { text: string; speech: boolean; complete?: boolean; ms: number }
+type Transcript = {
+  text: string
+  raw?: string
+  speech: boolean
+  complete?: boolean
+  probability?: number
+  ms: number
+}
 const TranscribeAction = actionRef<{ pcm: string; turn?: boolean }, Transcript>(
   'speak',
   'transcribe',
@@ -13,14 +25,37 @@ const RenderAction = actionRef<
   { text: string; voice: string; rate?: number; engine: 'mlx'; model: string },
   { audio: string; mimeType: string }
 >('speak', 'render')
+const SpeechifyAction = actionRef<{ text: string }, { text: string; ms: number }>(
+  'speak',
+  'speechify',
+)
 
 const RATE = 16_000
-export const CUT_MS = 400
-export const HOLD_MS = 1600
 const PARTIAL_MS = 1000
 const PREROLL_MS = 300
 const ECHO_TAIL_MS = 350
-const MAX_MS = 30_000
+const MAX_MS = 120_000
+const HINT_AFTER_MS = 2000
+const HINT_MS = 3500
+const PLAY_SLACK_MS = 3000
+const BLOCKED_MS = 1500
+
+export function speakable(text: string) {
+  return text
+    .replace(
+      /\bhttps?:\/\/(?:www\.)?([^\s/?#:]+)[^\s]*?(?=[.,;:!?)\]]*(?:\s|$))/g,
+      (_, host: string) => host.split('.').join(' dot '),
+    )
+    .replace(
+      /(^|[^\w.])@([a-z][\w-]*)/gi,
+      (_, before: string, name: string) => before + name[0].toUpperCase() + name.slice(1),
+    )
+    .replace(
+      /\b(?:(the|a)\s+)?(branch|conversation)\s+#?\d+\b/gi,
+      (_, article: string | undefined, noun: string) => `${article ?? 'a'} ${noun.toLowerCase()}`,
+    )
+    .replace(/(^|[^\w&])#\d+\b/g, '$1a branch')
+}
 
 export function sentences(text: string) {
   return (text.match(/[^.!?…]+(?:[.!?…]+["')\]]*|$)\s*/g) ?? [text])
@@ -81,6 +116,17 @@ export async function startLocal(
   capture.connect(sink).connect(audioContext.destination)
   const frameMs = (2048 / audioContext.sampleRate) * 1000
   const errorOf = (error: unknown) => (error instanceof Error ? error : new Error(String(error)))
+  let pause: VoicePause = PAUSES.relaxed
+  let frameAt = Date.now()
+  let stoppedSince = 0
+  const running = () => audioContext.state === 'running'
+  audioContext.addEventListener('statechange', () => {
+    if (running()) stoppedSince = 0
+    else if (audioContext.state !== 'closed') {
+      stoppedSince ||= Date.now()
+      audioContext.resume().catch((error: unknown) => console.warn('Voice: audio held', error))
+    }
+  })
 
   let conversation: number | undefined
   let releasing = false
@@ -92,52 +138,112 @@ export async function startLocal(
   let voicedAt = 0
   let quietSince = 0
   let words = ''
+  let raw: string | undefined
   let cut: 'none' | 'pending' | 'held' = 'none'
+  let holdMs = 0
+  let turns: VoiceTurns = 'auto'
+  let endPhrases = END_PHRASES
+  let hinted = false
   let partialAt = 0
   let partialBusy = false
   let floor = 0.004
   let pending = Promise.resolve()
   let playing: AudioBufferSourceNode | undefined
-  let queue: { audio: Promise<AudioBuffer | undefined>; words: number; first: boolean }[] = []
+  let queue: {
+    audio: Promise<AudioBuffer | undefined>
+    words: number
+    first: boolean
+    now?: boolean
+  }[] = []
   let draining = false
   let talkingUntil = 0
   let spoken = 0
   let generation = 0
 
-  const send = (text: string) => {
+  type Line = { raw?: string; unsure?: boolean }
+  const send = (text: string, line: Line) => {
     pending = pending
       .then(async () => {
-        await options.action(HeardAction, { text })
+        await options.action(HeardAction, {
+          text,
+          ...(line.raw ? { raw: line.raw } : {}),
+          ...(line.unsure ? { unsure: true } : {}),
+        })
       })
       .catch((error: unknown) => options.onError(errorOf(error)))
   }
   const reset = () => {
     heard = []
     words = ''
+    raw = undefined
     cut = 'none'
+    holdMs = 0
     voicedAt = 0
     quietSince = 0
   }
-  const finish = (text: string) => {
+  const finish = (text: string, line: Line = {}) => {
     reset()
     if (!text) return
     options.onLine?.()
-    send(text)
+    send(text, line)
   }
   const transcribe = async (turn: boolean) =>
     options.action(TranscribeAction, { pcm: toPcm(heard, audioContext.sampleRate), turn })
+  let flushing = Promise.resolve()
+  const flush = () => {
+    if (!heard.length || cut === 'pending') return
+    if (cut === 'held') return finish(words, { raw, unsure: true })
+    const audio = heard
+    reset()
+    flushing = options
+      .action(TranscribeAction, { pcm: toPcm(audio, audioContext.sampleRate), turn: false })
+      .then((result) => {
+        if (result.speech && result.text) finish(result.text, { raw: result.raw, unsure: true })
+      })
+      .catch((error: unknown) => options.onError(errorOf(error)))
+  }
+  const cancelStallCheck = every(500, () => {
+    if (heard.length && Date.now() - frameAt > pause.cutMs + Math.max(holdMs, pause.holdMs)) flush()
+  })
 
   const cutNow = () => {
     cut = 'pending'
     const length = heard.length
     void transcribe(true)
       .then((result) => {
-        if (releasing || cut !== 'pending') return
+        if (releasing)
+          return void (
+            result.speech &&
+            result.text &&
+            finish(result.text, { raw: result.raw, unsure: true })
+          )
+        if (cut !== 'pending') return
         if (heard.length !== length && voicedAt > quietSince) return void (cut = 'none')
         if (!result.speech) return reset()
-        words = result.text
-        if (result.complete !== false) finish(result.text)
-        else cut = 'held'
+        const turn = decide(result.text, result, { turns, holdMs: pause.holdMs, endPhrases })
+        console.info(
+          'Voice: turn',
+          turn.kind,
+          'why' in turn ? turn.why : turn.turns,
+          result.probability,
+        )
+        if (turn.kind === 'mode') {
+          reset()
+          turns = turn.turns
+          speak(
+            turns === 'dictation'
+              ? 'Dictation mode. Take your time, and say over when you are done.'
+              : 'Normal mode.',
+          )
+          return
+        }
+        words = turn.text
+        raw = result.raw
+        if (turn.kind === 'send') finish(turn.text, { raw })
+        else {
+          cut = 'held'
+          holdMs = turn.ms
+        }
       })
       .catch((error: unknown) => {
         reset()
@@ -158,6 +264,7 @@ export async function startLocal(
   capture.onaudioprocess = (event) => {
     if (releasing) return
     const now = Date.now()
+    frameAt = now
     const input = new Float32Array(event.inputBuffer.getChannelData(0))
     if (muted || playing || now < talkingUntil) {
       preroll = []
@@ -189,10 +296,20 @@ export async function startLocal(
       if (cut === 'held') cut = 'none'
     } else quietSince ||= now
     const quiet = quietSince ? now - quietSince : 0
-    if (heard.length * frameMs > MAX_MS) cutNow()
-    else if (cut === 'none' && quiet >= CUT_MS) cutNow()
-    else if (cut === 'held' && quiet >= CUT_MS + HOLD_MS) finish(words)
-    else if (cut === 'none' && !quiet && !partialBusy && now - partialAt >= PARTIAL_MS) partial()
+    if (heard.length * frameMs > MAX_MS) flush()
+    else if (cut === 'none' && quiet >= pause.cutMs) cutNow()
+    else if (cut === 'held' && quiet >= pause.cutMs + holdMs) finish(words, { raw, unsure: true })
+    else if (
+      cut === 'held' &&
+      !hinted &&
+      holdMs > SOFT_MS &&
+      !queue.length &&
+      quiet >= pause.cutMs + HINT_AFTER_MS
+    ) {
+      hinted = true
+      holdMs += HINT_MS
+      speak(`Take your time. Say ${endPhrases[0] ?? 'over'} when you're done.`, { now: true })
+    } else if (cut === 'none' && !quiet && !partialBusy && now - partialAt >= PARTIAL_MS) partial()
   }
 
   const render = (text: string, run: number) =>
@@ -200,6 +317,14 @@ export async function startLocal(
       if (run !== generation) return undefined
       const bytes = Uint8Array.from(atob(audio), (c) => c.charCodeAt(0))
       return audioContext.decodeAudioData(bytes.buffer)
+    })
+  const userDone = (run: number) =>
+    new Promise<void>((resolve) => {
+      const check = () => {
+        if (heard.length && run === generation) retryAfter(100, check)
+        else resolve()
+      }
+      check()
     })
   const drain = async (run: number) => {
     draining = true
@@ -216,6 +341,21 @@ export async function startLocal(
         if (run !== generation) return
         queue.shift()
         if (!buffer) continue
+        if (!running()) {
+          audioContext.resume().catch((error: unknown) => console.warn('Voice: audio held', error))
+          await new Promise<void>((resolve) => {
+            const check = () => {
+              if (!running() && run === generation) return
+              audioContext.removeEventListener('statechange', check)
+              resolve()
+            }
+            audioContext.addEventListener('statechange', check)
+            check()
+          })
+          if (run !== generation) return
+        }
+        if (next.first && !next.now) await userDone(run)
+        if (run !== generation) return
         const node = audioContext.createBufferSource()
         node.buffer = buffer
         node.connect(audioContext.destination)
@@ -224,10 +364,31 @@ export async function startLocal(
         spoken += next.words
         activityAt = Date.now()
         await new Promise<void>((resolve) => {
-          node.addEventListener('ended', () => resolve(), { once: true })
+          const cancelPlaybackDeadline = deadline(buffer.duration * 1000 + PLAY_SLACK_MS, () => {
+            console.warn('Voice: a sentence never ended; going on')
+            resolve()
+          })
+          node.addEventListener(
+            'ended',
+            () => {
+              cancelPlaybackDeadline()
+              resolve()
+            },
+            { once: true },
+          )
           node.start()
         })
+        if (playing === node) {
+          try {
+            node.stop()
+          } catch (error) {
+            ignoring(
+              (cause) => cause instanceof DOMException && cause.name === 'InvalidStateError',
+            )(error)
+          }
+        }
         playing = undefined
+        talkingUntil = Date.now() + ECHO_TAIL_MS
       }
       talkingUntil = Date.now() + ECHO_TAIL_MS
       activityAt = Date.now()
@@ -244,26 +405,46 @@ export async function startLocal(
     try {
       node?.stop()
     } catch (error) {
-      ignoring((cause) => cause instanceof DOMException && cause.name === 'InvalidStateError')(error)
+      ignoring((cause) => cause instanceof DOMException && cause.name === 'InvalidStateError')(
+        error,
+      )
     }
     talkingUntil = Date.now() + ECHO_TAIL_MS
   }
-  const speak = (text: string) => {
-    const run = generation
-    for (const [index, part] of sentences(text).entries())
+  const queueLine = (text: string, run: number, now = false) => {
+    if (run !== generation) return
+    for (const [index, part] of sentences(speakable(text)).entries())
       queue.push({
         audio: render(part, run),
         words: part.split(/\s+/).filter(Boolean).length,
         first: index === 0,
+        ...(now ? { now } : {}),
       })
-    talkingUntil = Number.POSITIVE_INFINITY
-    reset()
     if (!draining) void drain(run).catch((error: unknown) => options.onError(errorOf(error)))
+  }
+  let rewriting = Promise.resolve()
+  const speak = (text: string, { forEar = false, now = false } = {}) => {
+    if (releasing) return
+    const run = generation
+    rewriting = rewriting.then(async () => {
+      if (releasing || run !== generation) return
+      if (!forEar || localStorage.getItem('speak:speechify') === 'off')
+        return queueLine(text, run, now)
+      const rewritten = await options
+        .action(SpeechifyAction, { text })
+        .then((result) => result.text)
+        .catch((error: unknown) => {
+          console.warn('Voice: speechify failed, speaking the line as written', error)
+          return text
+        })
+      queueLine(rewritten, run)
+    })
   }
 
   const cleanup = async () => {
     if (releasing) return
     releasing = true
+    cancelStallCheck()
     stopSpeaking()
     capture.onaudioprocess = null
     stream.getTracks().forEach((track) => track.stop())
@@ -272,7 +453,9 @@ export async function startLocal(
   let closePromise: Promise<void> | undefined
   const close = () =>
     (closePromise ??= (async () => {
+      if (!releasing) flush()
       await cleanup()
+      await flushing
       await pending
       if (conversation !== undefined)
         await options.action(EndAction, { seconds: Math.round((Date.now() - began) / 1000) })
@@ -285,6 +468,17 @@ export async function startLocal(
       options.action(WarmAction, null),
     ])
     conversation = started.conversation
+    pause = started.pause ?? PAUSES.relaxed
+    turns = started.turns ?? 'auto'
+    endPhrases = started.endPhrases ?? END_PHRASES
+    for (const track of stream.getAudioTracks())
+      track.addEventListener('ended', () => {
+        if (releasing) return
+        options.onError(
+          new Error('The microphone stopped (screen locked or another app took it) · tap Resume'),
+        )
+        void close().catch((error: unknown) => options.onError(errorOf(error)))
+      })
     began = Date.now()
     activityAt = began
     return {
@@ -297,6 +491,9 @@ export async function startLocal(
         spokenWords: () => spoken,
         idleFor: (now) => Math.max(0, now - activityAt),
       },
+      holding: () => cut === 'held',
+      dictating: () => turns === 'dictation',
+      endPhrase: endPhrases[0],
       send: () => undefined,
       mute: () => {
         muted = true
@@ -307,6 +504,8 @@ export async function startLocal(
       },
       speak,
       stopSpeaking,
+      audioBlocked: () => stoppedSince > 0 && Date.now() - stoppedSince >= BLOCKED_MS,
+      resumeAudio: () => audioContext.resume(),
       close,
     }
   } catch (error) {
