@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
-import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux'
+import { fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai/providers/faux'
+import type { FauxProviderHandle, FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
 import { Metadata } from '../../../../server/metadata.ts'
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
@@ -21,7 +22,7 @@ afterEach(async () => {
   await app?.close()
 })
 
-async function fixture(localSetup = true) {
+async function fixture(localSetup = true, faux?: FauxProviderHandle) {
   const root = await temp('ultimate-automations-')
   const userHome = join(root, 'user')
   const home = join(root, 'project-state')
@@ -32,7 +33,14 @@ async function fixture(localSetup = true) {
       join(definitions, `${name}.md`),
       `---\nname: ${name}\ndescription: Automation test\nmodel: faux/faux-1\ntools: []\n${name === 'ultimate' ? 'resident: true\n' : ''}---\nKeep answers short.\n`,
     )
-  const options = { ultimateRoot: resolve('.'), projectRoot: root, userHome, home, localSetup }
+  const options = {
+    ultimateRoot: resolve('.'),
+    projectRoot: root,
+    userHome,
+    home,
+    localSetup,
+    faux,
+  }
   server = await fauxServer(options)
   return {
     root,
@@ -115,9 +123,47 @@ it('starts a prompt run from script FIRE with its payload', async () => {
 })
 
 it('delivers FIRE once, investigates exits only in the owning agent, recovers, and escalates through Messages', async () => {
-  const { root, userHome, home, options, app: initial } = await fixture()
+  const faux = fauxProvider()
+  let active: Awaited<ReturnType<typeof fauxServer>> | undefined
+  // #164289: empty faux queues failed model turns and kept failure inputs queued instead of testing delivery.
+  // This test repairs scripts itself, so healthy watcher turns wait for those actions before finishing.
+  const answer: FauxResponseFactory = async (transcript, request) => {
+    faux.appendResponses([answer])
+    await until(() => {
+      request?.signal?.throwIfAborted()
+      return active !== undefined
+    })
+    const content = transcript.messages.findLast((message) => message.role === 'user')?.content
+    const text =
+      typeof content === 'string'
+        ? content
+        : (content
+            ?.filter((part) => part.type === 'text')
+            .map((part) => part.text)
+            .join('\n') ?? '')
+    if (
+      text.includes('Write and briefly test run') ||
+      text.includes('Investigate, fix run, and use automation resume')
+    ) {
+      const id = /automation (A\d+)/i.exec(text)![1]
+      const waiting = text.includes('Write and briefly test run') ? 'writing' : 'investigating'
+      await until(async () => {
+        request?.signal?.throwIfAborted()
+        if (!active) return false
+        const sub = (await active.harness.snapshot(Automations, context))!.automations[id]
+        return !sub || sub.script!.state !== waiting
+      })
+    }
+    return fauxAssistantMessage('Complete')
+  }
+  faux.setResponses([answer])
+  const { root, userHome, home, options, app: initial } = await fixture(true, faux)
   let app = initial
-  const caller = await app.harness.createConversation({ ownership: { kind: 'ownerless' } }, context)
+  active = app
+  const caller = await app.harness.createConversation(
+    { ownership: { kind: 'ownerless' }, agent: { model: { provider: 'faux', modelId: 'faux-1' } } },
+    context,
+  )
   const invoke = (action: string, args: JsonValue = null) =>
     app.extensions.invoke('automations', action, args, new AbortController().signal, caller.id)
   const get = async (id: string) =>
@@ -262,10 +308,12 @@ it('delivers FIRE once, investigates exits only in the owning agent, recovers, a
       'ready-for-reopen',
     ),
   )
+  active = undefined
   await app.close()
   server = undefined
   app = await fauxServer(options)
   server = app
+  active = app
   await until(
     async () =>
       (await get(restart.id)).script!.state === 'done' &&
