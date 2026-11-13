@@ -1,5 +1,5 @@
 import { CornerDownRightIcon, MessageCircleQuestionIcon, Undo2Icon } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
@@ -60,6 +60,34 @@ function useCard(card: string) {
   return [state, change] as const
 }
 
+/** A provider removes only the identities it has confirmed settled; uses the same batched durable store as cards. */
+export function useForgetQuestionCards() {
+  const [, setCards] = useUiState<Record<string, CardState>>(CARDS_KEY, {})
+  return useCallback(
+    (settled: (identity: string) => boolean) => {
+      setCards((old) => {
+        const kept = Object.entries(old).filter(([identity]) => !settled(identity))
+        return kept.length === Object.keys(old).length ? old : Object.fromEntries(kept)
+      })
+    },
+    [setCards],
+  )
+}
+
+/** Answer routing for a message card; remote implementations must preserve keepalive on page exit. */
+export type MessageQuestionsTransport = {
+  answer: (
+    args: { messageId: number; answers?: Answer[]; note?: string; text?: string },
+    options?: { keepalive?: boolean },
+  ) => Promise<unknown>
+  dismiss: (args: { messageId: number }) => Promise<unknown>
+}
+
+const localTransport: MessageQuestionsTransport = {
+  answer: (args, options) => api.action(AnswerAction, args, options),
+  dismiss: (args) => api.action(DismissAction, args),
+}
+
 /**
  * The answer card of a message that waits on the user: the questions it asks, or only a reply field and Dismiss when
  * it asks none. `keys` (default: the shown conversation decides) whether it takes the desktop 1–9 and Enter keys.
@@ -68,13 +96,17 @@ export function MessageQuestions({
   message,
   keys,
   className,
+  transport = localTransport,
+  identity,
 }: {
   message: Message
   keys?: boolean
   className?: string
+  transport?: MessageQuestionsTransport
+  identity?: string
 }) {
   const questions = openQuestions(message)
-  const card = `message:${message.id}`
+  const card = identity ?? `message:${message.id}`
   const shown = useKeys(card)
   if (!waitsOnUser(message)) return null
   return (
@@ -83,14 +115,13 @@ export function MessageQuestions({
       questions={questions}
       keys={questions.length > 0 && (keys ?? shown)}
       submit={(answers, note, keepalive) =>
-        api.action(
-          AnswerAction,
+        transport.answer(
           { messageId: message.id, answers, ...(note ? { note } : {}) },
           { keepalive },
         )
       }
-      reply={(text) => api.action(AnswerAction, { messageId: message.id, text })}
-      dismiss={() => api.action(DismissAction, { messageId: message.id })}
+      reply={(text) => transport.answer({ messageId: message.id, text })}
+      dismiss={() => transport.dismiss({ messageId: message.id })}
       {...(className === undefined ? {} : { className })}
     />
   )
