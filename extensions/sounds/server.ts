@@ -1,8 +1,11 @@
 import diagnostics from 'node:diagnostics_channel'
 import { defineExtension } from '@earendil-works/pi-durable'
+import type { JsonObject } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { readSecret } from '../../lib/secrets.ts'
+import { readSettings, userSettingsPath } from '../../lib/settings.ts'
+import { speakCommand } from './command.ts'
 import { SayAction } from './refs.ts'
 
 const MODEL = 'gpt-realtime-2.1-mini'
@@ -114,7 +117,27 @@ export function speak(key: string, text: string, signal: AbortSignal) {
   })
 }
 
-/** Lines said before, by text: most repeat ("Ultimate has a question."), and a repeat then plays at once. */
+async function settings(host: ExtensionHost) {
+  const user = await readSettings(userSettingsPath(host.userHome))
+  const project = await host.projectSettings()
+  const config: JsonObject = {}
+  for (const { sounds } of [user, project])
+    if (sounds && typeof sounds === 'object' && !Array.isArray(sounds))
+      Object.assign(config, sounds)
+  const command = config.command
+  return {
+    voice: config.voice === 'local' ? 'local' : 'openai',
+    command:
+      Array.isArray(command) &&
+      command.length > 0 &&
+      command.every((arg) => typeof arg === 'string') &&
+      command[0].trim()
+        ? command
+        : undefined,
+  }
+}
+
+/** Lines said before, by source, command and text: a repeat plays at once. */
 const said = new Map<string, string>()
 
 export default defineExtension({ name: 'sounds' })
@@ -124,14 +147,31 @@ export const actions = {
     const text = args && typeof args === 'object' && !Array.isArray(args) ? args.text : undefined
     if (typeof text !== 'string' || !text.trim() || text.length > 300)
       throw new Error('Expected { text } of at most 300 characters')
-    const cached = said.get(text)
+    const config = await settings(host)
+    signal.throwIfAborted()
+    const cacheKey = JSON.stringify([config.voice, config.command, text])
+    const cached = said.get(cacheKey)
     if (cached) return { audio: cached }
-    const key = await apiKey(host, signal)
-    if (!key) return { audio: null }
-    const audio = (
-      await speak(key, text, AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]))
-    ).toString('base64')
-    said.set(text, audio)
+    const speaking = AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)])
+    let pcm: Buffer
+    if (config.voice === 'local') {
+      if (!config.command) return { audio: null }
+      try {
+        pcm = await speakCommand(config.command, text, speaking)
+      } catch (error) {
+        signal.throwIfAborted()
+        console.warn('Narrator command failed', error)
+        return { audio: null }
+      }
+    } else {
+      const key = await apiKey(host, speaking)
+      if (!key) return { audio: null }
+      pcm = await speak(key, text, speaking)
+    }
+    signal.throwIfAborted()
+    if (speaking.aborted) return { audio: null }
+    const audio = pcm.toString('base64')
+    said.set(cacheKey, audio)
     if (said.size > 50) said.delete(said.keys().next().value!)
     return { audio }
   }),

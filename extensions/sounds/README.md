@@ -45,10 +45,77 @@ several machines each speak. A tab keeps the lines it claimed in its session unt
 when the page reloads onto a new web bundle (a landing that changes the UI) is said after the switch; any other reload
 drops them.
 
-The `say` action (`server.ts`) speaks a line with OpenAI's `gpt-realtime-2.1-mini` over one realtime WebSocket
-response, with the `OPENAI_API_KEY` secret that voice input uses (or an API key Pi's `openai` provider holds), and keeps
-the last 50 lines in memory, so a repeat plays at once. The line's text, branch titles included, goes to OpenAI.
-Without a key the browser's own `speechSynthesis` says it. The voice plays through the same volume.
+The `say` action (`server.ts`) defaults to OpenAI's `gpt-realtime-2.1-mini` over one realtime WebSocket response,
+with the `OPENAI_API_KEY` secret that voice input uses (or an API key Pi's `openai` provider holds). The line's text,
+branch titles included, goes to OpenAI when that voice is used. Without a key, or if speaking fails, the browser's own
+`speechSynthesis` says it. Browser voices depend on the browser and OS and are not necessarily offline. Server audio
+plays through the same volume. Lines have a 300-character limit and a 20-second deadline; the last 50 successful
+lines are cached by source, command and text.
+
+### Local command
+
+To use a local speech program without an API key, set `sounds.voice` to `local` and `sounds.command` to an executable
+and its arguments. User settings (`~/.ultimate/settings.json`) and trusted project settings (`.ultimate/settings.json`)
+merge by `sounds` member, project winning:
+
+```json
+{
+  "sounds": {
+    "voice": "local",
+    "command": ["node", "/absolute/path/say-pcm.mjs"]
+  }
+}
+```
+
+The command receives the line as UTF-8 on stdin, followed by EOF. It must write **headerless signed PCM16
+little-endian, mono, at 24 kHz** to stdout, diagnostics to stderr, then exit successfully. No shell is involved:
+arguments are literal, with no `~`, variable or pipe expansion. Use absolute paths for scripts and model files.
+Ultimate does not install a runtime or model, resample audio, or manage a daemon. A command can be a client of an
+already-running speech service. Voice, rate and model selection belong to that command, not Ultimate.
+
+A missing command, non-zero exit, empty/odd-length PCM, output over 60 seconds or the deadline leaves speech to the
+browser, **never to OpenAI**. Command failures are logged with bounded stderr. Raw PCM has no sample-rate metadata;
+the producer must honor the format. Cancellation kills the command, not a separate service or its descendants;
+wrappers are responsible for their own child processes and temporary files.
+
+#### macOS recipe: built-in `say`
+
+Save this as `say-pcm.mjs` and use its absolute path above. It needs only Node (which Ultimate already uses) and
+macOS's built-in `say`, with an installed system voice. `say` writes a WAVE file, not raw stdout; the wrapper extracts
+its PCM data chunk and removes the temporary directory on completion. No Python or model download is required.
+
+```js
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const dir = mkdtempSync(join(tmpdir(), 'narrator-'))
+try {
+  const file = join(dir, 'speech.wav')
+  const result = spawnSync(
+    '/usr/bin/say',
+    ['-o', file, '--file-format=WAVE', '--data-format=LEI16@24000', '--channels=1'],
+    { input: readFileSync(0), timeout: 15000 },
+  )
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(result.stderr.toString())
+  const wav = readFileSync(file)
+  for (let at = 12; at + 8 <= wav.length;) {
+    const size = wav.readUInt32LE(at + 4)
+    if (wav.toString('ascii', at, at + 4) === 'data') {
+      process.stdout.write(wav.subarray(at + 8, at + 8 + size))
+      break
+    }
+    at += 8 + size + (size % 2)
+  }
+} finally {
+  rmSync(dir, { recursive: true, force: true })
+}
+```
+
+Other engines, such as Piper or Kokoro, can use the same stdin/stdout contract through their own wrappers. They are
+not dependencies of Sounds; their model setup, output conversion and service lifecycle remain outside Ultimate.
 
 ## Sound of agents
 
