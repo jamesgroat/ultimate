@@ -406,6 +406,12 @@ it('applies each automation call in one script to its own arguments', async () =
   const home = await temp('ultimate-codemode-automation-')
   directories.push(home)
   await mkdir(join(home, 'project'))
+  // Subscribing to the standing agent must not add dream's startup automations to this test's ledger.
+  await mkdir(join(home, '.ultimate'))
+  await writeFile(
+    join(home, '.ultimate/settings.json'),
+    JSON.stringify({ extensions: { disable: ['dream'] } }),
+  )
   const server = await createServer({
     ultimateRoot: resolve('.'),
     projectRoot: join(home, 'project'),
