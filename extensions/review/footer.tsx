@@ -9,12 +9,14 @@ export function Footer({
   drafts,
   update,
   sending,
+  disabled,
   error,
   onSend,
 }: {
   drafts: Drafts
   update: (change: (drafts: Drafts) => Drafts) => boolean
   sending: boolean
+  disabled?: boolean
   error?: string
   onSend: () => void
 }) {
@@ -84,7 +86,7 @@ export function Footer({
           >
             Discard
           </Button>
-          <Button disabled={sending || over} onClick={onSend} size="xs">
+          <Button disabled={sending || over || disabled} onClick={onSend} size="xs">
             {sending ? 'Sending…' : `Send review (${count})`}
             <ArrowRightIcon />
           </Button>

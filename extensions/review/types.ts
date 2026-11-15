@@ -7,4 +7,11 @@ export type ReviewComment = {
   text: string
 }
 
-export type ReviewComments = { spec: string; comments: ReviewComment[]; note?: string }
+export type ReviewComments = {
+  spec: string
+  comments: ReviewComment[]
+  note?: string
+  source?: string
+  sourceLabel?: string
+  cwd?: string
+}
