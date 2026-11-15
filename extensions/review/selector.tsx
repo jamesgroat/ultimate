@@ -10,7 +10,7 @@ import {
   CommandList,
 } from '@/components/ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { cn, useAction } from '@/sdk'
+import { cn, errorMessage, keepLast, useAction } from '@/sdk'
 import { RangesAction } from './refs.ts'
 import type { ReviewRange } from './refs.ts'
 
@@ -18,19 +18,24 @@ export const shortSpec = (spec: string) => spec.replace(/\b([0-9a-f]{7})[0-9a-f]
 
 export function Selector({
   spec,
+  source,
   title,
   conversation,
   onChange,
 }: {
   spec: string
+  source?: string
   title?: string
   conversation?: ConversationId
   onChange: (spec: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const ranges = useAction(RangesAction, conversation === undefined ? null : { conversation }, {
+  const args =
+    source === undefined ? (conversation === undefined ? null : { conversation }) : { source }
+  const ranges = useAction(RangesAction, args, {
     enabled: open,
+    onError: keepLast,
   })
   const list = ranges.data ?? []
   const needle = query.trim().toLowerCase()
@@ -55,7 +60,7 @@ export function Selector({
           title="Choose what to review"
           type="button"
         >
-          <span className="shrink-0 text-foreground/90">{shortSpec(spec)}</span>
+          <span className="min-w-0 truncate text-foreground/90">{shortSpec(spec)}</span>
           {title && title !== spec && (
             <span className="min-w-0 truncate font-sans text-[12.5px] text-muted-foreground max-md:hidden">
               {title}
@@ -90,6 +95,11 @@ export function Selector({
             )}
             {ranges.loading && !ranges.data && (
               <p className="px-3 py-3 font-mono text-[11.5px] text-muted-foreground">loading…</p>
+            )}
+            {ranges.error && (
+              <p className="px-3 py-3 font-mono text-[11.5px] text-error">
+                {errorMessage(ranges.error)}
+              </p>
             )}
             {!needle && ranges.data && list.length === 0 && (
               <CommandEmpty className="py-6 text-center text-[12px] text-muted-foreground">

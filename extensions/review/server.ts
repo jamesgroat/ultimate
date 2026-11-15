@@ -1,5 +1,6 @@
 import { parseConversationId } from '../../lib/ids.ts'
 import type { ConversationId } from '@earendil-works/pi-durable'
+import { realpath } from 'node:fs/promises'
 import type { Context } from '@earendil-works/chord/context'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { AgentDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
@@ -11,7 +12,8 @@ import { meansNone } from '../../lib/errors.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { SubagentsApi } from '../subagents/api.ts'
 import { SubmissionLanded, WorkspacesApi } from '../workspaces/api.ts'
-import { checkReview, reviewText } from './comments.ts'
+import { ReviewSources } from './api.ts'
+import { checkReview, checkSource, reviewText } from './comments.ts'
 import { reviewDiff } from './diff.ts'
 import { DiffAction, RangesAction, RecipientAction, SendAction } from './refs.ts'
 import { ReviewCommentsEntry } from './entries.ts'
@@ -137,6 +139,32 @@ const worktreeOf = (spec: string) => {
   return id === undefined ? undefined : parseConversationId(Number(id))
 }
 
+async function sourceOf(
+  host: ExtensionHost,
+  source: unknown,
+  spec?: string,
+  conversation?: unknown,
+) {
+  const id = checkSource(source)
+  if (id === undefined) return undefined
+  const provider = host.want(ReviewSources)
+  if (!provider) throw new Error('No Review source provider is enabled')
+  if (spec !== undefined && worktreeOf(spec) !== undefined)
+    throw new Error('source cannot be combined with a managed worktree spec')
+  const resolved = await provider.resolve(id)
+  if (conversation !== undefined) {
+    if (typeof conversation !== 'number' || !Number.isSafeInteger(conversation) || conversation < 1)
+      throw new Error('conversation must be a conversation id')
+    const workspace = (await index(host, context))?.items[String(conversation)]
+    if (
+      workspace?.state === 'ready' &&
+      (await realpath(workspace.path)) !== (await realpath(resolved.cwd))
+    )
+      throw new Error('source conflicts with the conversation workspace')
+  }
+  return { ...resolved, source: id }
+}
+
 const known = (host: ExtensionHost, id: ConversationId) =>
   host.conversations().some((conversation) => conversation.id === id)
 
@@ -190,7 +218,17 @@ export const actions = {
   diff: implementAction(DiffAction, async (args, { host, signal }) => {
     const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
     if (typeof input.spec !== 'string') throw new Error('Expected { spec }')
-
+    const source = await sourceOf(host, input.source, input.spec, input.conversation)
+    if (source) {
+      const diff = await reviewDiff(source.cwd, input.spec, {
+        target: async () => {
+          if (!source.base) throw new Error('No default base configured; enter an explicit range')
+          return source.base
+        },
+        signal,
+      })
+      return { ...diff, source: source.source, sourceLabel: source.label, github: source.github }
+    }
     const worktree = worktreeOf(input.spec)
     const cwd = await sourceCheckout(host, worktree ?? conversationOf(input.conversation))
     const shown =
@@ -207,15 +245,28 @@ export const actions = {
     const branchGoneWithoutLanding = shown === 'uncommitted'
     return branchGoneWithoutLanding ? diff : { ...diff, spec: input.spec }
   }),
-  ranges: implementAction(RangesAction, (args, { host }) => {
+  ranges: implementAction(RangesAction, async (args, { host }) => {
     const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
-    return ranges(host, conversationOf(input.conversation))
+    const source = await sourceOf(host, input.source)
+    if (!source) return ranges(host, conversationOf(input.conversation))
+    const provider = host.want(ReviewSources)
+    if (!provider) throw new Error('No Review source provider is enabled')
+    return provider.ranges(source.source)
   }),
   recipient: implementAction(RecipientAction, async (args, { host }) => {
     const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
     if (typeof input.spec !== 'string') throw new Error('Expected { spec }')
-    const cwd = await sourceCheckout(host, conversationOf(input.conversation))
-    return { conversation: await recipient(host, input.spec, cwd) }
+    const source = await sourceOf(host, input.source, input.spec)
+    if (!source) {
+      const cwd = await sourceCheckout(host, conversationOf(input.conversation))
+      return { conversation: await recipient(host, input.spec, cwd) }
+    }
+    return {
+      conversation:
+        source.recipient !== undefined && known(host, source.recipient)
+          ? source.recipient
+          : await host.need(SubagentsApi).standing('ultimate', context),
+    }
   }),
   send: implementAction(SendAction, async (args, { host, device }) => {
     const value =
@@ -223,9 +274,11 @@ export const actions = {
     const id = typeof value === 'number' ? parseConversationId(value) : undefined
     if (id === undefined || !Number.isSafeInteger(id) || !known(host, id))
       throw new Error('conversation must be an existing conversation id')
-    const review = checkReview(args)
+    const checked = checkReview(args)
     const conversation = await host.harness().conversation(id, context)
     if (!conversation) throw new Error(`No conversation #${id}`)
+    const source = await sourceOf(host, checked.source, checked.spec)
+    const review = source ? { ...checked, sourceLabel: source.label, cwd: source.cwd } : checked
     const content = reviewText(review)
     const submission = await conversation.submit(
       {
