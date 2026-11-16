@@ -61,6 +61,10 @@ it('switches from the Inbox to @ultimate when a side chat row is clicked', async
   await page.locator(`[data-side-chat-row="${side}"]`).click()
   await page.locator(`section[data-side-chat="${side}"]:not([inert])`).waitFor()
   await expect.poll(() => page.title()).not.toMatch(/Inbox$/)
+  // The sheet mounts before it knows its width; its empty composer once kept the height measured at zero width.
+  await page.waitForTimeout(600)
+  const box = page.locator(`#composer-input-${side}`)
+  expect((await box.boundingBox())!.height).toBeLessThan(80)
   expect(await page.locator(`[data-side-chat-row="${side}"]`).getAttribute('aria-current')).toBe(
     'true',
   )
