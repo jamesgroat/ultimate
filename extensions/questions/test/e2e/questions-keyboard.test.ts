@@ -198,6 +198,8 @@ it('warns and waits longer for partial multi answers, and the whole pending card
     8000,
   )
   expect(await card.textContent()).toContain('2 unanswered')
+  const footer = page.locator(`[data-message-outgoing="${asked.id}"] footer`)
+  expect(await footer.innerText()).toBe('sending')
   const cancel = card.getByRole('button', { name: 'Undo sending your answer' })
   expect(await cancel.evaluate((node) => getComputedStyle(node).animationName)).toBe('pulse')
   // The top-left of the card, nowhere near the visible Undo label, is a cancellation target too.
@@ -207,6 +209,7 @@ it('warns and waits longer for partial multi answers, and the whole pending card
     expect.stringContaining('keep abstracts'),
   ])
   expect(await card.locator('[data-note]').inputValue()).toBe('Keep this note.')
+  expect(await footer.innerText()).toBe('awaiting your reply')
   expect(await answer()).toHaveLength(0)
 
   for (const key of ['Escape', 'u']) {

@@ -533,7 +533,12 @@ function Card({
 
   if (settled)
     return (
-      <div className={cn(className, 'relative px-3 py-2.5')} data-questions-card={card} ref={root}>
+      <div
+        className={cn(className, 'relative px-3 py-2.5')}
+        data-questions-card={card}
+        data-sending={phase === 'sent' ? undefined : ''}
+        ref={root}
+      >
         {phase === 'undo' && (
           <button
             type="button"
