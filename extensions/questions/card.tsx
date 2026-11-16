@@ -544,7 +544,7 @@ function Card({
             }}
             className={cn(
               'absolute inset-0 z-10 w-full cursor-pointer rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              unanswered > 0 && 'bg-error/10 motion-safe:animate-pulse',
+              unanswered > 0 && 'bg-warning/15 motion-safe:animate-pulse',
             )}
           />
         )}
@@ -552,20 +552,24 @@ function Card({
           <CornerDownRightIcon
             className={cn(
               'size-3.5 shrink-0',
-              phase === 'undo' && unanswered ? 'text-error' : 'text-brand',
+              phase === 'undo' && unanswered ? 'text-warning' : 'text-brand',
             )}
           />
           <span
             className={cn(
               'font-semibold',
-              phase === 'undo' && unanswered ? 'text-error' : 'text-brand',
+              phase === 'undo' && unanswered ? 'text-warning' : 'text-brand',
             )}
           >
-            {phase === 'sent'
-              ? 'You answered'
-              : phase === 'undo' && unanswered
-                ? `Sending · ${unanswered} unanswered`
-                : 'Sending your answer'}
+            {phase === 'sent' ? (
+              'You answered'
+            ) : phase === 'undo' && unanswered ? (
+              <>
+                Sending · <span className="text-error">{unanswered} unanswered</span>
+              </>
+            ) : (
+              'Sending your answer'
+            )}
           </span>
           {phase === 'undo' && (
             <span className="ml-auto flex items-center gap-2">
@@ -595,7 +599,7 @@ function Card({
               data-duration={unanswered ? INCOMPLETE_UNDO_WINDOW_MS : ANSWER_UNDO_WINDOW_MS}
               className={cn(
                 'h-full w-full origin-left rounded-full',
-                unanswered ? 'bg-error' : 'bg-brand/70',
+                unanswered ? 'bg-warning' : 'bg-brand/70',
               )}
             />
           </div>
