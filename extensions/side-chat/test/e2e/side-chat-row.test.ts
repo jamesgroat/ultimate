@@ -72,7 +72,10 @@ it('hides the side chat when main is clicked, keeping it open, and focuses mainâ
   const sheet = page.locator(`section[data-side-chat="${side}"]:not([inert])`)
   await row.click()
   await sheet.waitFor()
-  await page.locator('#app [data-ui="transcript"]').first().click({ position: { x: 40, y: 40 } })
+  await page
+    .locator('#app [data-ui="transcript"]')
+    .first()
+    .click({ position: { x: 40, y: 40 } })
   await sheet.waitFor({ state: 'detached' })
   expect(await row.getAttribute('aria-current')).toBeNull()
 
