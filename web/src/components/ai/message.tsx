@@ -258,6 +258,7 @@ export const MessageResponse = memo(
         plugins={plugins}
         remarkPlugins={remarks}
         shikiTheme={codePlugin.getThemes()}
+        tableMaxHeight="none"
         {...props}
         {...(source ? { skipHtml: true } : {})}
       />

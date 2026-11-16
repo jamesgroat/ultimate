@@ -375,7 +375,7 @@
     @apply bg-muted/50;
   }
   & :is([data-streamdown='table-header-cell'], [data-streamdown='table-cell']) {
-    @apply px-3 py-1.5 text-[13px];
+    @apply px-2 py-1.5 text-[12px];
   }
 }
 
@@ -423,7 +423,7 @@
     font-size: 12.5px;
   }
   & :is([data-streamdown='table-header-cell'], [data-streamdown='table-cell']) {
-    font-size: 13.5px;
+    font-size: 12.5px;
     letter-spacing: 0;
   }
 }
