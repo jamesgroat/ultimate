@@ -431,7 +431,10 @@ export function StandingRow({
               </span>
             )}
             <span
-              className="min-w-0 truncate font-mono text-[10px] text-muted-foreground/70"
+              className={cn(
+                'font-mono text-[10px] text-muted-foreground/70',
+                source ? 'min-w-0 truncate' : 'shrink-0',
+              )}
               title={source}
             >
               {source ? source.split('/').at(-1) : `@${name}`}
