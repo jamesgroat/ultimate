@@ -10,6 +10,7 @@ import {
   onFamily,
 } from '../../lib/agents.ts'
 import { Family } from '../models/api.ts'
+import { Profile } from '../subagents/api.ts'
 import { readFamilies } from '../../lib/families-settings.ts'
 import { LineageApi, Roots } from '../lineage/api.ts'
 import { actingAs } from '../../lib/acting-as.ts'
@@ -98,6 +99,10 @@ export const branchTool = (host: ExtensionHost) =>
             ...(modelTools && 'add' in modelTools && modelTools.add?.length ? { modelTools } : {}),
           })
           ;(await tx.doc(host.metadata, branch.id)).label = 'coordinator'
+          Object.assign(await tx.doc(Profile, branch.id), {
+            definition: coordinator.name,
+            ...(input.family === undefined ? {} : { explicitModel: true }),
+          })
           ;(await tx.doc(Family, branch.id)).name = definitionFamily(
             coordinator,
             authenticatedOrDefaultAgent,

@@ -1232,7 +1232,7 @@ it.each([false, true])(
     const created = await branches()
     expect(created).toHaveLength(1)
     const profile = await f.opened.harness.snapshot(Profile, created[0], context)
-    expect(profile).toEqual({ createdAt: expect.any(Number) })
+    expect(profile).toEqual({ createdAt: expect.any(Number), definition: 'coordinator' })
     expect(pause.taskId).toBeDefined()
     const receipt = await f.opened.harness.snapshot(BranchReceipts, pause.taskId!, context)
     expect(Object.values(receipt!.branches)).toEqual(created)
@@ -1451,6 +1451,7 @@ it.each([undefined, 'default', 'review'])(
     )!.to as ConversationId
     expect(await f.opened.harness.snapshot(Profile, id, context)).toEqual({
       createdAt: expect.any(Number),
+      definition: 'coordinator',
       ...(family === undefined ? {} : { explicitModel: true }),
     })
     expect(await f.opened.harness.snapshot(Family, id, context)).toEqual({
