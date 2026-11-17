@@ -107,6 +107,10 @@ async function fixture() {
         : last.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('')
     if (last.role === 'user' && text === 'HOLD')
       return fauxAssistantMessage([fauxToolCall('hold', {})], { stopReason: 'toolUse' })
+    if (last.role === 'user' && text.startsWith('AUTOMATION '))
+      return fauxAssistantMessage([fauxToolCall('automation', JSON.parse(text.slice(11)))], {
+        stopReason: 'toolUse',
+      })
     return fauxAssistantMessage([fauxText(`Answer: ${text}\nSecond line`)])
   }
   prepared.faux!.setResponses([route])
@@ -430,6 +434,52 @@ it("records the branches @ultimate's run read when it creates an ask automation"
     ultimate.id,
   )) as Automation
   expect(a.branches).toEqual({ ids: [7], by: ultimate.id })
+})
+
+it("hands @ultimate's owed request to a created automation, and keeps it with serves: false", async () => {
+  // Vault #52 (Nov 17): automation A14, made only to send reports later, took over Life's billing request 550, so
+  // #52's envelope went out interim and A14's deletion failed the request.
+  const f = await fixture()
+  const ultimate = f.opened.root
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = ultimate.id
+  }, context)
+  const request = {
+    message: 550,
+    from: 'remote',
+    remote: { project: 'life', machine: 'mac', key: 'k' },
+  }
+  const handOver: boolean[] = []
+  f.provided.set('messages', {
+    owed: async (_tx: Tx, _to: number, answersBack: boolean) => {
+      handOver.push(answersBack)
+      return answersBack ? { serves: request } : {}
+    },
+  })
+  const create = async (args: JsonObject) => {
+    await (
+      await ultimate.submit(
+        { type: 'input', content: `AUTOMATION ${JSON.stringify(args)}` },
+        context,
+      )
+    ).wait(context)
+    const results = (await ultimate.context(context)).entries.flatMap((e) =>
+      e.model?.[0]?.role === 'toolResult' && e.model[0].toolName === 'automation'
+        ? [JSON.stringify(e.model[0].content)]
+        : [],
+    )
+    return results.at(-1)!
+  }
+  const handed = await create({ action: 'create', name: 'Handed', schedule: 'in 1h' })
+  expect(handed).toContain("now works on @ultimate@life on mac's message 550")
+  const kept = await create({ action: 'create', name: 'Kept', schedule: 'in 1h', serves: false })
+  expect(kept).not.toContain('now works on')
+  expect(handOver).toEqual([true, false])
+  const [a, b] = await f.records()
+  expect(a.serves).toEqual({ ...request, by: ultimate.id })
+  expect(b.serves).toBeUndefined()
+  expect(b).not.toHaveProperty('serves')
+  expect(await create({ action: 'list' })).not.toContain('now works on')
 })
 
 it('removes the prompt on an empty update only while subscribers remain', async () => {
