@@ -19,9 +19,11 @@ Exactly one per automation (`ask` plus `schedule` forms one scheduled-check trig
   counts from the condition's own last crossing, not manual runs. With `idleFor` (ms) it also waits until the user gave
   `of` no input for that long (`idleFor: 0` on update removes it). Dream ships two of these on `@ultimate`
   (`extensions/dream/README.md`).
-- **Streaming script.** `ask` alone: a `watcher` agent writes an executable `run`, tests it by hand until one
-  check succeeds and calls `automation resume {id}`. Stdout `FIRE [text]` fires; stderr and other stdout are progress. `once` (default true)
-  makes the first FIRE finish the automation. A recurring script may print `DONE [text]` and exit 0 to stop cleanly.
+- **Streaming script.** `ask` alone: a `watcher` agent writes an executable `run`, tests its FIRE logic against sample
+  input or a dry run (never a hand run that needs secrets or has side effects: only the supervisor passes secrets) and
+  calls `automation resume {id}`. The script stays alive until it prints FIRE or DONE; exiting earlier is a failure.
+  Stdout `FIRE [text]` fires; stderr and other stdout are progress. `once` (default true) makes the first FIRE finish
+  the automation. A recurring script may print `DONE [text]` and exit 0 to stop cleanly.
   Any other unplanned exit wakes only the watcher, to repair or escalate. The third failure in a row (a FIRE or an hour
   of running resets the count), or a watcher whose turn ends mid-repair, escalates instead: the script stops as
   `failed`, subscribers get `automations.escalated`, and @ultimate a message.
