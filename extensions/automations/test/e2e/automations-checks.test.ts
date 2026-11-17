@@ -112,6 +112,31 @@ async function fixture() {
   }
 }
 
+it('briefs the watcher on its lifecycle and on testing without a real hand run', async () => {
+  const f = await fixture()
+  const brief = async (schedule?: string, extra = {}) => {
+    const a = await f.create(schedule, extra)
+    return f.held.find((h) => h.text.includes(`You own automation ${a.id} `))!.text
+  }
+  const once = await brief()
+  expect(once).toContain(
+    'Mode: one-shot streaming script: stay alive and poll until the condition holds, then print FIRE and exit. Exiting before FIRE, even with 0, is a failure.',
+  )
+  expect(once).toContain(
+    'test its parsing and FIRE condition against sample input or a dry-run flag',
+  )
+  expect(once).toContain(
+    'Never run the real script by hand when it needs secrets or has side effects',
+  )
+  expect(once).not.toContain('run the script once')
+  expect(await brief(undefined, { once: false })).toContain(
+    'Mode: recurring streaming script: stay alive and keep watching',
+  )
+  expect(await brief('every 1h')).toMatch(
+    /Mode: one-shot scheduled check \(.+\), timeout 300s: inspect once and exit; a quiet exit 0 means nothing changed\./,
+  )
+})
+
 it('checks quietly with zero model calls, then delivers FIRE and its prompt through the shared path', async () => {
   const f = await fixture()
   const a = await f.create('every 1s', { prompt: 'Summarize changes', subscribers: [f.caller.id] })
