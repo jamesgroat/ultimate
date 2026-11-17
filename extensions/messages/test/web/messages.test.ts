@@ -17,6 +17,7 @@ import {
   offscreen,
   openMessages,
   outgoingState,
+  replyOnlyToAgents,
   scriptMessaged,
   sentBy,
   sentStatus,
@@ -24,7 +25,7 @@ import {
   ultimateCompact,
   waitingOnUser,
 } from '../../data.tsx'
-import type { Message } from '../../refs.ts'
+import type { Message, MessagesData } from '../../refs.ts'
 import { questionsOf } from '../../waiting.tsx'
 
 vi.mock('@/sdk', () => ({ events: { emit: vi.fn<() => void>() } }))
@@ -348,7 +349,7 @@ describe("background in @ultimate's compact transcript", () => {
 
   it('folds a final answer routed down to branches, naming them', () => {
     // @ultimate's weigh-in to #477200's decisions rendered as a message to the user, above the branch's question card.
-    const routed = {
+    const routed: MessagesData = {
       messages: [
         {
           ...base,
@@ -389,6 +390,48 @@ describe("background in @ultimate's compact transcript", () => {
     expect(backgroundRow(answer, routed)).toBe(true)
     expect(threadRow(answer, routed)).toBe(false)
     expect(counterparts(answer, routed)).toEqual([8, 9])
+    routed.messages[1] = {
+      ...routed.messages[1],
+      routedUserInputs: [28 as EntryId],
+      answer: 40 as EntryId,
+    }
+    expect(backgroundRow(answer, routed)).toBe(false)
+    expect(threadRow(answer, routed)).toBe(true)
+    expect(replyOnlyToAgents(answer.entry, routed.messages)).toBe(false)
+    routed.messages[1] = {
+      ...routed.messages[1],
+      routedUserInputs: undefined,
+      answerUserInputs: [39 as EntryId],
+    }
+    expect(backgroundRow(answer, routed)).toBe(true)
+    expect(threadRow(answer, routed)).toBe(false)
+  })
+
+  it('keeps a mixed reply-enabled answer open in both folds, using only matching message provenance', () => {
+    const answer = row('pi.assistant', undefined, said('stop'))
+    const request: Message = {
+      ...base,
+      id: 1,
+      from: 8 as ConversationId,
+      to: 7 as ConversationId,
+      reply: true,
+      answer: 30 as EntryId,
+    }
+    const mixed = { messages: [request], next: 2 }
+    expect(backgroundRow(answer, mixed)).toBe(true)
+    expect(threadRow(answer, mixed)).toBe(false)
+    expect(replyOnlyToAgents(answer.entry, mixed.messages)).toBe(true)
+    mixed.messages = [{ ...request, answerUserInputs: [28 as EntryId] }]
+    expect(backgroundRow(answer, mixed)).toBe(false)
+    expect(threadRow(answer, mixed)).toBe(true)
+    expect(replyOnlyToAgents(answer.entry, mixed.messages)).toBe(false)
+    mixed.messages = [
+      request,
+      { ...request, answer: 29 as EntryId, answerUserInputs: [27 as EntryId] },
+    ]
+    expect(backgroundRow(answer, mixed)).toBe(true)
+    expect(threadRow(answer, mixed)).toBe(false)
+    expect(replyOnlyToAgents(answer.entry, mixed.messages)).toBe(true)
   })
 
   it('names who each row was with', () => {

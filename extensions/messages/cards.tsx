@@ -55,6 +55,7 @@ import {
   messageStatus,
   outgoingState,
   remoteLabel,
+  replyOnlyToAgents,
   sentBy,
   sentStatus,
 } from './data.tsx'
@@ -838,7 +839,7 @@ function ReplyFold({
 }) {
   const log = useDocOf(ROOT, MessagesDoc) ?? emptyMessages
   const answered = answeredMessages(log.messages, entry.conversationId, entry.id)
-  if (!answered.length || answered.some((m) => !m.reply || m.from === 'user'))
+  if (!replyOnlyToAgents(entry, log.messages))
     return text ? (
       <Bubble
         at={at}

@@ -288,6 +288,11 @@ async function fixture(
     // A branch's reply that keeps @ultimate busy, so another branch's reply steers into the same run.
     if (last.role === 'user' && text.startsWith('Reply from #') && text.includes('STALL'))
       return fauxAssistantMessage([fauxToolCall('hold', {})], { stopReason: 'toolUse' })
+    if (last.role === 'user' && text.startsWith('Reply from #') && text.includes('PUBLISHANDHOLD'))
+      return fauxAssistantMessage(
+        [fauxToolCall('message', { to: 'user', text: 'Branch result', reply: false })],
+        { stopReason: 'toolUse' },
+      )
     // @ultimate answers a branch's reply with only a message to the user.
     if (
       last.role === 'user' &&
@@ -1875,6 +1880,96 @@ it("routes @ultimate's answer to a branch whose reply it read even when it messa
     ['user', false],
     [b.id, true],
   ])
+})
+it.each(['branch-first', 'user-first'])(
+  'preserves a direct user answer and its legitimate branch copy (%s)',
+  async (order) => {
+    let publishingEnabled = false
+    const publishing = {
+      gate: gate(),
+      afterMemo: true,
+      entered: false,
+      conversation: () => (publishingEnabled ? 1 : 0),
+    }
+    const f = await fixture(undefined, order === 'branch-first' ? publishing : undefined)
+    const b = await branched(f)
+    publishingEnabled = true
+    const ask = (text: string) =>
+      sendMessage(f.host, 1 as ConversationId, { to: `#${b.id}`, text }, context)
+    let user
+    if (order === 'branch-first') {
+      await ask('PUBLISHANDHOLD')
+      await until(() => publishing.entered)
+      user = await f.opened.root.submit(
+        { type: 'input', content: 'What should I do next?', whenBusy: 'steer' },
+        context,
+      )
+    } else {
+      user = await f.opened.root.submit({ type: 'input', content: 'HOLD' }, context)
+      await until(f.holding)
+      await ask('WEIGH')
+    }
+    await until(
+      async () =>
+        (await f.opened.harness.snapshot(InboxDoc, f.opened.root.id, context))!.items.length > 0,
+    )
+    if (order === 'branch-first') publishing.gate.release()
+    else f.hold.release()
+    const settled = await user.wait(context)
+    expect(settled).toMatchObject({ type: 'input', status: 'done' })
+    if (settled.type !== 'input' || settled.status !== 'done') throw new Error('No user answer')
+    await b.settled()
+    const log = (await f.log())!.messages
+    const routed = log.filter((m) => m.from === 1 && m.to === b.id && m.routed === settled.answer)
+    expect(routed).toHaveLength(1)
+    expect(routed[0].routedUserInputs).toEqual([settled.entry])
+    expect(routed[0].answer).toBeDefined()
+    expect(routed[0].answer).not.toBe(settled.answer)
+    expect(routed[0].answerUserInputs).toBeUndefined()
+    const answer = (await f.opened.root.context(context)).entries.find(
+      (e) => e.id === settled.answer,
+    )!
+    expect(answer.byTaskId).toBeDefined()
+    expect(answer.model?.[0]).toMatchObject({ role: 'assistant', stopReason: 'stop' })
+    expect(log.some((m) => m.to === 'user' && m.text === 'Branch result')).toBe(
+      order === 'branch-first',
+    )
+    expect(routed[0].text).toContain(
+      order === 'branch-first' ? 'Answer: What should I do next?' : 'WEIGH',
+    )
+  },
+)
+it('associates a mixed agent and user answer with only the user input it read, not a queued request', async () => {
+  const f = await fixture()
+  const request = await sendMessage(
+    f.host,
+    f.recipient.id,
+    { to: '#1', text: 'HOLD', reply: true },
+    context,
+  )
+  await until(f.holding)
+  const user = await f.opened.root.submit(
+    { type: 'input', content: 'Question during agent work', whenBusy: 'steer' },
+    context,
+  )
+  const queued = await f.opened.root.submit(
+    { type: 'input', content: 'Later question', whenBusy: 'followUp' },
+    context,
+  )
+  f.hold.release()
+  const settled = await user.wait(context)
+  const later = await queued.wait(context)
+  if (settled.type !== 'input' || settled.status !== 'done') throw new Error('No user answer')
+  if (later.type !== 'input' || later.status !== 'done') throw new Error('No later answer')
+  expect(later.answer).not.toBe(settled.answer)
+  await until(
+    async () => (await f.log())!.messages.find((m) => m.id === request)?.answer !== undefined,
+  )
+  const original = (await f.log())!.messages.find((m) => m.id === request)!
+  expect(original).toMatchObject({ answer: settled.answer, answerUserInputs: [settled.entry] })
+  expect(original.answerUserInputs).not.toContain(later.entry)
+  const response = (await f.log())!.messages.find((m) => m.re === request)!
+  expect(response).toMatchObject({ answer: settled.answer, answerUserInputs: [settled.entry] })
 })
 it("routes @ultimate's final answer to every branch whose reply shared its run", async () => {
   // omarchy-config: #45921's reply started @ultimate's run, #46397's steered into it 14 s later; the weigh-in reached

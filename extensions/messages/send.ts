@@ -13,6 +13,7 @@ import type { Device } from '../../shared/events.ts'
 import { resolveImages } from './images.ts'
 import type { ImagesRef } from './images.ts'
 import { append } from './log.ts'
+import { answerUserInputs } from './provenance.ts'
 import { parentOf, resolveRecipient, senderName, starterOf } from './addresses.ts'
 import { delivery } from './delivery.ts'
 import { notice } from './notice.ts'
@@ -191,6 +192,7 @@ export async function send(
         return response.id
       }
     }
+    const userInputs = await answerUserInputs(tx, options.routed)
     const message = await append(tx, {
       from,
       to,
@@ -203,6 +205,7 @@ export async function send(
       ...(questions ? { questions } : {}),
       ...(options.report ? { report: true as const } : {}),
       ...(options.routed !== undefined ? { routed: options.routed } : {}),
+      ...(userInputs.length ? { routedUserInputs: userInputs } : {}),
       ...(options.echo ? { echo: true as const } : {}),
       ...(via ? { via } : {}),
     })

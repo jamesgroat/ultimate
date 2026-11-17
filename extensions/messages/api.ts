@@ -23,6 +23,10 @@ export type Message = {
   state: 'sent' | 'delivered' | 'answered' | 'dismissed' | 'failed' | 'stopped'
   entry?: EntryId
   answer?: EntryId
+  /** Direct-user inputs settled by `answer`. */
+  answerUserInputs?: EntryId[]
+  /** Direct-user inputs settled by `routed` in the sender's conversation; independent of a later recipient answer. */
+  routedUserInputs?: EntryId[]
   error?: string
   /** The tool call that sent it: `message`'s or `branch`'s own id, `<script>/<n>` for a nested codemode call. */
   call?: string

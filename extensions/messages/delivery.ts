@@ -13,14 +13,22 @@ import { Messages } from './api.ts'
 import type { Message } from './api.ts'
 import { imagesOf } from '../../lib/entries.ts'
 import { append, terminal } from './log.ts'
+import { answerUserInputs } from './provenance.ts'
 import { closeServed, remoteLabel, Serving, servesLine } from './addresses.ts'
 import { MessageEntry, ReplyEntry } from '../entries/api.ts'
 
 const questionLinkOutsideLog = (message: Pick<Message, 're'>): Pick<Message, 're'> =>
   message.re !== undefined ? { re: message.re } : {}
 
-function retainOneWayAnswer(message: Message | undefined, answer: Message['answer']) {
-  if (message && answer !== undefined) message.answer = answer
+function retainAnswer(
+  message: Message | undefined,
+  answer: Message['answer'],
+  userInputs: NonNullable<Message['answerUserInputs']>,
+) {
+  if (!message || answer === undefined) return
+  message.answer = answer
+  if (userInputs.length) message.answerUserInputs = userInputs
+  else delete message.answerUserInputs
 }
 
 export function delivery(host: ExtensionHost) {
@@ -179,8 +187,9 @@ export function delivery(host: ExtensionHost) {
           const original = (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.find(
             (item) => item.id === m.id,
           )
+          const userInputs = await answerUserInputs(tx, answer)
           if (!m.reply) {
-            retainOneWayAnswer(original, answer)
+            retainAnswer(original, answer, userInputs)
             return terminal
           }
 
@@ -224,13 +233,13 @@ export function delivery(host: ExtensionHost) {
           if (answerAlreadyReturnedToLocalSender) {
             if (original) {
               original.state = 'answered'
-              original.answer = answer
+              retainAnswer(original, answer, userInputs)
             }
             return terminal
           }
           if (original) {
             original.state = state ?? 'answered'
-            if (answer !== undefined) original.answer = answer
+            retainAnswer(original, answer, userInputs)
             if (error !== undefined) original.error = error
             if ('entry' in settled && settled.entry !== undefined) original.entry = settled.entry
           }
@@ -242,6 +251,7 @@ export function delivery(host: ExtensionHost) {
             re: m.id,
             state: state ?? 'sent',
             ...(answer ? { answer } : {}),
+            ...(userInputs.length ? { answerUserInputs: userInputs } : {}),
             ...(error ? { error } : {}),
             ...(m.remote ? { remote: m.remote } : {}),
             ...(interim ? { interim: true as const } : {}),
