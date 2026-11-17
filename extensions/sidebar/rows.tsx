@@ -383,6 +383,7 @@ export function saveTitle(id: number, value: string) {
 export function StandingRow({
   conversation,
   name,
+  source,
   shown,
   presence,
   onOpen,
@@ -390,6 +391,7 @@ export function StandingRow({
 }: {
   conversation?: ConversationSummary
   name: string
+  source?: string
   shown: boolean
   presence: Presence
   onOpen: () => void
@@ -428,7 +430,12 @@ export function StandingRow({
                 {title}
               </span>
             )}
-            <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">@{name}</span>
+            <span
+              className="min-w-0 truncate font-mono text-[10px] text-muted-foreground/70"
+              title={source}
+            >
+              {source ? source.split('/').at(-1) : `@${name}`}
+            </span>
           </span>
           <span className="flex w-full min-w-0 items-center gap-2 pr-5 font-mono text-[10px] leading-4 text-muted-foreground">
             {children}
