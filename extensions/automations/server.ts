@@ -32,6 +32,7 @@ import { groupAlive } from '../../lib/process-group.ts'
 import { writeJson } from '../../lib/json-file.ts'
 import { Standing, SubagentsApi } from '../subagents/api.ts'
 import { MessagesApi } from '../messages/api.ts'
+import { handoverLine } from '../../lib/message-state.ts'
 import { LineageApi } from '../lineage/api.ts'
 import { AutomationsApi } from './api.ts'
 import {
@@ -306,11 +307,18 @@ function backend(host: ExtensionHost) {
     }
     return prepared
   }
-  async function owedAtCreation(tx: Tx, subscribers: Subscriber[], caller?: ConversationId) {
+  async function owedAtCreation(
+    tx: Tx,
+    subscribers: Subscriber[],
+    caller: ConversationId | undefined,
+    handOver: boolean | undefined,
+  ) {
     if (caller === undefined || (await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate !== caller)
       return {}
     const firesWakeCaller = subscribers.some((s) => s === caller || s === '@ultimate')
-    const { serves, branches } = await host.need(MessagesApi).owed(tx, caller, firesWakeCaller)
+    const { serves, branches } = await host
+      .need(MessagesApi)
+      .owed(tx, caller, firesWakeCaller && handOver !== false)
     return {
       ...(serves ? { serves: { ...serves, by: caller } } : {}),
       ...(branches ? { branches: { ids: branches, by: caller } } : {}),
@@ -393,7 +401,7 @@ function backend(host: ExtensionHost) {
           updatedAt: Date.now(),
           subscribers,
           ...(args.key ? { key: args.key } : {}),
-          ...(await owedAtCreation(tx, subscribers, caller)),
+          ...(await owedAtCreation(tx, subscribers, caller, args.serves)),
         })
         sub.script!.state = 'writing'
         await deliver(tx, sub, 'create', 'writing', sub.script!.ask)
@@ -405,7 +413,7 @@ function backend(host: ExtensionHost) {
         : args.prompt
           ? []
           : [caller!]
-      const owed = await owedAtCreation(tx, subscribers, caller)
+      const owed = await owedAtCreation(tx, subscribers, caller, args.serves)
       const conversationId = await agentConversation(
         tx,
         prepared,
@@ -685,7 +693,7 @@ function backend(host: ExtensionHost) {
         fires: 0,
         ...(args.key ? { key: args.key } : {}),
         subscribers,
-        ...(await owedAtCreation(tx, subscribers, caller)),
+        ...(await owedAtCreation(tx, subscribers, caller, args.serves)),
       }
     }
     const a = state.automations[id]
@@ -1018,6 +1026,7 @@ export default function automations(host: ExtensionHost) {
           scope: opt(strEnum(['user', 'project'])),
           slug: opt(str()),
           key: opt(str()),
+          serves: opt(bool()),
           runId: opt(str()),
           to: opt(str()),
           lines: opt(int({ minimum: 1, maximum: 2000 })),
@@ -1066,7 +1075,21 @@ export default function automations(host: ExtensionHost) {
               )
           return tool.memo(
             'result',
-            { output: [{ type: 'text' as const, text: concise(receipt.result!) }] },
+            {
+              output: [
+                {
+                  type: 'text' as const,
+                  text:
+                    concise(receipt.result!) +
+                    (args.action === 'create'
+                      ? handoverLine(
+                          (receipt.result as Automation).id,
+                          (receipt.result as Automation).serves,
+                        )
+                      : ''),
+                },
+              ],
+            },
             context,
           )
         },

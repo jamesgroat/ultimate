@@ -28,7 +28,7 @@ A dream starts when it is asked for, all the same way:
 If a dream branch is already running, say so in one line and do nothing else. Otherwise, in that same turn, while your
 context still holds everything, write your **handoff**: what you worked on, what is still open (branches, questions,
 to-dos) and how far each got, the decisions and why, the user's corrections, the lessons, and what you would do next.
-Start one branch with `branch`, the handoff in its prompt:
+Start one branch with `branch` and `serves: false` (a dream answers no request you owe), the handoff in its prompt:
 
 > Dream. Follow "For the dream branch" in the clone's extensions/dream/DREAM.md.
 >

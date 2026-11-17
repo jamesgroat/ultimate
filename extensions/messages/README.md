@@ -41,7 +41,9 @@ report.**
   that run (not concluded, not messaged in the run) with `routed: true`, so a weigh-in reaches the branch. The run's
   other inputs (the user's, another Ultimate's, a card) neither receive it nor keep it from a branch.
 - **Results to the asker.** A branch started while its starter owed an agent an answer records it as `serves`; once the
-  branch is concluded, the starter's final answer goes to that agent instead, another project's Ultimate included.
+  branch is concluded, the starter's final answer goes to that agent instead, another project's Ultimate included. The
+  `branch` and `automation create` results name the request they took over; `serves: false` starts unrelated work that
+  takes none, so the starter's own answer stays final.
 - **Everything else wakes:** reply-enabled messages and one-way messages from anyone who is not the recipient's child or
   branch.
 
