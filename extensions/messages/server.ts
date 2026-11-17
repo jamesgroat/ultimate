@@ -33,6 +33,7 @@ import { actingAs } from '../../lib/acting-as.ts'
 import { imagesParameter, SCAN_PAGE } from './images.ts'
 import { owed, parentOf, Started, starterOf, stillServedAfter } from './addresses.ts'
 import { delivery } from './delivery.ts'
+import { captureUserInputs } from './provenance.ts'
 import { notice } from './notice.ts'
 import { receiptOf, send } from './send.ts'
 import type { Device } from '../../shared/events.ts'
@@ -244,14 +245,14 @@ export default function messages(host: ExtensionHost) {
         // Pi upstream: @earendil-works/pi-durable@1.5.2 — patched transactional beforeInput hook.
         beforeInput: (_input, api) => openQuestionsNote(api.tx, api.conversationId, Date.now()),
         onYield: async (_answer, api, ctx) => {
-          let by = (await api.snapshot(Started, api.conversationId, ctx))?.by
-          const down =
-            by === undefined &&
-            (await api.snapshot(Standing, ROOT_CONVERSATION_ID, ctx))?.ultimate ===
-              api.conversationId
-          if (down) by = api.conversationId
-          if (by === undefined) return undefined
           await host.harness().commit(async (tx) => {
+            await captureUserInputs(tx, api.conversationId, api.taskId)
+            let by = (await tx.doc(Started, api.conversationId)).by
+            const down =
+              by === undefined &&
+              (await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate === api.conversationId
+            if (down) by = api.conversationId
+            if (by === undefined) return
             const started = await tx.doc(Started, api.conversationId)
             const generationObserverAlreadyCreated =
               started.yielded !== undefined && started.yielded >= api.taskId

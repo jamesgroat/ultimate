@@ -19,6 +19,20 @@ export function answeredMessages(messages: Message[], conversation: Conversation
   return messages.filter((message) => message.to === conversation && message.answer === entry)
 }
 
+export function answersUser(entry: EntryRecord, messages: readonly Message[]) {
+  return messages.some(
+    (m) =>
+      (m.to === entry.conversationId && m.answer === entry.id && !!m.answerUserInputs?.length) ||
+      (m.from === entry.conversationId && m.routed === entry.id && !!m.routedUserInputs?.length),
+  )
+}
+
+export function replyOnlyToAgents(entry: EntryRecord, messages: Message[]) {
+  if (answersUser(entry, messages)) return false
+  const answered = answeredMessages(messages, entry.conversationId, entry.id)
+  return answered.length > 0 && answered.every((m) => m.reply && m.from !== 'user')
+}
+
 export const emptyMessages: MessagesData = { messages: [], next: 1 }
 
 export const waitingOnUser = (log: MessagesData) => log.messages.filter(openQuestion).length
@@ -185,9 +199,10 @@ export function backgroundRow(
           (call.arguments as { to?: unknown } | undefined)?.to !== 'user'),
     )
   if (message.stopReason !== 'stop') return false
-  if (routedTo(log?.messages ?? [], entry).length) return true
-  const answered = answeredMessages(log?.messages ?? [], entry.conversationId, entry.id)
-  return answered.length > 0 && answered.every((m) => m.reply && m.from !== 'user')
+  const messages = log?.messages ?? []
+  if (answersUser(entry, messages)) return false
+  if (routedTo(messages, entry).length) return true
+  return replyOnlyToAgents(entry, messages)
 }
 
 const routedTo = (messages: readonly Message[], entry: EntryRecord) =>

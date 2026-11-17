@@ -133,7 +133,21 @@ as `@ultimate@<project> on <machine>` with a globe mark and a violet accent.
 `Messages` (kind `board`, version 1) is exported on `ROOT_CONVERSATION_ID` as `{ messages: Message[]; next: number }`;
 the log keeps the newest 300 items, and transcripts retain delivered inputs. `Message` is in `api.ts`: `from` and `to`
 are a conversation id, `'user'` or `'remote'`; `state` is `sent`, `delivered`, `answered`, `dismissed`, `failed` or
-`stopped`; `re`, `entry`, `answer`, `error`, `via`, `remote`, `report`, `questions` and `call` are optional.
+`stopped`; `re`, `entry`, `answer`, `answerUserInputs`, `routedUserInputs`, `error`, `via`, `remote`, `report`,
+`questions` and `call` are optional.
+
+`answerUserInputs` and `routedUserInputs` name the direct-user input entries settled by the message's `answer` and
+`routed` final answer respectively. They are independent: a routed copy's recipient can answer it without replacing
+the original sender's provenance. Every generation yield replaces its `board.user-inputs` capture with the run's
+direct-user submissions: `pi.user`, `voice.utterance`, or `board.message`/`board.reply` from `user`. Passive notes do
+not qualify. This conversation-scoped document family is keyed by generation task id, with latest history and initial
+fork semantics; task-scoped documents retire at task completion, before delivery resolves the answer. This retains
+one tiny document per yielded generation, not a growing root index, and is not exported to the browser. The final
+answer's conversation and `byTaskId` select the capture; only submissions settled `done` by that exact answer become
+entry ids. Queued requests and discarded yields therefore cannot claim a different answer. Associations are stored
+with each routed outgoing message and each incoming request when its answer is recorded, including served remote
+results; routing, remote wire fields and ownership are unchanged. Older messages are not backfilled. Keeping the
+associations on the message itself means log retention removes folding evidence and its provenance together.
 
 - `board.message` data: `{ id, from, text, reply, delivery: 'steer' | 'followUp' | 'note', images?, remote? }`.
 - `board.reply` data: `{ id, re, from, text, failed, stopped?, images?, remote?, interim? }`; `stopped` also sets
@@ -170,6 +184,7 @@ Server side, imported in one direction (`log`, `images`, `addresses`, `questions
 - `branch.ts`: the `branch` tool.
 - `addresses.ts`: resolving `to`, sender names, a subagent's parent and the lander.
 - `images.ts`, `questions.ts`, `log.ts`: forwarded images, questions and the `board.open` line, the bounded log.
+- `provenance.ts`: per-generation direct-user submission capture and exact-answer settlement lookup.
 
 `api.ts` and `refs.ts` are the contract; `caller.ts` is shared with the browser; the `.tsx` files are the UI.
 
@@ -183,4 +198,7 @@ There is no Messages surface: everything renders in transcripts. Every sender ha
 - **Compact mode** (@ultimate's conversation): tool calls and thinking fold into “worked · N steps” rows, while
   messages, branch starts, workspace outcomes, setup cards and answers stay. Its messages to you are bubbles in its
   accent with the answer card beneath; one sent from codemode is a bubble too, under a quiet “sent with codemode” line.
-  An answer routed back to branches folds to “replied to #id”.
+  An answer routed back to branches folds to “replied to #id”, unless a matching routed or answered message's
+  `routedUserInputs` or `answerUserInputs`, respectively, also identifies it as a direct user answer. Such answers
+  stay in the user-facing thread, open in both the outer background grouping and the inner reply fold, without
+  suppressing legitimate branch copies.

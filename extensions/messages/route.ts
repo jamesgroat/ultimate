@@ -20,6 +20,7 @@ import { FiredEntry, MessageEntry, ReplyEntry } from '../entries/api.ts'
 import { LanderReportEntry } from '../workspaces/api.ts'
 import { send } from './send.ts'
 import { delivery } from './delivery.ts'
+import { answerUserInputs } from './provenance.ts'
 import { branchesAwaitingRemoteReply } from './remote.ts'
 import { closeServed, remoteLabel, Serving, Started, stillServedAfter } from './addresses.ts'
 import type { Serves } from './addresses.ts'
@@ -247,6 +248,7 @@ export async function answerRemoteRequest(
     state: 'answered' as const,
     remote: serves.remote!,
   }
+  const userInputs = await answerUserInputs(tx, answer)
   const response = await append(tx, {
     from,
     to: 'remote',
@@ -255,6 +257,7 @@ export async function answerRemoteRequest(
     re: serves.message,
     state: failed ? 'failed' : 'sent',
     ...(answer !== undefined ? { answer, routed: answer } : {}),
+    ...(userInputs.length ? { answerUserInputs: userInputs, routedUserInputs: userInputs } : {}),
     ...(failed ? { error: text } : {}),
     remote: serves.remote!,
     ...(handedOnAgain ? { interim: true as const } : {}),
