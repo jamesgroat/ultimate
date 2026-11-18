@@ -2,6 +2,7 @@ import { debounce, deadline, every } from '../../lib/timers.ts'
 import type { Cancel } from '../../lib/timers.ts'
 import { CircleSlashIcon, PinIcon, PinOffIcon } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type { MouseEvent, ReactNode } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   api,
@@ -11,10 +12,11 @@ import {
   keepLast,
   useAction,
   useExtensions,
+  useUltimate,
   useViewport,
 } from '@/sdk'
 import { ProjectSwatch, RepoLabel, stemOf } from '../sidebar/ui.tsx'
-import { shownPort, target } from './links.ts'
+import { inboxTarget, shownPort, target } from './links.ts'
 import { ListAction, PinAction } from './refs.ts'
 import type { RunningProject } from './refs.ts'
 
@@ -43,6 +45,9 @@ const subscribe = (listener: () => void) => {
 }
 const useOpening = () => useSyncExternalStore(subscribe, () => pendingNavigation)
 if (typeof window !== 'undefined') window.addEventListener('pageshow', () => setOpening(undefined))
+
+const opensInThisTab = (event: MouseEvent) =>
+  event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
 
 function OpeningBar() {
   if (!useOpening()) return null
@@ -99,25 +104,50 @@ function Detail({ project, pending }: { project: RunningProject; pending: boolea
   )
 }
 
-function State({
-  busy,
-  questions,
-  unavailable,
-}: {
-  busy: boolean
-  questions: number
-  unavailable?: true
-}) {
+function State({ busy, unavailable }: { busy: boolean; unavailable?: true }) {
   if (unavailable)
     return <CircleSlashIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
-  if (questions > 0)
-    return (
-      <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-amber-400/15 px-1.5 font-mono text-[10px] font-semibold text-amber-700 tabular-nums ring-1 ring-amber-500/30 ring-inset dark:text-amber-300">
-        {questions}
-      </span>
-    )
   if (busy) return <span className="size-1.5 shrink-0 animate-pulse-dot rounded-full bg-brand" />
   return null
+}
+
+function InboxLink({
+  project,
+  className,
+  children,
+}: {
+  project?: RunningProject
+  className?: string
+  children: ReactNode
+}) {
+  const { showSurface } = useUltimate()
+  const here = !project || project.current
+  const href = here
+    ? `${location.pathname}?inbox=`
+    : project && !project.unavailable
+      ? inboxTarget(project, location)
+      : undefined
+  if (!href) return <span className={className}>{children}</span>
+  return (
+    <a
+      className={cn(
+        'cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        className,
+      )}
+      href={href}
+      onClick={(event) => {
+        if (!opensInThisTab(event)) return
+        if (here) {
+          event.preventDefault()
+          showSurface('inbox')
+        } else if (project) setOpening(project.url)
+      }}
+      onMouseDown={(event) => event.preventDefault()}
+      title={here ? 'Open the Inbox' : `Open ${prettyName(project.name)}’s Inbox`}
+    >
+      {children}
+    </a>
+  )
 }
 
 function Row({
@@ -154,93 +184,105 @@ function Row({
   ]
     .filter(Boolean)
     .join(' · ')
+  const count = !project.unavailable && questions > 0
   return (
-    <a
-      aria-current={here ? 'page' : undefined}
-      aria-label={title}
+    <div
       className={cn(
-        'group relative mx-1.5 flex h-10 items-center rounded-lg text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset',
-        here || unreachable ? 'cursor-default' : 'cursor-pointer',
+        'group relative mx-1.5 flex h-10 items-center rounded-lg',
         unreachable && 'opacity-45',
         wide && (here ? 'bg-sidebar-accent' : 'hover:bg-sidebar-accent/50'),
       )}
       data-project={project.name}
-      href={href}
-      onClick={(event) => {
-        const skipsTabNavigation =
-          here ||
-          unreachable ||
-          event.button !== 0 ||
-          event.metaKey ||
-          event.ctrlKey ||
-          event.shiftKey ||
-          event.altKey
-        if (skipsTabNavigation) return
-        setOpening(project.url)
-      }}
-      title={title}
     >
-      <span
+      <a
+        aria-current={here ? 'page' : undefined}
+        aria-label={title}
         className={cn(
-          'absolute -left-1.5 w-[3px] rounded-r-full transition-all duration-150',
-          here || pending ? 'h-6 bg-brand' : 'h-0 bg-muted-foreground/60 group-hover:h-3',
-          pending && 'animate-pulse-dot',
+          'relative flex h-full min-w-0 flex-1 items-center rounded-lg text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset',
+          here || unreachable ? 'cursor-default' : 'cursor-pointer',
         )}
-      />
-      <span
-        className={cn(
-          'flex h-full w-11 shrink-0 justify-center',
-          !first && 'pt-px',
-          !last && 'pb-px',
-        )}
+        href={href}
+        onClick={(event) => {
+          if (here || unreachable || !opensInThisTab(event)) return
+          setOpening(project.url)
+        }}
+        title={title}
       >
-        <span className={pixelAlignedAxis}>
-          <ProjectSwatch
-            className={cn(
-              'h-full transition-[width,opacity] duration-150',
-              here || pending ? 'w-5' : 'w-3 opacity-70 group-hover:w-4 group-hover:opacity-100',
-              here && 'outline-1 outline-offset-2 outline-foreground/45',
-              first ? 'rounded-t-md' : 'rounded-t-[1px]',
-              last ? 'rounded-b-md' : 'rounded-b-[1px]',
-              pending && 'animate-pulse-dot',
-            )}
-            family={family}
-            folder={project.name}
-          />
-          {!wide && project.unavailable && (
-            <span className="absolute inset-0 m-auto flex size-4 items-center justify-center rounded-full bg-sidebar ring-2 ring-sidebar">
-              <CircleSlashIcon aria-hidden className="size-3 text-muted-foreground" />
-            </span>
+        <span
+          className={cn(
+            'absolute -left-1.5 w-[3px] rounded-r-full transition-all duration-150',
+            here || pending ? 'h-6 bg-brand' : 'h-0 bg-muted-foreground/60 group-hover:h-3',
+            pending && 'animate-pulse-dot',
           )}
-          {!wide && !project.unavailable && questions > 0 && (
-            <span className="absolute inset-0 m-auto flex h-4 w-fit min-w-4 items-center justify-center rounded-full bg-amber-400 px-1 font-mono text-[9.5px] leading-none font-semibold text-black tabular-nums ring-2 ring-sidebar">
-              {questions}
-            </span>
+        />
+        <span
+          className={cn(
+            'flex h-full w-11 shrink-0 justify-center',
+            !first && 'pt-px',
+            !last && 'pb-px',
           )}
-          {!wide && !project.unavailable && busy && questions === 0 && (
-            <span className="absolute inset-0 m-auto size-2 animate-pulse-dot rounded-full bg-brand ring-2 ring-sidebar" />
-          )}
-        </span>
-      </span>
-      {wide && (
-        <span className="flex min-w-0 flex-1 items-center gap-2 pr-2.5 pl-1.5">
-          <span className="flex min-w-0 flex-1 flex-col">
-            <span
+        >
+          <span className={pixelAlignedAxis}>
+            <ProjectSwatch
               className={cn(
-                'truncate text-[13px] leading-5',
-                here ? 'font-semibold text-foreground' : 'text-foreground/85',
+                'h-full transition-[width,opacity] duration-150',
+                here || pending ? 'w-5' : 'w-3 opacity-70 group-hover:w-4 group-hover:opacity-100',
+                here && 'outline-1 outline-offset-2 outline-foreground/45',
+                first ? 'rounded-t-md' : 'rounded-t-[1px]',
+                last ? 'rounded-b-md' : 'rounded-b-[1px]',
+                pending && 'animate-pulse-dot',
               )}
-            >
-              {name}
-            </span>
-            <span className="flex min-w-0 items-center gap-1.5 font-mono text-[10px] leading-4 text-muted-foreground/80">
-              <Detail pending={pending} project={project} />
-            </span>
+              family={family}
+              folder={project.name}
+            />
+            {!wide && project.unavailable && (
+              <span className="absolute inset-0 m-auto flex size-4 items-center justify-center rounded-full bg-sidebar ring-2 ring-sidebar">
+                <CircleSlashIcon aria-hidden className="size-3 text-muted-foreground" />
+              </span>
+            )}
+            {!wide && !project.unavailable && busy && questions === 0 && (
+              <span className="absolute inset-0 m-auto size-2 animate-pulse-dot rounded-full bg-brand ring-2 ring-sidebar" />
+            )}
           </span>
-          <State busy={busy} questions={questions} unavailable={project.unavailable} />
         </span>
+        {wide && (
+          <span
+            className={cn(
+              'flex min-w-0 flex-1 items-center gap-2 pl-1.5',
+              count ? 'pr-2' : 'pr-2.5',
+            )}
+          >
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span
+                className={cn(
+                  'truncate text-[13px] leading-5',
+                  here ? 'font-semibold text-foreground' : 'text-foreground/85',
+                )}
+              >
+                {name}
+              </span>
+              <span className="flex min-w-0 items-center gap-1.5 font-mono text-[10px] leading-4 text-muted-foreground/80">
+                <Detail pending={pending} project={project} />
+              </span>
+            </span>
+            {!count && <State busy={busy} unavailable={project.unavailable} />}
+          </span>
+        )}
+      </a>
+      {count && (
+        <InboxLink
+          className={cn(
+            'flex items-center justify-center rounded-full font-mono font-semibold tabular-nums transition-colors',
+            wide
+              ? 'mr-2.5 h-5 min-w-5 shrink-0 bg-amber-400/15 px-1.5 text-[10px] text-amber-700 ring-1 ring-amber-500/30 ring-inset hover:bg-amber-400/30 hover:ring-amber-500/70 dark:text-amber-300'
+              : 'absolute top-1/2 left-[22px] h-4 min-w-4 -translate-1/2 bg-amber-400 px-1 text-[9.5px] leading-none text-black ring-2 ring-sidebar hover:bg-amber-300',
+          )}
+          project={project}
+        >
+          {questions}
+        </InboxLink>
       )}
-    </a>
+    </div>
   )
 }
 
@@ -380,9 +422,13 @@ function Rail() {
           </span>
           {wide && !loading && (
             <span className="truncate">
-              <span className={cn(questions > 0 && 'text-amber-700 dark:text-amber-300')}>
-                {questions} for you
-              </span>
+              {questions > 0 ? (
+                <InboxLink className="rounded-sm text-amber-700 underline-offset-2 hover:underline dark:text-amber-300">
+                  {questions} for you
+                </InboxLink>
+              ) : (
+                <span>{questions} for you</span>
+              )}
               {` · ${working} working`}
             </span>
           )}
