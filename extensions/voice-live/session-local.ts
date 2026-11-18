@@ -1,11 +1,7 @@
 import { ignoring, inProcess, keepLast } from '../../lib/errors.ts'
 import { deadline, every, retryAfter } from '../../lib/timers.ts'
 import { actionRef } from '../../shared/extension-api.ts'
-import { PAUSES } from './pause.ts'
 import { EndAction, HeardAction, StartLocalAction } from './refs.ts'
-import type { VoicePause } from './refs.ts'
-import { decide, END_PHRASES, SOFT_MS } from './turn.ts'
-import type { VoiceTurns } from './turn.ts'
 import type { LiveOptions, LiveSession } from './session.ts'
 
 type Transcript = {
@@ -31,12 +27,12 @@ const SpeechifyAction = actionRef<{ text: string }, { text: string; ms: number }
 )
 
 const RATE = 16_000
+export const CUT_MS = 900
+export const HOLD_MS = 1600
 const PARTIAL_MS = 1000
 const PREROLL_MS = 300
 const ECHO_TAIL_MS = 350
 const MAX_MS = 120_000
-const HINT_AFTER_MS = 2000
-const HINT_MS = 3500
 const PLAY_SLACK_MS = 3000
 const BLOCKED_MS = 1500
 
@@ -116,7 +112,6 @@ export async function startLocal(
   capture.connect(sink).connect(audioContext.destination)
   const frameMs = (2048 / audioContext.sampleRate) * 1000
   const errorOf = (error: unknown) => (error instanceof Error ? error : new Error(String(error)))
-  let pause: VoicePause = PAUSES.relaxed
   let frameAt = Date.now()
   let stoppedSince = 0
   const running = () => audioContext.state === 'running'
@@ -143,35 +138,21 @@ export async function startLocal(
   let words = ''
   let raw: string | undefined
   let cut: 'none' | 'pending' | 'held' = 'none'
-  let holdMs = 0
-  let turns: VoiceTurns = 'auto'
-  let endPhrases = END_PHRASES
-  let hinted = false
   let partialAt = 0
   let partialBusy = false
   let floor = 0.004
   let pending = Promise.resolve()
   let playing: AudioBufferSourceNode | undefined
-  let queue: {
-    audio: Promise<AudioBuffer | undefined>
-    words: number
-    first: boolean
-    now?: boolean
-  }[] = []
+  let queue: { audio: Promise<AudioBuffer | undefined>; words: number; first: boolean }[] = []
   let draining = false
   let talkingUntil = 0
   let spoken = 0
   let generation = 0
 
-  type Line = { raw?: string; unsure?: boolean }
-  const send = (text: string, line: Line) => {
+  const send = (text: string, misheard?: string) => {
     pending = pending
       .then(async () => {
-        await options.action(HeardAction, {
-          text,
-          ...(line.raw ? { raw: line.raw } : {}),
-          ...(line.unsure ? { unsure: true } : {}),
-        })
+        await options.action(HeardAction, { text, ...(misheard ? { raw: misheard } : {}) })
       })
       .catch((error: unknown) => options.onError(errorOf(error)))
   }
@@ -180,33 +161,32 @@ export async function startLocal(
     words = ''
     raw = undefined
     cut = 'none'
-    holdMs = 0
     voicedAt = 0
     quietSince = 0
   }
-  const finish = (text: string, line: Line = {}) => {
+  const finish = (text: string, misheard?: string) => {
     reset()
     if (!text) return
     options.onLine?.()
-    send(text, line)
+    send(text, misheard)
   }
   const transcribe = async (turn: boolean) =>
     options.action(TranscribeAction, { pcm: toPcm(heard, audioContext.sampleRate), turn })
   let flushing = Promise.resolve()
   const flush = () => {
     if (!heard.length || cut === 'pending') return
-    if (cut === 'held') return finish(words, { raw, unsure: true })
+    if (cut === 'held') return finish(words, raw)
     const audio = heard
     reset()
     flushing = options
       .action(TranscribeAction, { pcm: toPcm(audio, audioContext.sampleRate), turn: false })
       .then((result) => {
-        if (result.speech && result.text) finish(result.text, { raw: result.raw, unsure: true })
+        if (result.speech && result.text) finish(result.text, result.raw)
       })
       .catch((error: unknown) => options.onError(errorOf(error)))
   }
   const cancelStallCheck = every(500, () => {
-    if (heard.length && Date.now() - frameAt > pause.cutMs + Math.max(holdMs, pause.holdMs)) flush()
+    if (heard.length && Date.now() - frameAt > CUT_MS + HOLD_MS) flush()
   })
 
   const cutNow = () => {
@@ -217,38 +197,14 @@ export async function startLocal(
       transcribe(true)
         .then((result) => {
           if (releasing)
-            return void (
-              result.speech &&
-              result.text &&
-              finish(result.text, { raw: result.raw, unsure: true })
-            )
+            return void (result.speech && result.text && finish(result.text, result.raw))
           if (cut !== 'pending') return
           if (heard.length !== length && voicedAt > quietSince) return void (cut = 'none')
           if (!result.speech) return reset()
-          const turn = decide(result.text, result, { turns, holdMs: pause.holdMs, endPhrases })
-          console.info(
-            'Voice: turn',
-            turn.kind,
-            'why' in turn ? turn.why : turn.turns,
-            result.probability,
-          )
-          if (turn.kind === 'mode') {
-            reset()
-            turns = turn.turns
-            speak(
-              turns === 'dictation'
-                ? 'Dictation mode. Take your time, and say over when you are done.'
-                : 'Normal mode.',
-            )
-            return
-          }
-          words = turn.text
+          words = result.text
           raw = result.raw
-          if (turn.kind === 'send') finish(turn.text, { raw })
-          else {
-            cut = 'held'
-            holdMs = turn.ms
-          }
+          if (result.complete !== false) finish(words, raw)
+          else cut = 'held'
         })
         .catch((error: unknown) => {
           reset()
@@ -306,19 +262,9 @@ export async function startLocal(
     } else quietSince ||= now
     const quiet = quietSince ? now - quietSince : 0
     if (heard.length * frameMs > MAX_MS) flush()
-    else if (cut === 'none' && quiet >= pause.cutMs) cutNow()
-    else if (cut === 'held' && quiet >= pause.cutMs + holdMs) finish(words, { raw, unsure: true })
-    else if (
-      cut === 'held' &&
-      !hinted &&
-      holdMs > SOFT_MS &&
-      !queue.length &&
-      quiet >= pause.cutMs + HINT_AFTER_MS
-    ) {
-      hinted = true
-      holdMs += HINT_MS
-      speak(`Take your time. Say ${endPhrases[0] ?? 'over'} when you're done.`, { now: true })
-    } else if (cut === 'none' && !quiet && !partialBusy && now - partialAt >= PARTIAL_MS) partial()
+    else if (cut === 'none' && quiet >= CUT_MS) cutNow()
+    else if (cut === 'held' && quiet >= CUT_MS + HOLD_MS) finish(words, raw)
+    else if (cut === 'none' && !quiet && !partialBusy && now - partialAt >= PARTIAL_MS) partial()
   }
 
   const render = (text: string, run: number) =>
@@ -368,7 +314,7 @@ export async function startLocal(
           })
           if (run !== generation) return
         }
-        if (next.first && !next.now) await userDone(run)
+        if (next.first) await userDone(run)
         if (run !== generation) return
         const node = audioContext.createBufferSource()
         node.buffer = buffer
@@ -425,14 +371,13 @@ export async function startLocal(
     }
     talkingUntil = Date.now() + ECHO_TAIL_MS
   }
-  const queueLine = (text: string, run: number, now = false) => {
+  const queueLine = (text: string, run: number) => {
     if (run !== generation) return
     for (const [index, part] of sentences(speakable(text)).entries())
       queue.push({
         audio: render(part, run),
         words: part.split(/\s+/).filter(Boolean).length,
         first: index === 0,
-        ...(now ? { now } : {}),
       })
     if (!draining)
       inProcess(
@@ -441,13 +386,12 @@ export async function startLocal(
       )
   }
   let rewriting = Promise.resolve()
-  const speak = (text: string, { forEar = false, now = false } = {}) => {
+  const speak = (text: string, { forEar = false } = {}) => {
     if (releasing) return
     const run = generation
     rewriting = rewriting.then(async () => {
       if (releasing || run !== generation) return
-      if (!forEar || localStorage.getItem('speak:speechify') === 'off')
-        return queueLine(text, run, now)
+      if (!forEar || localStorage.getItem('speak:speechify') === 'off') return queueLine(text, run)
       const rewritten = await options
         .action(SpeechifyAction, { text })
         .then((result) => result.text)
@@ -486,9 +430,6 @@ export async function startLocal(
       options.action(WarmAction, null),
     ])
     conversation = started.conversation
-    pause = started.pause ?? PAUSES.relaxed
-    turns = started.turns ?? 'auto'
-    endPhrases = started.endPhrases ?? END_PHRASES
     for (const track of stream.getAudioTracks())
       track.addEventListener('ended', () => {
         if (releasing) return
@@ -512,9 +453,6 @@ export async function startLocal(
         spokenWords: () => spoken,
         idleFor: (now) => Math.max(0, now - activityAt),
       },
-      holding: () => cut === 'held',
-      dictating: () => turns === 'dictation',
-      endPhrase: endPhrases[0],
       send: () => undefined,
       mute: () => {
         muted = true

@@ -817,17 +817,7 @@ function StepText({ step, mode }: { step: Step; mode: VoiceMode }) {
               : step.step === 'waiting'
                 ? ['Answer ready', 'Tap Hear it to hear it']
                 : step.step === 'hearing'
-                  ? mode.holding
-                    ? [
-                        'Still your turn',
-                        `Take your time · say “${mode.endPhrase ?? 'over'}” to send`,
-                      ]
-                    : [
-                        'Hearing you…',
-                        mode.dictating
-                          ? 'Dictation · say “over” to send'
-                          : 'Keep talking · a pause sends it',
-                      ]
+                  ? ['Hearing you…', 'Keep talking · a pause sends it']
                   : step.step === 'speaking'
                     ? [
                         'Speaking',

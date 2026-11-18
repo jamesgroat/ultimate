@@ -18,27 +18,11 @@ answer task, transcript and dock) is shared; only the audio layer differs.
 - `session-local.ts` replaces `session.ts`: the microphone (with the browser's echo cancellation) feeds a level gate.
   A 900 ms pause sends the whole turn so far as 16 kHz PCM to `speak/transcribe`, where Silero drops non-speech,
   Parakeet-TDT 0.6B v3 transcribes (and speak's `HEARD` lexicon puts misheard project terms right, keeping the raw
-  words as `raw`) and Smart Turn v3 judges whether the sentence is finished. `turn.ts` then decides, biased toward
-  waiting, since a cut-off thought costs far more than a second of silence:
-  - an end phrase ("over", "go ahead", "send it", "done") at the end sends at once, without the phrase;
-  - "wait", "hold on", "let me think" at the end hold the floor 30 s;
-  - a line that trails off (no end punctuation; last word a preposition, article, conjunction, auxiliary, filler or
-    an -ing verb), a long composed line (over 25 words, or code words), or Smart Turn saying unfinished holds
-    `holdMs` (12 s); a short fragment, or Smart Turn under 0.9 sure, holds 4 s;
-  - only a line that reads whole and Smart Turn is sure of goes after the pause.
-    Speech that resumes during a hold joins the same turn and the next pause transcribes all of it again, so Voice
-    gets one line. A hold that runs out still delivers, marked `unsure`: Voice then asks it back before forwarding a
-    request (and `voice_ask_ultimate` refuses it), while small talk is answered as usual. The dock shows
-    "Still your turn" during a hold, with the configured end phrase, and speech waits for the user's turn to end.
-    Once per session, the first long hold gives a spoken hint after 2 s: "Take your time. Say over when you're done."
-    (using the configured end phrase). The hint adds 3.5 s to that hold so it does not eat the user's thinking time.
-    "Dictation mode" / "normal mode" as a whole line switch the turn mode for the session: dictation never ends a
-    turn on silence, only on an end phrase or 30 s of quiet (delivered, never dropped).
-- `"voiceLive": { "pause": …, "turns": "auto" | "dictation", "endPhrases": […] }` tunes that: `"relaxed"`
-  (default, 900 ms cut, 12 s hold), `"snappy"` (400 ms and 1.6 s) or `{ "cutMs": 700, "holdMs": 6000 }`; `turns` is
-  the mode a session starts in; `endPhrases` replaces the end phrases. `startLocal` returns all three.
+  words as `raw`) and Smart Turn v3 judges whether the sentence is finished. A finished sentence goes at once; an
+  unfinished one waits 1.6 s more (`CUT_MS`, `HOLD_MS` in `session-local.ts`), and speech that resumes in that time
+  joins the same line. Speech waits for the user's turn to end.
 - A forwarded request still waiting on @ultimate gets a short spoken “Still on it” after 30 s, then every 60 s
-  (`NUDGE_FIRST_MS`, `NUDGE_REPEAT_MS` in `pause.ts`, beside the pause timings; both engines).
+  (`NUDGE_FIRST_MS`, `NUDGE_REPEAT_MS` in `pause.ts`; both engines).
 - Words being heard are never dropped: a session closing, a two-minute turn, or the microphone's frames stopping
   mid-line (the browser held the audio) send what was heard so far, transcribed as it is.
 - The screen stays awake while a session is live (Screen Wake Lock, taken again when the page is back), so

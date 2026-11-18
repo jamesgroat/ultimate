@@ -364,27 +364,15 @@ it('forwards the cleaned request and feeds the actual answer back to Voice to sp
   expect((await f.entries(f.voice)).at(-1)?.data).toMatchObject({ phase: 'ended', seconds: 23 })
 })
 
-it('never forwards a line that ended on silence alone, and keeps what the lexicon corrected', async () => {
+it('keeps what the lexicon corrected beside what was heard', async () => {
   const f = await fixture()
-  await f.action('heard', {
-    text: 'Currently group mode',
-    raw: 'Currently grip mode',
-    unsure: true,
-  })
-  await until(async () => (await f.entries(f.voice)).some((e) => e.kind === 'voice.line'))
+  await f.action('heard', { text: 'Currently group mode', raw: 'Currently grip mode' })
+  await until(async () => (await f.entries(f.voice)).some((e) => e.kind === 'voice.heard'))
   await (await f.server.harness.conversation(f.voice, context))!.waitForIdle(context)
   expect((await f.entries(f.voice)).find((e) => e.kind === 'voice.heard')?.data).toEqual({
     text: 'Currently group mode',
     raw: 'Currently grip mode',
-    unsure: true,
   })
-  expect(f.requests.at(-1)?.at(-1)).toContain('MAY BE UNFINISHED')
-  expect(
-    (await f.entries(f.voice)).some(
-      (e) => e.kind === 'voice.line' && (e.data as VoiceLine).forwarded,
-    ),
-  ).toBe(false)
-  expect((await f.entries(f.main)).filter((e) => e.kind === 'voice.utterance')).toHaveLength(0)
 })
 
 it('speaks an answer Voice wrote as plain text instead of calling voice_say', async () => {
@@ -485,12 +473,7 @@ it('starts a local-engine session without an OpenAI key, when speak can transcri
     `export const actions = { sttStatus: () => ({ ready: true }) }\nexport default { name: 'speak' }\n`,
   )
   await until(async () => (await f.action('status', null)).available === true)
-  expect(await f.action('startLocal', null)).toEqual({
-    conversation: f.voice,
-    pause: { cutMs: 900, holdMs: 12_000 },
-    turns: 'auto',
-    endPhrases: ['over', 'go ahead', 'send it', 'done'],
-  })
+  expect(await f.action('startLocal', null)).toEqual({ conversation: f.voice })
   const briefs = async () => (await f.entries(f.voice)).filter((e) => e.kind === 'voice.context')
   await until(async () => (await briefs()).length === 2)
   expect((await briefs())[1].data).toMatchObject({

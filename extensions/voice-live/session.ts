@@ -23,9 +23,6 @@ export type LiveSession = {
   stopSpeaking?: () => void
   audioBlocked?: () => boolean
   resumeAudio?: () => Promise<void>
-  holding?: () => boolean
-  dictating?: () => boolean
-  endPhrase?: string
   close: () => Promise<void>
 }
 

@@ -23,9 +23,6 @@ export type VoiceMode = {
   front: boolean
   floor?: 'user' | 'voice'
   partial?: string
-  holding?: boolean
-  dictating?: boolean
-  endPhrase?: string
   sending?: { text: string; at: number }
   speaking?: { entry: number; words: number; at: number }
   engine?: VoiceEngine
@@ -238,15 +235,6 @@ function tick() {
   if (blocked !== pageMode.blocked) publishMode({ blocked })
   const floor = session.relay.hearing() ? 'user' : session.relay.talking() ? 'voice' : undefined
   const partial = session.relay.partial() || undefined
-  const holding = session.holding?.() || undefined
-  const dictating = session.dictating?.() || undefined
-  const endPhrase = session.endPhrase
-  if (
-    holding !== pageMode.holding ||
-    dictating !== pageMode.dictating ||
-    endPhrase !== pageMode.endPhrase
-  )
-    publishMode({ holding, dictating, endPhrase })
   if (floor !== pageMode.floor || partial !== pageMode.partial)
     publishMode({
       floor,

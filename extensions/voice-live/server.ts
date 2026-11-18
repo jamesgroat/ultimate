@@ -60,15 +60,11 @@ import type {
   VoiceEngine,
   VoiceGo,
   VoiceLine,
-  VoicePause,
   VoiceQuestion,
   VoiceSession,
 } from './refs.ts'
 import { voiceBrief } from './brief.ts'
 import { safeToRerun } from '../../lib/replay.ts'
-import { PAUSES } from './pause.ts'
-import { END_PHRASES } from './turn.ts'
-import type { VoiceTurns } from './turn.ts'
 
 const NO_KEY = `Live voice needs an OpenAI API key: add ${SECRET} in ⌘K → Secrets`
 export const secrets: { name: string; description: string; url: string; provider: string }[] = []
@@ -85,45 +81,6 @@ export async function voiceEngine(
     if (engine === 'local' || engine === 'gpt-live') return engine
   }
   return 'gpt-live'
-}
-
-export async function voicePause(
-  host: Pick<ExtensionHost, 'userHome' | 'projectSettings'>,
-): Promise<VoicePause> {
-  const user = (await readSettings(userSettingsPath(host.userHome)).catch(meansNone)) ?? {}
-  for (const settings of [await host.projectSettings(), user]) {
-    const section = (settings as { voiceLive?: unknown }).voiceLive
-    const pause = section && typeof section === 'object' && (section as { pause?: unknown }).pause
-    if (pause === 'relaxed' || pause === 'snappy') return PAUSES[pause]
-    if (pause && typeof pause === 'object') {
-      const { cutMs, holdMs } = pause as Partial<VoicePause>
-      const ms = (value: unknown, fallback: number) =>
-        typeof value === 'number' && value >= 100 && value <= 30_000 ? value : fallback
-      return { cutMs: ms(cutMs, PAUSES.relaxed.cutMs), holdMs: ms(holdMs, PAUSES.relaxed.holdMs) }
-    }
-  }
-  return PAUSES.relaxed
-}
-
-export async function voiceTurns(
-  host: Pick<ExtensionHost, 'userHome' | 'projectSettings'>,
-): Promise<{ turns: VoiceTurns; endPhrases: string[] }> {
-  const user = (await readSettings(userSettingsPath(host.userHome)).catch(meansNone)) ?? {}
-  let turns: VoiceTurns | undefined
-  let endPhrases: string[] | undefined
-  for (const settings of [await host.projectSettings(), user]) {
-    const section = (settings as { voiceLive?: { turns?: unknown; endPhrases?: unknown } })
-      .voiceLive
-    if (!section || typeof section !== 'object') continue
-    if (!turns && (section.turns === 'auto' || section.turns === 'dictation')) turns = section.turns
-    if (
-      !endPhrases &&
-      Array.isArray(section.endPhrases) &&
-      section.endPhrases.every((phrase) => typeof phrase === 'string' && phrase.trim())
-    )
-      endPhrases = (section.endPhrases as string[]).map((phrase) => phrase.trim())
-  }
-  return { turns: turns ?? 'auto', endPhrases: endPhrases ?? END_PHRASES }
 }
 
 const NO_LOCAL =
@@ -193,8 +150,6 @@ async function lines(tx: Tx, id: ConversationId, limit: number) {
   } while (cursor)
   return result.toReversed()
 }
-
-export const UNSURE = 'MAY BE UNFINISHED: do not forward it yet; confirm it first'
 
 const pendingBriefs = (host: ExtensionHost) =>
   host.resource('voice-live.briefs', () => new Map<ConversationId, Promise<unknown>>())
@@ -625,7 +580,7 @@ export const actions = {
     if (!status.available) throw new Error(status.reason)
     const id = await host.need(SubagentsApi).standing('voice', context)
     await begin(host, id, `local-${crypto.randomUUID()}`, sessionBrief(host, 'local'))
-    return { conversation: id, pause: await voicePause(host), ...(await voiceTurns(host)) }
+    return { conversation: id }
   }),
   start: implementAction(StartAction, async (args, { host, signal }) => {
     const sdp = args && typeof args === 'object' && !Array.isArray(args) ? args.sdp : undefined
@@ -678,8 +633,7 @@ export const actions = {
     return { sdp: answer.transport.sdp, conversation: id }
   }),
   heard: implementAction(HeardAction, async (args, { host }) => {
-    const { text, raw, unsure } =
-      args && typeof args === 'object' && !Array.isArray(args) ? args : {}
+    const { text, raw } = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
     if (typeof text !== 'string' || !text.trim()) throw new Error('Expected text')
     const misheard =
       typeof raw === 'string' && raw.trim() && raw.trim() !== text.trim() ? raw.trim() : undefined
@@ -696,12 +650,9 @@ export const actions = {
           data: {
             text: text.trim(),
             ...(misheard ? { raw: misheard } : {}),
-            ...(unsure === true ? { unsure: true } : {}),
           },
         },
-        content: `The user, by voice (live transcript, may contain mistakes${
-          unsure === true ? `; ${UNSURE}` : ''
-        }):\n${text.trim()}`,
+        content: `The user, by voice (live transcript, may contain mistakes):\n${text.trim()}`,
       },
       context,
     )
@@ -945,7 +896,7 @@ export default async (host: ExtensionHost) => {
         name: 'voice_ask_ultimate',
         deferred: true,
         description:
-          'Pass a clear, self-contained request in the user’s words to @ultimate. Its answer returns as input; do not wait here. Refused while the user’s newest line is marked MAY BE UNFINISHED: ask it back with voice_say instead.',
+          'Pass a clear, self-contained request in the user’s words to @ultimate. Its answer returns as input; do not wait here.',
         parameters: obj({ request: str({ minLength: 1 }) }),
         ...safeToRerun(
           'A transactional receipt schedules once; the forwarded line has a stable write request id.',
@@ -953,29 +904,6 @@ export default async (host: ExtensionHost) => {
         async execute({ request }, api, ctx) {
           if (api.conversationId !== (await voiceId(host)))
             throw new Error('Only Voice forwards requests')
-          const unconfirmed = await api.commit(async (tx) => {
-            let cursor: Cursor | undefined
-            do {
-              const page = await tx.scanEntries(
-                { conversationId: api.conversationId, order: 'descending' },
-                100,
-                cursor,
-              )
-              const heard = page.items.find((entry) => entry.kind === 'voice.heard')
-              if (heard) return (heard.data as { unsure?: boolean }).unsure === true
-              cursor = page.next
-            } while (cursor)
-            return false
-          }, ctx)
-          if (unconfirmed)
-            return {
-              output: [
-                {
-                  type: 'text',
-                  text: 'Not sent: the user’s last line may be unfinished. voice_say it back as one short question and forward after they confirm.',
-                },
-              ],
-            }
           await commitForwardOnce(api, ctx, request)
           return {
             output: [
