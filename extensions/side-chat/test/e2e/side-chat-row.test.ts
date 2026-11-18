@@ -14,7 +14,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).toReversed()) await close()
 })
 
-it('switches from the Inbox to @ultimate when a side chat row is clicked', async () => {
+async function setup() {
   const home = await temp('ultimate-side-row-')
   cleanup.push(() => removeTemp(home))
   const server = await fauxServer({
@@ -50,6 +50,11 @@ it('switches from the Inbox to @ultimate when a side chat row is clicked', async
   cleanup.push(() => browser.close())
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   await page.goto(`${server.url}/?conversation=${main}`)
+  return { page, side }
+}
+
+it('switches from the Inbox to @ultimate when a side chat row is clicked', async () => {
+  const { page, side } = await setup()
   await page.locator('button[data-surface="inbox"]').click()
   await expect.poll(() => page.title()).toMatch(/Inbox$/)
 
@@ -60,3 +65,29 @@ it('switches from the Inbox to @ultimate when a side chat row is clicked', async
     'true',
   )
 })
+
+it('hides the side chat when main is clicked, keeping it open, and focuses main’s composer', async () => {
+  const { page, side } = await setup()
+  const row = page.locator(`[data-side-chat-row="${side}"]`)
+  const sheet = page.locator(`section[data-side-chat="${side}"]:not([inert])`)
+  await row.click()
+  await sheet.waitFor()
+  await page
+    .locator('#app [data-ui="transcript"]')
+    .first()
+    .click({ position: { x: 40, y: 40 } })
+  await sheet.waitFor({ state: 'detached' })
+  expect(await row.getAttribute('aria-current')).toBeNull()
+
+  await row.click()
+  await sheet.waitFor()
+  await page.mouse.click(...(await center(page, '#app [data-main-composer]')))
+  await sheet.waitFor({ state: 'detached' })
+  await expect.poll(() => page.evaluate(() => document.activeElement?.id)).toBe('composer-input')
+  expect(await row.count()).toBe(1)
+})
+
+async function center(page: import('playwright-core').Page, selector: string) {
+  const box = (await page.locator(selector).boundingBox())!
+  return [box.x + box.width / 2, box.y + box.height - 20] as const
+}
