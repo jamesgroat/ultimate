@@ -179,12 +179,24 @@ it('lists projects by name, leaves the current project unfocusable, and an agent
   expect(document.activeElement).toBe(rows[1])
   rows[1].blur()
   flush()
+  const inbox = container.querySelector<HTMLAnchorElement>(
+    'a[aria-label^="Open Ultimate Eval’s Inbox"]',
+  )!
+  expect([inbox.getAttribute('href'), inbox.title, inbox.textContent]).toEqual([
+    'http://127.0.0.1:4748/?inbox=',
+    'Open Ultimate Eval’s Inbox · http://127.0.0.1:4748',
+    '2',
+  ])
 
   rail(container)!.dispatchEvent(new MouseEvent('mouseenter'))
   await advance(149)
   expect(container.textContent).not.toContain('working')
   await advance(1)
   expect(container.textContent).toContain('2 for you · 1 working')
+  const footer = [...container.querySelectorAll('span')].find(
+    (element) => element.textContent === '2 for you',
+  )!
+  expect(footer.closest('a, button')).toBeNull()
   await expectDistinctAgentNames(agent)
 
   const current = agent
@@ -407,6 +419,40 @@ it('gives way to another extension’s rail and to a phone', async () => {
   await advance(60_000)
   expect(calls('list') + calls('pin')).toBe(beside)
   await registry.setLoaders({})
+})
+
+it('keeps same-named remote Inbox links isolated by machine and leaves aggregate counts informational', async () => {
+  harness.projects = [
+    {
+      name: 'my-app',
+      url: 'https://first.example:4747',
+      machine: 'first',
+      current: false,
+      questions: 2,
+    },
+    {
+      name: 'my-app',
+      url: 'https://second.example:4747',
+      machine: 'second',
+      current: false,
+      questions: 3,
+    },
+  ]
+  const container = await mount()
+  await openRail(container)
+  const links = [
+    ...container.querySelectorAll<HTMLAnchorElement>('a[aria-label^="Open My App’s Inbox"]'),
+  ]
+  expect(links.map((link) => link.href)).toEqual([
+    'https://first.example:4747/?inbox=',
+    'https://second.example:4747/?inbox=',
+  ])
+  expect(new Set(links.map((link) => link.ariaLabel)).size).toBe(2)
+  const aggregate = [...container.querySelectorAll('span')].find(
+    (element) => element.textContent === '5 for you',
+  )!
+  expect(aggregate.closest('a, button')).toBeNull()
+  await expectDistinctAgentNames(agent)
 })
 
 it('shows the opening bar after a click until the page is left, shown again, or 15 s pass', async ({

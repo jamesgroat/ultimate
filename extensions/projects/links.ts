@@ -18,7 +18,17 @@ export function target(project: RunningProject, page: Page) {
     : undefined
 }
 
+export function inboxTarget(project: RunningProject, page: Page) {
+  const href = target(project, page)
+  if (!href) return undefined
+  const url = new URL(href)
+  url.searchParams.set('inbox', '')
+  return url.href
+}
+
 export const shownPort = (project: RunningProject, page: Page) =>
   project.machine !== undefined || onLoopback(page)
     ? `:${port(project.url)}`
-    : project.tailnetPort ? `:${project.tailnetPort}` : '—'
+    : project.tailnetPort
+      ? `:${project.tailnetPort}`
+      : '—'
