@@ -278,7 +278,7 @@ function Tree() {
             <For each={agents()} keyed={(agent) => agent.id}>
               {(agent, index) => (
                 <Show
-                  when={agent().label === 'lander' && index() === 0}
+                  when={agent().label === 'lander' && agents()[index() + 1]?.label !== 'lander'}
                   fallback={
                     <div>
                       {tree(agent().id)}
@@ -521,6 +521,11 @@ function StandingRow(props: { id?: ConversationId }) {
   )
   const isUltimate = () => props.id === undefined || props.id === data.ultimateId()
   const lander = () => conversation()?.label === 'lander'
+  const source = createMemo(() =>
+    lander()
+      ? Object.entries(data.index().landerConversations).find(([, id]) => id === props.id)?.[0]
+      : undefined,
+  )
   const name = createMemo(() =>
     lander()
       ? 'lander'
@@ -635,7 +640,15 @@ function StandingRow(props: { id?: ConversationId }) {
                   ULTIMATE
                 </span>
               </Show>
-              <span class="shrink-0 font-mono text-[10px] text-muted-foreground/70">@{name()}</span>
+              <span
+                class={cn(
+                  'font-mono text-[10px] text-muted-foreground/70',
+                  source() ? 'min-w-0 truncate' : 'shrink-0',
+                )}
+                title={source()}
+              >
+                {source() ? source()?.split('/').at(-1) : `@${name()}`}
+              </span>
             </span>
             <span class="flex w-full min-w-0 items-center gap-2 pr-5 font-mono text-[10px] leading-4 text-muted-foreground">
               <Show
@@ -665,7 +678,7 @@ function StandingRow(props: { id?: ConversationId }) {
                   </>
                 }
               >
-                {(id) => <LanderState id={id()} state={state()} />}
+                {(id) => <LanderState id={id()} source={source()} state={state()} />}
               </Show>
             </span>
           </span>
