@@ -83,6 +83,15 @@ function validId(value: unknown): string {
   return id
 }
 const MANIFEST = 'automation.json'
+
+function watcherMode(sub: Pick<Automation, 'schedule' | 'script'>): string {
+  const once = sub.script!.once
+  if (sub.schedule)
+    return `${once ? 'one-shot' : 'recurring'} scheduled check (${JSON.stringify(sub.schedule)}), timeout ${sub.script!.timeout ?? 300}s: inspect once and exit; a quiet exit 0 means nothing changed. Never sleep or loop.`
+  return once
+    ? 'one-shot streaming script: stay alive and poll until the condition holds, then print FIRE and exit. Exiting before FIRE, even with 0, is a failure.'
+    : 'recurring streaming script: stay alive and keep watching, one FIRE per change; print DONE and exit 0 only when nothing is left to watch. Any other exit is a failure.'
+}
 const FAILURE_RESET_AFTER_RUNNING_MS = 3600_000
 const MAX_UNTERMINATED_OUTPUT_BYTES = 256 * 1024
 const exists = (path: string) =>
@@ -390,11 +399,11 @@ export function supervisor(
     [
       `You own automation ${sub.id} "${sub.name}".`,
       `Ask: ${sub.script!.ask}`,
-      `Mode: ${sub.script!.once ? 'one-shot' : 'recurring'}${sub.schedule ? ` scheduled check (${JSON.stringify(sub.schedule)}), timeout ${sub.script!.timeout ?? 300}s; exit 0 quietly when nothing changed, never sleep or loop` : ''}`,
+      `Mode: ${watcherMode(sub)}`,
       `Named secret environment variables: ${sub.script!.secrets?.join(', ') || 'none'}`,
       `Executable: ${runPath(sub)}`,
       `Persistent memory: the folder ${join(folder(sub.id), 'state')} ($AUTOMATION_STATE); keep files inside it, such as $AUTOMATION_STATE/state.json.`,
-      'Before resume, run the script once against that layout with the interpreter its shebang declares (macOS ships bash 3.2: no readarray or mapfile unless the shebang names an interpreter that has them), covering the quiet, FIRE and DONE paths.',
+      'Before resume, test its parsing and FIRE condition against sample input or a dry-run flag, with the interpreter its shebang declares (macOS ships bash 3.2: no readarray or mapfile unless the shebang names an interpreter that has them), covering the quiet, FIRE and DONE paths. Never run the real script by hand when it needs secrets or has side effects: your shell has no secrets, and a hand run can spend the one-shot. Only the supervisor runs it for real.',
       ...(sub.scope === 'project'
         ? [
             `This is a project automation: run and ${MANIFEST} are committed in ${projectDir(sub.id)}, and run starts in ${host.projectRoot}. After you change run, say that the change is uncommitted in the project checkout.`,
