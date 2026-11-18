@@ -275,6 +275,11 @@ function Tree({
     const busy = conversation !== undefined && working.has(conversation.id)
     const latest = Math.max(conversation?.inputAt ?? 0, conversation?.answerAt ?? 0)
     const lander = conversation?.label === 'lander'
+    const source = lander
+      ? Object.entries(workspaceIndex.landerConversations).find(
+          ([, id]) => id === conversation.id,
+        )?.[0]
+      : undefined
     const isUltimate = conversation === undefined || conversation.id === ultimateId
     const shown = conversation !== undefined && conversation.id === shownTop?.id
     const landing =
@@ -321,6 +326,7 @@ function Tree({
         conversation={conversation}
         key={conversation?.id ?? 'ultimate'}
         name={name}
+        source={source}
         presence={
           markKeepsPulsingWhileUserWaits
             ? 'working'
@@ -338,7 +344,13 @@ function Tree({
         shown={shown}
       >
         {lander ? (
-          <LanderState id={conversation.id} index={workspaceIndex} now={now} state={state} />
+          <LanderState
+            id={conversation.id}
+            source={source}
+            index={workspaceIndex}
+            now={now}
+            state={state}
+          />
         ) : (
           <>
             {state === 'working' && conversation ? (
@@ -585,16 +597,9 @@ function Tree({
             className="mb-2 flex flex-col gap-0.5 border-b border-border/60 pb-2"
             role="group"
           >
-            {agents.map((conversation) =>
-              conversation.label === 'lander' ? (
-                <div key={conversation.id}>
-                  {tree(conversation)}
-                  <Landed landings={landings} now={now} />
-                </div>
-              ) : (
-                tree(conversation)
-              ),
-            )}
+            {agents.filter((conversation) => conversation.label === 'lander').map((c) => tree(c))}
+            <Landed landings={landings} now={now} />
+            {agents.filter((conversation) => conversation.label !== 'lander').map((c) => tree(c))}
           </div>
         )}
         <Slot name="sidebar.top" />
