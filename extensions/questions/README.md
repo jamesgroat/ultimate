@@ -34,6 +34,27 @@ you"). Typed input,
 answers to other messages and agent messages leave it open. While it is open, messages starts each of the asker's runs
 with a line listing it by its questions (see [Messages](../messages/README.md)).
 
+## Fork corrective nudge
+
+By default, `questions.nudgeFinalAsk` gives the primary standing Ultimate one corrective continuation when a final
+answer contains a clear prose ask such as “Want me to…” or “Should I…”. Set it to `false` in user or project settings
+to opt out; disabling this optional extension also removes the nudge. This is a fork-specific exception to the
+repository's prompt-only behavioural policy, not a guarantee that every question will be caught.
+
+Only current runs whose placed inputs all come from the user qualify (typed input, a voice utterance, or a Messages
+input attributed to the user). Peer, branch, subagent, automation and unknown or mixed origins are excluded, regardless
+of their model role. Watchdog's automatic retry submissions are excluded by their `watchdog-retry:` request provenance,
+even though they use the same `pi.user` entry kind as typed input. The message tool must be available and the
+conversation must have no open native answer card.
+The heuristic ignores code and quoted text and does not treat arbitrary question marks as asks.
+
+The nudge asks the model to send its actual decision through `message` with `questions` if an answer is needed, or to
+conclude without asking. It never creates a card itself, invents choices or answers a decision. The candidate stays in
+history. A durable receipt follows the original run's first submission across generation handoffs and restarts, allowing
+only one attempt even if the model repeats the prose; a later user run gets its own attempt. Pi may decline the
+continuation when new input or a reset is queued. Ambiguous phrasing and other languages can be missed; a model can
+ignore the nudge, in which case its second final answer is allowed through.
+
 ## Card
 
 Under the outgoing `message` card in the asker's transcript, through messages’ `MessageAnswers` point. One question is
