@@ -51,7 +51,11 @@ async function layout(on: Browser, hasTouch: boolean) {
   const header = page.locator('[data-ui="conversation-header"]')
   await header.waitFor()
   await header.getByRole('button', { name: 'Toggle panel' }).click()
-  await page.locator('aside.border-l').waitFor()
+  // An overlay panel stays in the page while closed, translated off screen, so wait until it has slid in.
+  await page.waitForFunction(() => {
+    const panel = document.querySelector('aside.border-l')
+    return panel !== null && panel.getBoundingClientRect().right <= innerWidth
+  })
   await page.waitForFunction(() => document.getAnimations().length === 0)
   const regions = await page.evaluate(() => {
     const region = (selector: string) => {
