@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { onLoopback, shownPort, target } from '../links.ts'
+import { inboxTarget, onLoopback, shownPort, target } from '../links.ts'
 import type { RunningProject } from '../refs.ts'
 
 const published: RunningProject = {
@@ -45,4 +45,10 @@ it('uses configured remote URLs and their ports from loopback and tailnet pages'
       expect(shownPort(remote, page)).toBe(port)
     }
   }
+})
+
+it('links a count to the same instance’s Inbox, and to none where the instance has no link', () => {
+  expect(inboxTarget(published, loopback)).toBe('http://127.0.0.1:4747/?inbox=')
+  expect(inboxTarget(published, tailnet)).toBe('https://my-machine.tail1234.ts.net:4752/?inbox=')
+  expect(inboxTarget(unpublished, tailnet)).toBeUndefined()
 })
