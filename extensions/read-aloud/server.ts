@@ -2,17 +2,15 @@ import { createHash } from 'node:crypto'
 import { defineExtension } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { implementAction } from '../../lib/actions.ts'
-import { openaiSecretOrNonOAuthKey, openaiError } from '../../lib/openai.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { SpeakAction } from './refs.ts'
 import type { SpokenSection } from './refs.ts'
 import { plainSpeech, sections, words } from './speech.ts'
 
-const TTS_MODEL = 'gpt-4o-mini-tts'
-const TTS_VOICE = 'marin'
-const TTS_INSTRUCTIONS = 'Calm, warm and clear, at an easy conversational pace.'
 const REWRITE_TIMEOUT_MS = 30_000
-const TTS_TIMEOUT_MS = 60_000
+const TTS_TIMEOUT_MS = 90_000
+const NO_LOCAL_VOICE =
+  'Read aloud needs the speak extension and its open-model venv on this machine (~/.ultimate/extensions/speak/README.md)'
 const MAX_TEXT = 100_000
 const CACHED_SECTIONS = 200
 
@@ -55,24 +53,35 @@ async function rewrite(host: ExtensionHost, markdown: string, signal: AbortSigna
   return text
 }
 
-export async function openaiSpeech(key: string, text: string, signal: AbortSignal) {
-  const response = await fetch('https://api.openai.com/v1/audio/speech', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: TTS_MODEL,
-      voice: TTS_VOICE,
-      input: text,
-      instructions: TTS_INSTRUCTIONS,
-      response_format: 'mp3',
-    }),
-    signal,
-  })
-  if (!response.ok) {
-    const { status, message } = await openaiError(response)
-    throw new Error(`OpenAI speech failed (HTTP ${status})${message ? `: ${message}` : ''}`)
+async function untilAborted<T>(work: Promise<T>, signal: AbortSignal) {
+  const { promise: aborted, reject } = Promise.withResolvers<never>()
+  const abort = () => reject(signal.reason)
+  signal.addEventListener('abort', abort, { once: true })
+  try {
+    return await Promise.race([work, aborted])
+  } finally {
+    signal.removeEventListener('abort', abort)
   }
-  return Buffer.from(await response.arrayBuffer()).toString('base64')
+}
+
+export async function localSpeech(host: ExtensionHost, text: string, signal: AbortSignal) {
+  if (!host.extensions().some((each) => each.name === 'speak' && each.enabled))
+    throw new Error(NO_LOCAL_VOICE)
+  signal.throwIfAborted()
+  let rendered: unknown
+  try {
+    rendered = await untilAborted(
+      host.invoke('speak', 'render', { text, engine: 'mlx' }, signal),
+      signal,
+    )
+  } catch (error) {
+    if (signal.aborted) throw error
+    throw new Error(`${NO_LOCAL_VOICE}: ${String(error)}`, { cause: error })
+  }
+  const { audio, mimeType } = (rendered ?? {}) as { audio?: unknown; mimeType?: unknown }
+  if (typeof audio !== 'string' || typeof mimeType !== 'string')
+    throw new Error('The speak extension returned no audio')
+  return { audio, mimeType }
 }
 
 export default function readAloud(host: ExtensionHost) {
@@ -94,17 +103,16 @@ export const actions = {
     const cached = cache.get(key)
     if (cached) return { sections: parts.length, ...cached }
     const spoken = await rewrite(host, parts[section], signal)
-    const apiKey = await openaiSecretOrNonOAuthKey(host, signal)
-    const audio =
-      apiKey && spoken.trim()
-        ? await openaiSpeech(
-            apiKey,
-            spoken,
-            AbortSignal.any([signal, AbortSignal.timeout(TTS_TIMEOUT_MS)]),
-          )
-        : null
-    cache.set(key, { spoken, audio })
+    const voiced = spoken.trim()
+      ? await localSpeech(
+          host,
+          spoken,
+          AbortSignal.any([signal, AbortSignal.timeout(TTS_TIMEOUT_MS)]),
+        )
+      : { audio: null, mimeType: null }
+    const result = { spoken, ...voiced }
+    cache.set(key, result)
     if (cache.size > CACHED_SECTIONS) cache.delete(cache.keys().next().value!)
-    return { sections: parts.length, spoken, audio }
+    return { sections: parts.length, ...result }
   }),
 }
