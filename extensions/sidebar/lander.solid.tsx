@@ -5,20 +5,18 @@ import { stateTone, stateWord } from '../messages/ui.solid.tsx'
 import type { ConversationState } from '../messages/ui.solid.tsx'
 import { useData } from './state.solid.tsx'
 
-export function LanderState(props: { id: ConversationId; state: ConversationState }) {
+export function LanderState(props: {
+  id: ConversationId
+  source: string | undefined
+  state: ConversationState
+}) {
   const data = useData()
-  const source = createMemo(
-    () =>
-      Object.entries(data.index().landerConversations).find(
-        ([, lander]) => lander === props.id,
-      )?.[0],
-  )
   const landing = createMemo(() =>
-    data.index().queue.some((item) => item.source === source() && item.state === 'landing'),
+    data.index().queue.some((item) => item.source === props.source && item.state === 'landing'),
   )
   const queued = createMemo(
     () =>
-      data.index().queue.filter((item) => item.source === source() && item.state === 'queued')
+      data.index().queue.filter((item) => item.source === props.source && item.state === 'queued')
         .length,
   )
   const latest = createMemo(() => {
