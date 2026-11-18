@@ -19,6 +19,7 @@ import {
   formatTime,
   Header,
   provide,
+  AllProvided,
   Sidebar,
   useEvent,
   useNow,
@@ -33,7 +34,8 @@ import { UnderUltimate } from '../sidebar/ui.tsx'
 import { talkToUltimate } from '../subagents/ui.tsx'
 import { answeredToday, keyOf, lead, previewUrl, selection } from './items.tsx'
 import type { Entry } from './items.tsx'
-import { Waiting } from './ui.tsx'
+import { inboxCount, InboxSourceChip, Waiting } from './ui.tsx'
+import type { InboxStatus } from './ui.tsx'
 
 const SURFACE = 'inbox'
 const WAIT_WARNING_AFTER_MS = 60 * 60_000
@@ -87,8 +89,18 @@ const KindTag = ({ entry }: { entry: Entry }) => (
 const titleOf = (entry: Entry) => (entry.item ? entry.item.title : lead(entry.message.text).title)
 
 function From({ entry }: { entry: Entry }) {
-  if (entry.message) return <Asker id={entry.message.from} />
-  return entry.item.conversation === undefined ? null : <Asker id={entry.item.conversation} />
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <AllProvided input={entry} point={InboxSourceChip}>
+        {(chips) => chips}
+      </AllProvided>
+      {entry.message ? (
+        <Asker id={entry.message.from} />
+      ) : entry.item.conversation === undefined ? null : (
+        <Asker id={entry.item.conversation} />
+      )}
+    </span>
+  )
 }
 
 const blurRowToReleaseAnswerKeys = (row: HTMLButtonElement) => row.blur()
@@ -149,7 +161,9 @@ function List({
   selected,
   onSelect,
   phone,
+  status,
 }: {
+  status: InboxStatus
   items: Entry[]
   now: number
   selected: string | undefined
@@ -160,7 +174,7 @@ function List({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between px-5 pt-4 pb-2">
         <span className="section-label">
-          Waiting on you · <span className={amber}>{items.length}</span>
+          Waiting on you · <span className={amber}>{inboxCount(items.length, status)}</span>
         </span>
         <span className="section-label">oldest first</span>
       </div>
@@ -307,7 +321,15 @@ function Reading({
   )
 }
 
-function Zero({ messages, now }: { messages: readonly Message[]; now: number }) {
+function Zero({
+  messages,
+  now,
+  status,
+}: {
+  messages: readonly Message[]
+  now: number
+  status: InboxStatus
+}) {
   const actions = useUltimate()
   const today = answeredToday(messages, now)
   return (
@@ -316,8 +338,15 @@ function Zero({ messages, now }: { messages: readonly Message[]; now: number }) 
         <span className="flex size-10 items-center justify-center rounded-full bg-muted/60">
           <CheckIcon className="size-5 text-muted-foreground" />
         </span>
-        <h2 className="mt-4 text-[17px] font-semibold tracking-[-0.01em]">Nothing waits on you</h2>
-        <p className="mt-1 text-[14px] text-muted-foreground">Every branch has what it needs.</p>
+        <h2 className="mt-4 text-[17px] font-semibold tracking-[-0.01em]">
+          {status.state === 'complete' ? 'Nothing waits on you' : 'Inbox not up to date'}
+        </h2>
+        <p className="mt-1 text-[14px] text-muted-foreground" role="status">
+          {status.text ??
+            (status.state === 'complete'
+              ? 'Every branch has what it needs.'
+              : 'Some sources are not yet known. There may be more waiting on you.')}
+        </p>
         <Button className="mt-6" onClick={() => void talkToUltimate(actions)}>
           Back to @ultimate
         </Button>
@@ -349,10 +378,22 @@ let linkedKeyAwaitingSurfaceMount: string | undefined
 let keyShownBeforeSurfaceUnmount: string | undefined
 
 function Inbox() {
-  return <Waiting>{(items, messages) => <Surface items={items} messages={messages} />}</Waiting>
+  return (
+    <Waiting>
+      {(items, messages, status) => <Surface items={items} messages={messages} status={status} />}
+    </Waiting>
+  )
 }
 
-function Surface({ items, messages }: { items: Entry[]; messages: readonly Message[] }) {
+function Surface({
+  items,
+  messages,
+  status,
+}: {
+  items: Entry[]
+  messages: readonly Message[]
+  status: InboxStatus
+}) {
   const phone = useViewport() === 'phone'
   const now = useNow(60_000)
   const openBranch = useOpenBranch()
@@ -441,8 +482,10 @@ function Surface({ items, messages }: { items: Entry[]; messages: readonly Messa
     <span className="flex shrink-0 items-center gap-2 text-[13px] font-medium">
       <InboxIcon className="size-4 text-muted-foreground" />
       Inbox
-      {items.length > 0 && (
-        <span className={cn('font-mono text-[11px]', amber)}>{items.length}</span>
+      {(items.length > 0 || status.state !== 'complete') && (
+        <span className={cn('font-mono text-[11px]', amber)}>
+          {inboxCount(items.length, status)}
+        </span>
       )}
     </span>
   )
@@ -455,18 +498,40 @@ function Surface({ items, messages }: { items: Entry[]; messages: readonly Messa
       <Sidebar />
       <main className="flex min-w-0 flex-1 flex-col">
         {!(phone && open && item) && <Header>{title}</Header>}
+        {items.length > 0 && status.text && (
+          <p
+            className="border-b border-border/70 px-5 py-2 text-[12px] text-muted-foreground"
+            role="status"
+          >
+            {status.text}
+          </p>
+        )}
         {!items.length ? (
-          <Zero messages={messages} now={now} />
+          <Zero messages={messages} now={now} status={status} />
         ) : phone ? (
           open && item ? (
             reading
           ) : (
-            <List items={items} now={now} onSelect={select} phone selected={undefined} />
+            <List
+              items={items}
+              now={now}
+              onSelect={select}
+              phone
+              selected={undefined}
+              status={status}
+            />
           )
         ) : (
           <div className="flex min-h-0 flex-1">
             <div className="flex w-[24rem] shrink-0 flex-col border-r border-border/70">
-              <List items={items} now={now} onSelect={select} phone={false} selected={selected} />
+              <List
+                items={items}
+                now={now}
+                onSelect={select}
+                phone={false}
+                selected={selected}
+                status={status}
+              />
             </div>
             {reading}
           </div>
@@ -502,22 +567,26 @@ function InboxLink() {
 }
 
 function useInboxRow(): ReactNode {
-  return <Waiting>{(items) => <InboxRow items={items} />}</Waiting>
+  return (
+    <Waiting>{(items, _messages, status) => <InboxRow items={items} status={status} />}</Waiting>
+  )
 }
 
 function InboxBadge() {
   return (
     <Waiting>
-      {(items) =>
-        items.length > 0 && (
-          <span className={cn('font-mono text-[11px]', amber)}>{items.length}</span>
+      {(items, _messages, status) =>
+        (items.length > 0 || status.state !== 'complete') && (
+          <span className={cn('font-mono text-[11px]', amber)} title={status.text}>
+            {inboxCount(items.length, status)}
+          </span>
         )
       }
     </Waiting>
   )
 }
 
-function InboxRow({ items }: { items: Entry[] }) {
+function InboxRow({ items, status }: { items: Entry[]; status: InboxStatus }) {
   const actions = useUltimate()
   const now = useNow(60_000)
   const active = actions.surface === SURFACE
@@ -530,6 +599,7 @@ function InboxRow({ items }: { items: Entry[] }) {
         active && 'bg-sidebar-accent',
       )}
       data-inbox-sidebar
+      title={status.text}
       onClick={() => actions.showSurface(SURFACE)}
       type="button"
     >
@@ -540,7 +610,7 @@ function InboxRow({ items }: { items: Entry[] }) {
           oldest ? amber : 'text-foreground/70',
         )}
       >
-        Inbox{oldest && ` · ${items.length}`}
+        Inbox{(oldest || status.state !== 'complete') && ` · ${inboxCount(items.length, status)}`}
       </span>
       {oldest && (
         <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
