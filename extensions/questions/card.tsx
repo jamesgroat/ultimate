@@ -2,7 +2,7 @@ import { ROOT } from '@/sdk'
 import { deadline } from '../../lib/timers.ts'
 import type { Cancel } from '../../lib/timers.ts'
 import { MessageCircleQuestionIcon, Undo2Icon } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -71,6 +71,32 @@ function useDurableCard(card: string, questions: Question[]) {
   return [state, change] as const
 }
 
+export function useForgetQuestionCards() {
+  const [, setCards] = useUiState<Record<string, CardState>>(CARDS_KEY, {})
+  return useCallback(
+    (settled: (identity: string) => boolean) => {
+      setCards((old) => {
+        const kept = Object.entries(old).filter(([identity]) => !settled(identity))
+        return kept.length === Object.keys(old).length ? old : Object.fromEntries(kept)
+      })
+    },
+    [setCards],
+  )
+}
+
+export type MessageQuestionsTransport = {
+  answer: (
+    args: { messageId: number; answers?: Answer[]; note?: string; text?: string },
+    options?: { keepalive?: boolean },
+  ) => Promise<unknown>
+  dismiss: (args: { messageId: number }) => Promise<unknown>
+}
+
+const localTransport: MessageQuestionsTransport = {
+  answer: (args, options) => api.action(AnswerAction, args, options),
+  dismiss: (args) => api.action(DismissAction, args),
+}
+
 export function MessageQuestions({
   message,
   keys,
@@ -78,6 +104,8 @@ export function MessageQuestions({
   withActions = true,
   answerWith,
   sendLabel,
+  transport = localTransport,
+  identity,
 }: {
   message: Message
   keys?: boolean
@@ -85,15 +113,17 @@ export function MessageQuestions({
   withActions?: boolean
   answerWith?: (answer: Reply, keepalive?: boolean) => Promise<unknown>
   sendLabel?: string
+  transport?: MessageQuestionsTransport
+  identity?: string
 }) {
   const questions = openQuestions(message)
-  const card = cardKey(message.id)
+  const card = identity ?? cardKey(message.id)
   const shown = useKeys(card)
   if (!waitsOnUser(message)) return null
   const answer = (reply: Reply, keepalive?: boolean) =>
     answerWith
       ? answerWith(reply, keepalive)
-      : api.action(AnswerAction, { messageId: message.id, ...reply }, { keepalive })
+      : transport.answer({ messageId: message.id, ...reply }, { keepalive })
   return (
     <Card
       card={card}
@@ -111,7 +141,7 @@ export function MessageQuestions({
         ) : null
       }
       {...(sendLabel === undefined ? {} : { sendLabel })}
-      dismiss={() => api.action(DismissAction, { messageId: message.id })}
+      dismiss={() => transport.dismiss({ messageId: message.id })}
       {...(className === undefined ? {} : { className })}
     />
   )
