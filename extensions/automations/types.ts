@@ -106,6 +106,7 @@ export type CreateArgs = {
   slug?: string
   to?: string
   key?: string
+  serves?: boolean
 }
 export type Args = Partial<CreateArgs> & {
   action: string

@@ -16,6 +16,7 @@ import { actingAs } from '../../lib/acting-as.ts'
 import { imagesParameter } from './images.ts'
 import { send } from './send.ts'
 import { serve, Started } from './addresses.ts'
+import { handoverLine } from '../../lib/message-state.ts'
 import { safeToRerun } from '../../lib/replay.ts'
 
 export const branchTool = (host: ExtensionHost) =>
@@ -23,13 +24,14 @@ export const branchTool = (host: ExtensionHost) =>
     name: 'branch',
     deferred: true,
     description:
-      "Start a lineage branch. Its answer returns to you as a reply. Give it a title: one short line naming the work (at most 60 characters), shown in the sidebar and the tally until its summary renames it; without one, the prompt's first 80 characters name it. family names a model family the coordinator runs on instead of its own.",
+      "Start a lineage branch. Its answer returns to you as a reply. Give it a title: one short line naming the work (at most 60 characters), shown in the sidebar and the tally until its summary renames it; without one, the prompt's first 80 characters name it. family names a model family the coordinator runs on instead of its own. While you owe an agent an answer, the branch takes that request over and its result answers it; pass serves: false for unrelated work.",
     parameters: obj({
       prompt: str({ minLength: 1 }),
       title: opt(str({ minLength: 1, maxLength: 60 })),
       root: opt(num()),
       family: opt(str({ minLength: 1 })),
       isolated: opt(bool()),
+      serves: opt(bool()),
       images: opt(imagesParameter),
     }),
     ...safeToRerun(
@@ -103,7 +105,7 @@ export const branchTool = (host: ExtensionHost) =>
           const started = await tx.doc(Started, branch.id)
           started.by = from
 
-          const servedRequest = await serve(tx, from)
+          const servedRequest = input.serves === false ? undefined : await serve(tx, from)
           if (servedRequest) started.serves = servedRequest
         }, ctx)
         id = await api.memo('branch-id', branch.id, ctx)
@@ -137,11 +139,13 @@ export const branchTool = (host: ExtensionHost) =>
               requestId: `sidechat:branch:${api.taskId}:${api.callId}`,
             },
           )
+      const branchId = parseConversationId(id)
+      const serves = (await host.harness().snapshot(Started, branchId, ctx))?.serves
       return {
         output: [
           {
             type: 'text',
-            text: `Branch #${id} started; message ${message} sent.`,
+            text: `Branch #${id} started; message ${message} sent.${handoverLine(`#${id}`, serves)}`,
           },
         ],
       }

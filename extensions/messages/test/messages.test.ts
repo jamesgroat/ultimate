@@ -2404,6 +2404,45 @@ it("keeps another Ultimate's request open through interim answers and closes it 
   await f.opened.root.waitForIdle(context)
   expect(other.posted).toHaveLength(3)
 })
+it("answers another Ultimate's request itself when a branch for unrelated work is started with serves: false", async () => {
+  // Vault #52 (Nov 17): an unrelated branch took over Life's billing request 537, so #52's envelope went out interim,
+  // and the branch's later result answered 537 with another request's text.
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  const tool = (await f.opened.root.agent(context)).deferred.find((t) => t.name === 'branch')!
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots = [1 as ConversationId]
+    await configure(tx, f.opened.root.id, { modelTools: { add: [tool] } })
+  }, context)
+  const start = (key: string, serves?: false) =>
+    actions.remote(
+      {
+        key,
+        text: 'BRANCH ' + JSON.stringify({ prompt: `Unrelated ${key}`, isolated: false, serves }),
+        reply: true,
+        from,
+      },
+      f.action(),
+    )
+  const branchResult = () =>
+    f.transcripts
+      .flatMap((t) => JSON.parse(t) as { role: string; toolName?: string; content: unknown }[])
+      .findLast((m) => m.role === 'toolResult' && m.toolName === 'branch')!.content as {
+      text: string
+    }[]
+  const handedOn = await start('handed')
+  await until(() => other.posted.length === 1)
+  expect(other.posted[0].body).toMatchObject({ key: 'handed', interim: expect.any(Number) })
+  expect(branchResult()[0].text).toContain(
+    `now works on @ultimate@poe2-rust on ${hostname()}'s message ${handedOn}`,
+  )
+  await f.opened.root.waitForIdle(context)
+  await start('kept', false)
+  await until(() => other.posted.length === 2)
+  expect(other.posted[1].body).toMatchObject({ key: 'kept', failed: false })
+  expect(other.posted[1].body).not.toHaveProperty('interim')
+  expect(branchResult()[0].text).toMatch(/^Branch #\d+ started; message \d+ sent\.$/)
+})
 it('takes interim replies as notes and wakes the asker once, with the result', async () => {
   const other = await otherUltimate(() => [200, { result: 9 }])
   const f = await remoteFixture(other.url)
