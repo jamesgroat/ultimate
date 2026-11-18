@@ -75,7 +75,14 @@ export const Runs = defineDoc<Record<string, Run>>({
  * The definition a conversation was configured from: children (including automation runs) and standing agents. An agent
  * made on the fly has none: `adhoc`, so nothing looks a definition up by its label.
  */
-export const Profile = defineDoc<{ definition?: string; adhoc?: true }>({
+export const Profile = defineDoc<{
+  definition?: string
+  adhoc?: true
+  /** Creation time of a new child; absent on older children and standing conversations. */
+  createdAt?: number
+  /** The caller supplied a model or family override, rather than inheriting or resolving a definition. */
+  explicitModel?: true
+}>({
   kind: 'ultimate.agent-profile',
   checkpointWhen: () => false,
   version: 1,
@@ -97,8 +104,8 @@ export type SubagentsService = {
   ) => ReturnType<typeof createChild>
   /**
    * Refresh, inside `tx`, conversation `id` from `definition` (read fresh, e.g. with `discoverAgents`) over
-   * `parentAgent`: its current tools, extensions and instructions; the model and thinking chosen in it stay unless the
-   * definition pins them.
+   * `parentAgent`: its current tools, extensions and instructions. Manual/Auto model, thinking and family selections
+   * survive even definition pins; without recorded selection intent, pins apply over its current model and thinking.
    */
   reconfigure: (
     tx: Tx,
