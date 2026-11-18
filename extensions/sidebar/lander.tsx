@@ -5,16 +5,17 @@ import type { useWorkspaceIndex } from '../workspaces/ui.tsx'
 
 export function LanderState({
   id,
+  source,
   index,
   now,
   state,
 }: {
   id: number
+  source: string | undefined
   index: ReturnType<typeof useWorkspaceIndex>
   now: number
   state: ConversationState
 }) {
-  const source = Object.entries(index.landerConversations).find(([, lander]) => lander === id)?.[0]
   const landing = index.queue.some((item) => item.source === source && item.state === 'landing')
   const queued = index.queue.filter(
     (item) => item.source === source && item.state === 'queued',
