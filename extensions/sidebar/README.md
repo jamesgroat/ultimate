@@ -48,7 +48,8 @@ section of the `sidebar.top` slot draws the same heading. Top to bottom:
 
 - **Project**: its colour bar, name, path and repository, opening History; the chevron and the Memory row (or, folded, its
   brain count).
-- **@ultimate**, then the **Agents** group: the lander first, with its **Landed · N** section right under its row,
+- **@ultimate**, then the **Agents** group: one lander row per source repository, with the repository folder name
+  beside `Lander` and its full path on hover. A single combined **Landed · N** section follows these rows,
   aligned with the other sections, then other standing agents.
 - **Landed**: the latest landings of every root (lineage's `recent {id, types: ['landed'], limit: 20}`), newest
   first, all landings of one feature folded into one row: its feature tag (its title when it has none), `×N` when it
