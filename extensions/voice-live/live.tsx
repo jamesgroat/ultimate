@@ -4,8 +4,8 @@ import { api, errorMessage, events } from '@/sdk'
 import type { ActionRef } from '@/sdk'
 import { playNotes, voiceQuestions } from '../sounds/ui.tsx'
 import type { Note } from '../sounds/ui.tsx'
-import { StatusAction } from './refs.ts'
-import type { VoiceEngine, VoiceStatus } from './refs.ts'
+import { StatusAction, VersionAction } from './refs.ts'
+import type { VoiceEngine, VoiceStatus, VoiceVersion } from './refs.ts'
 import { NUDGE_FIRST_MS, NUDGE_REPEAT_MS } from './pause.ts'
 import { IDLE_MS } from './relay.ts'
 import type { LiveEvent } from './relay.ts'
@@ -33,6 +33,16 @@ export type VoiceMode = {
 }
 
 let pageMode: VoiceMode = { phase: 'off', muted: false, front: false }
+
+let loaded: VoiceVersion | undefined
+api.action(VersionAction).then(
+  (version) => {
+    loaded = version
+    for (const listener of listeners) listener()
+  },
+  (error: unknown) => console.warn('Voice: version', error),
+)
+export const loadedVersion = () => loaded
 let session: LiveSession | undefined
 let startupSpeech: { text: string; entry?: number; forEar?: boolean }[] = []
 let cancelled = false
@@ -320,6 +330,7 @@ export async function open(speech?: string, entry?: number, forEar?: boolean): P
       action: callTypedAction,
       onEvent,
       onError: (error) => publishMode({ problem: describe(error) }),
+      loaded,
       onLine: () =>
         playNotes(alwaysOnCues.heard, 0.035).catch((error: unknown) =>
           console.warn('Voice cue failed', error),

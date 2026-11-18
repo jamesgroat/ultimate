@@ -75,6 +75,7 @@ import type { VoiceAnswer, VoiceGo, VoiceLine } from './refs.ts'
 const KEYS = 'alt+v'
 const useMode = () => useSyncExternalStore(live.subscribe, live.voiceMode)
 
+const useLoaded = () => useSyncExternalStore(live.subscribe, live.loadedVersion)
 function useIds() {
   const main = useDocOf(ROOT, StandingDoc)?.ultimate
   const voice = useDocOf(ROOT, StandingDoc)?.voice
@@ -927,6 +928,20 @@ function StepMark({
   )
 }
 
+function Loaded() {
+  const loaded = useLoaded()
+  if (!loaded) return null
+  return (
+    <span
+      className="order-last basis-full text-right font-mono text-[10px] text-muted-foreground/60"
+      data-voice-loaded
+      title={`voice-live client ${loaded.client}, clone ${loaded.commit}`}
+    >
+      {loaded.commit} · {loaded.client}
+    </span>
+  )
+}
+
 function VoiceDock({ core }: { core: ReactNode }) {
   const id = useConversation((conversation) => conversation.id)
   const { voice } = useIds()
@@ -964,6 +979,7 @@ function VoiceDock({ core }: { core: ReactNode }) {
           <StepMark mode={mode} step={step} />
           <StepText mode={mode} step={step} />
         </div>
+        <Loaded />
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {off || asleep || recoverable(step) ? (
             <button
@@ -1423,7 +1439,7 @@ function UtteranceRow({ entry }: { entry: EntryRecord }) {
 
 function HeardRow({ entry }: { entry: EntryRecord }) {
   if (!VoiceHeardEntry.is(entry)) return null
-  const { text, raw } = entry.data
+  const { text, raw, turn } = entry.data
   return (
     <Message className="mt-4 first:mt-0" data-voice-line="user" from="user">
       <MessageContent className="group-[.is-user]:bg-secondary/50 group-[.is-user]:text-[13px] group-[.is-user]:text-foreground/80">
@@ -1432,6 +1448,18 @@ function HeardRow({ entry }: { entry: EntryRecord }) {
         {raw && (
           <span className="block text-[11px] text-muted-foreground" data-voice-raw>
             heard “{raw}”
+          </span>
+        )}
+
+        {turn && (
+          <span className="block font-mono text-[10.5px] text-muted-foreground" data-voice-turn>
+            {[
+              turn.rule,
+              turn.why !== turn.rule.replace('-', ' ') && turn.why,
+              turn.probability !== undefined && `smart ${turn.probability.toFixed(2)}`,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
           </span>
         )}
       </MessageContent>

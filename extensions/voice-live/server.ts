@@ -7,6 +7,9 @@ import type {
   ToolTaskInput,
   Tx,
 } from '@earendil-works/pi-durable'
+import { createHash } from 'node:crypto'
+import { appendFile, mkdir, readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { BACKGROUND_CONTEXT as context, awaitWithContext } from '@earendil-works/chord/context'
 import {
   AssistantEntry,
@@ -28,6 +31,7 @@ import {
   openaiError,
 } from '../../lib/openai.ts'
 import type { OpenAiError } from '../../lib/openai.ts'
+import { git } from '../../lib/git.ts'
 import { formatAgo } from '../../lib/ago.ts'
 import { openQuestion } from '../../lib/message-state.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
@@ -39,12 +43,14 @@ import { ConversationsApi } from '../conversations/api.ts'
 import { LineageApi } from '../lineage/api.ts'
 import {
   AskedAction,
+  DiagnoseAction,
   EndAction,
   HeardAction,
   LogAction,
   StartAction,
   StartLocalAction,
   StatusAction,
+  VersionAction,
 } from './refs.ts'
 import {
   VoiceLineEntry,
@@ -63,6 +69,8 @@ import type {
   VoicePause,
   VoiceQuestion,
   VoiceSession,
+  VoiceTurnNote,
+  VoiceVersion,
 } from './refs.ts'
 import { voiceBrief } from './brief.ts'
 import { safeToRerun } from '../../lib/replay.ts'
@@ -126,6 +134,46 @@ export async function voiceTurns(
   return { turns: turns ?? 'auto', endPhrases: endPhrases ?? END_PHRASES }
 }
 
+export async function voiceDiagnostics(host: Pick<ExtensionHost, 'userHome' | 'projectSettings'>) {
+  const user = (await readSettings(userSettingsPath(host.userHome)).catch(meansNone)) ?? {}
+  for (const settings of [await host.projectSettings(), user]) {
+    const value = (settings as { voiceLive?: { diagnostics?: unknown } }).voiceLive?.diagnostics
+    if (typeof value === 'boolean') return value
+  }
+  return false
+}
+
+const CLIENT_FILES = [
+  'web.tsx',
+  'live.tsx',
+  'session.ts',
+  'session-local.ts',
+  'turn.ts',
+  'pause.ts',
+  'relay.ts',
+  'refs.ts',
+]
+let versionRead: Promise<VoiceVersion> | undefined
+const version = () =>
+  (versionRead ??= (async () => {
+    const client =
+      (await Promise.all(CLIENT_FILES.map((file) => readFile(join(import.meta.dirname, file))))
+        .then((files) => {
+          const digest = createHash('sha256')
+          for (const file of files) digest.update(file)
+          return digest.digest('hex').slice(0, 8)
+        })
+        .catch(meansNone)) ?? 'unknown'
+    const commit =
+      (await git(import.meta.dirname, 'rev-parse', '--short', 'HEAD').catch(meansNone)) ?? 'unknown'
+    const dirty =
+      (await git(import.meta.dirname, 'status', '--porcelain', '.').catch(meansNone)) ?? ''
+    return { commit: dirty ? `${commit}+dirty` : commit, client }
+  })())
+
+const diagnosticsDir = (host: Pick<ExtensionHost, 'home'>) =>
+  join(host.home, 'voice-live', 'diagnostics')
+
 const NO_LOCAL =
   'Local voice needs the speak extension and its open-model venv (~/.ultimate/extensions/speak/README.md)'
 
@@ -168,7 +216,16 @@ const ForwardReceipt = defineDoc<{ scheduled: boolean }>({
   scope: 'task',
   initial: () => ({ scheduled: false }),
 })
-export const userActions = ['status', 'start', 'startLocal', 'heard', 'asked', 'log', 'end']
+export const userActions = [
+  'status',
+  'start',
+  'startLocal',
+  'heard',
+  'asked',
+  'log',
+  'end',
+  'diagnose',
+]
 const terminal = {
   status: 'terminal',
   outcome: { status: 'completed', result: null },
@@ -589,6 +646,25 @@ async function sessionBrief(host: ExtensionHost, engine: VoiceEngine): Promise<V
   )
 }
 
+async function appendDiagnostic(
+  host: Pick<ExtensionHost, 'home'>,
+  session: string,
+  record: Record<string, unknown>,
+) {
+  const dir = diagnosticsDir(host)
+  await mkdir(dir, { recursive: true })
+  await appendFile(
+    join(dir, `${session}.jsonl`),
+    `${JSON.stringify({ at: new Date().toISOString(), ...record })}\n`,
+  )
+}
+
+const turnNote = ({ rule, why, probability }: VoiceTurnNote): VoiceTurnNote => ({
+  rule: rule.slice(0, 20),
+  ...(typeof why === 'string' ? { why: why.slice(0, 80) } : {}),
+  ...(typeof probability === 'number' ? { probability } : {}),
+})
+
 async function begin(
   host: ExtensionHost,
   id: ConversationId,
@@ -624,8 +700,27 @@ export const actions = {
     const status = await localStatus(host, signal)
     if (!status.available) throw new Error(status.reason)
     const id = await host.need(SubagentsApi).standing('voice', context)
-    await begin(host, id, `local-${crypto.randomUUID()}`, sessionBrief(host, 'local'))
-    return { conversation: id, pause: await voicePause(host), ...(await voiceTurns(host)) }
+    const session = `local-${crypto.randomUUID()}`
+    await begin(host, id, session, sessionBrief(host, 'local'))
+    const settings = {
+      pause: await voicePause(host),
+      ...(await voiceTurns(host)),
+      diagnostics: await voiceDiagnostics(host),
+    }
+    if (settings.diagnostics)
+      await appendDiagnostic(host, session, { event: 'server', ...(await version()), ...settings })
+    return { conversation: id, session, ...settings }
+  }),
+  version: implementAction(VersionAction, () => version()),
+  diagnose: implementAction(DiagnoseAction, async (args, { host }) => {
+    const { session, event, ...rest } =
+      args && typeof args === 'object' && !Array.isArray(args) ? args : ({} as never)
+    if (typeof session !== 'string' || !/^local-[\w-]+$/.test(session))
+      throw new Error('Expected a local session id')
+    if (typeof event !== 'string' || !event) throw new Error('Expected an event')
+    if (!(await voiceDiagnostics(host))) return {}
+    await appendDiagnostic(host, session, { event, ...rest })
+    return {}
   }),
   start: implementAction(StartAction, async (args, { host, signal }) => {
     const sdp = args && typeof args === 'object' && !Array.isArray(args) ? args.sdp : undefined
@@ -678,7 +773,7 @@ export const actions = {
     return { sdp: answer.transport.sdp, conversation: id }
   }),
   heard: implementAction(HeardAction, async (args, { host }) => {
-    const { text, raw, unsure } =
+    const { text, raw, unsure, turn } =
       args && typeof args === 'object' && !Array.isArray(args) ? args : {}
     if (typeof text !== 'string' || !text.trim()) throw new Error('Expected text')
     const misheard =
@@ -697,6 +792,9 @@ export const actions = {
             text: text.trim(),
             ...(misheard ? { raw: misheard } : {}),
             ...(unsure === true ? { unsure: true } : {}),
+            ...(turn && typeof (turn as Partial<VoiceTurnNote>).rule === 'string'
+              ? { turn: turnNote(turn as VoiceTurnNote) }
+              : {}),
           },
         },
         content: `The user, by voice (live transcript, may contain mistakes${
