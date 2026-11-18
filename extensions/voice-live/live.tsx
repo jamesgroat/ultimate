@@ -6,6 +6,7 @@ import { playNotes, voiceQuestions } from '../sounds/ui.tsx'
 import type { Note } from '../sounds/ui.tsx'
 import { StatusAction } from './refs.ts'
 import type { VoiceEngine, VoiceStatus } from './refs.ts'
+import { NUDGE_FIRST_MS, NUDGE_REPEAT_MS } from './pause.ts'
 import { IDLE_MS } from './relay.ts'
 import type { LiveEvent } from './relay.ts'
 import { startMicInGesture } from './session.ts'
@@ -22,15 +23,18 @@ export type VoiceMode = {
   front: boolean
   floor?: 'user' | 'voice'
   partial?: string
+  holding?: boolean
+  dictating?: boolean
+  endPhrase?: string
   sending?: { text: string; at: number }
   speaking?: { entry: number; words: number; at: number }
   engine?: VoiceEngine
+  blocked?: boolean
 }
 
 let pageMode: VoiceMode = { phase: 'off', muted: false, front: false }
 let session: LiveSession | undefined
-
-let startupSpeech: { text: string; entry?: number }[] = []
+let startupSpeech: { text: string; entry?: number; forEar?: boolean }[] = []
 let cancelled = false
 let closeInFlight: Promise<void> | undefined
 let stopTicking: Cancel | undefined
@@ -117,15 +121,34 @@ function stopConnectingHum() {
   })
 }
 
+let wakeLock: Promise<WakeLockSentinel | undefined> | undefined
+function holdScreen(live: boolean) {
+  if (live && !wakeLock && document.visibilityState === 'visible' && 'wakeLock' in navigator)
+    wakeLock = navigator.wakeLock.request('screen').catch((error: unknown) => {
+      console.warn('Voice: screen wake lock refused', error)
+      return undefined
+    })
+  else if (!live && wakeLock) {
+    const held = wakeLock
+    wakeLock = undefined
+    void held
+      .then((sentinel) => sentinel?.release())
+      .catch((error: unknown) => console.warn('Voice: wake lock release failed', error))
+  }
+}
+const onVisible = () => {
+  if (document.visibilityState !== 'visible') wakeLock = undefined
+  else holdScreen(pageMode.phase === 'live')
+}
+document.addEventListener('visibilitychange', onVisible)
+
 function publishMode(next: Partial<VoiceMode>, failed = false) {
   const cue = failed ? alwaysOnCues.failed : next.phase && cueOf(pageMode.phase, next.phase)
-
   if (next.phase === 'starting' && pageMode.phase !== 'starting') startConnectingHum()
   else if (next.phase && next.phase !== 'starting') stopConnectingHum()
   pageMode = { ...pageMode, ...next }
-
   voiceQuestions(pageMode.phase !== 'off')
-
+  if (next.phase) holdScreen(next.phase === 'live')
   if (cue) playNotes(cue, 0.08).catch((error: unknown) => console.warn('Voice cue failed', error))
   for (const listener of listeners) listener()
 }
@@ -158,6 +181,12 @@ export function stopSpeaking() {
   session?.stopSpeaking?.()
   publishMode({ speaking: undefined })
 }
+export function resumeAudio() {
+  session
+    ?.resumeAudio?.()
+    .then(() => publishMode({ blocked: undefined }))
+    .catch((error: unknown) => publishMode({ problem: describe(error) }))
+}
 export const analyser = () => session?.analyser
 
 const describe = (error: unknown) => {
@@ -177,6 +206,7 @@ function release(next: VoiceMode['phase'], problem?: string) {
     floor: undefined,
     partial: undefined,
     speaking: undefined,
+    blocked: undefined,
     ...(problem ? { problem } : {}),
   })
   if (!current) return
@@ -198,13 +228,25 @@ function tick() {
       floor: undefined,
       partial: undefined,
       speaking: undefined,
+      blocked: undefined,
       problem: pageMode.problem ?? 'The session closed',
     })
     return
   }
   const now = Date.now()
+  const blocked = session.audioBlocked?.() || undefined
+  if (blocked !== pageMode.blocked) publishMode({ blocked })
   const floor = session.relay.hearing() ? 'user' : session.relay.talking() ? 'voice' : undefined
   const partial = session.relay.partial() || undefined
+  const holding = session.holding?.() || undefined
+  const dictating = session.dictating?.() || undefined
+  const endPhrase = session.endPhrase
+  if (
+    holding !== pageMode.holding ||
+    dictating !== pageMode.dictating ||
+    endPhrase !== pageMode.endPhrase
+  )
+    publishMode({ holding, dictating, endPhrase })
   if (floor !== pageMode.floor || partial !== pageMode.partial)
     publishMode({
       floor,
@@ -227,10 +269,9 @@ function tick() {
     else if (words !== pageMode.speaking.words)
       publishMode({ speaking: { ...pageMode.speaking, words } })
   }
-
   const nudgeDue =
     requestOrNudgeAtMs !== undefined &&
-    now - requestOrNudgeAtMs >= (nudgedRequest ? 45_000 : 20_000)
+    now - requestOrNudgeAtMs >= (nudgedRequest ? NUDGE_REPEAT_MS : NUDGE_FIRST_MS)
   if (nudgeDue) {
     requestOrNudgeAtMs = now
     nudgedRequest = true
@@ -258,8 +299,8 @@ function onEvent(event: LiveEvent) {
 const callTypedAction = <A, R>(ref: ActionRef<A, R>, args: A) =>
   api.action(ref as ActionRef<null, R>, args as null)
 
-export async function open(speech?: string, entry?: number): Promise<void> {
-  if (speech) startupSpeech.push({ text: speech, entry })
+export async function open(speech?: string, entry?: number, forEar?: boolean): Promise<void> {
+  if (speech) startupSpeech.push({ text: speech, entry, forEar })
   const sessionOccupied =
     pageMode.phase === 'starting' || pageMode.phase === 'live' || pageMode.phase === 'ending'
   if (sessionOccupied) return
@@ -304,7 +345,7 @@ export async function open(speech?: string, entry?: number): Promise<void> {
   publishMode({ phase: 'live', billedSince: Date.now() })
   try {
     if (pageMode.muted) started.mute()
-    for (const item of startupSpeech) say(started, item.text, item.entry)
+    for (const item of startupSpeech) say(started, item.text, item.entry, item.forEar)
   } catch (error) {
     publishMode({ problem: describe(error) })
   }
@@ -331,25 +372,23 @@ export function note(text: string) {
   }
 }
 
-function say(live: LiveSession, text: string, entry?: number) {
-  live.speak(text)
-  publishMode({
-    speaking: entry === undefined ? undefined : { entry, words: 0, at: Date.now() },
-  })
+function say(live: LiveSession, text: string, entry?: number, forEar?: boolean) {
+  live.speak(text, { forEar })
+  publishMode({ speaking: entry === undefined ? undefined : { entry, words: 0, at: Date.now() } })
 }
 
-export function hear(text: string, entry?: number) {
+export function hear(text: string, entry?: number, forEar?: boolean) {
   if (pageMode.phase === 'live' && session) {
     try {
-      say(session, text, entry)
+      say(session, text, entry, forEar)
     } catch (error) {
       publishMode({ problem: describe(error) })
     }
-  } else if (pageMode.phase === 'starting') startupSpeech.push({ text, entry })
+  } else if (pageMode.phase === 'starting') startupSpeech.push({ text, entry, forEar })
   else if (pageMode.phase === 'paused') {
     const needsWakeGesture = navigator.userActivation && !navigator.userActivation.hasBeenActive
     if (needsWakeGesture) publishMode({ waiting: text })
-    else void open(text, entry)
+    else void open(text, entry, forEar)
   }
 }
 
