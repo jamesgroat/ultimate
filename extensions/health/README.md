@@ -69,10 +69,11 @@ however many there are; a provider failing in two classes in turn has two episod
 `delivered` on disk only after its notice was posted; until then each failure (or exhausted reading) of it delivers
 again under the same key, so a post that failed, found no notices service or was cut off by a restart is retried. One
 delivery per key runs at a time. Writes and deliveries go through one queue per project home that outlives facet
-reloads. Release stops admitting reports and waits for every one it admitted, from its first write to its post. The key is `health:<provider>:<class>:<epoch ms of the first failure>`; the notices channel never reposts a
-key, also after Done. Every episode of a provider posts into the slot `health:<provider>`, so a new episode replaces
-the provider's notice while it still waits, and a flapping provider keeps a single Inbox item (Life's notices also
-coalesce more than three posts an hour into one slot).
+reloads. Release stops admitting reports and waits for every one it admitted, from its first write to its post.
+
+The key is `health:<provider>:<class>:<epoch ms of the first failure>`; the notices channel never reposts a key, also
+after Done. Every episode of a provider posts into the slot `health:<provider>`, so a flapping provider keeps a single
+Inbox item: Life's notices fold a post into the notice still waiting in its slot (×N).
 
 **Subscription exhaustion.** Health watches subscription routing's root document (`subscription-routing.state`, when
 that extension is loaded; when it is not yet, health tries to attach again every minute until it can). When a pair's reading for a provider flips to `exhausted`, that opens a `usage` episode with
