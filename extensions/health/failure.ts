@@ -1,7 +1,8 @@
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import { isRetryableAssistantError } from '@earendil-works/pi-ai/utils/retry'
 import { failureKind } from './store.ts'
-export type FailureClass = 'billing' | 'usage' | 'auth' | 'other'
+import type { FailureClass, ProviderReport } from './api.ts'
+export type { FailureClass }
 
 const BILLING = /\bcredits?\b|insufficient[ _]funds|billing_error|payment required|out of budget/i
 const USAGE =
@@ -39,4 +40,18 @@ export function classifyFailure(
   if (BILLING.test(text)) return { class: 'billing' }
   if (kind === 'capacity' && !retryable) return withReset('usage')
   return { class: 'other' }
+}
+
+export function failureReport(
+  provider: string,
+  failure: { status?: number; error: string },
+  now = Date.now(),
+): ProviderReport {
+  const classified = classifyFailure(failure, now)
+  return {
+    provider,
+    ok: false,
+    failure: classified.class,
+    ...(classified.resetsAt ? { resetsAt: classified.resetsAt } : {}),
+  }
 }

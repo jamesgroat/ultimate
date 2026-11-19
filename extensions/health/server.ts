@@ -17,7 +17,8 @@ import { LoginChanged } from '../models/api.ts'
 import { NoticesApi } from '../notices/api.ts'
 import type { Flip, HealthEntry } from './store.ts'
 import { Changed } from './refs.ts'
-import { classifyFailure } from './failure.ts'
+import { failureReport } from './failure.ts'
+import type { FailureClass } from './failure.ts'
 import { markDelivered, noticeKey, noticeSlot, pending, step, updateEpisodes } from './episodes.ts'
 import type { EpisodeQueue, NoticeClass, Undelivered } from './episodes.ts'
 import { every } from '../../lib/timers.ts'
@@ -96,7 +97,7 @@ export function notifier(options: {
   }
   const open = async (
     provider: string,
-    outcome: { ok: true } | { ok: false; class: ReturnType<typeof classifyFailure>['class'] },
+    outcome: { ok: true } | { ok: false; class: FailureClass },
     resetsAt?: number,
   ) => {
     const at = options.now()
@@ -131,15 +132,7 @@ export function notifier(options: {
   }
   async function reportOutcome(report: ProviderReport) {
     if (report.ok) return open(report.provider, { ok: true })
-    const failure = classifyFailure(
-      { status: report.status, error: report.error ?? '' },
-      options.now(),
-    )
-    await open(
-      report.provider,
-      { ok: false, class: failure.class },
-      report.resetsAt ?? failure.resetsAt,
-    )
+    await open(report.provider, { ok: false, class: report.failure }, report.resetsAt)
   }
   async function readRouting(state: unknown) {
     const now = exhaustedProviders(state)
@@ -307,7 +300,7 @@ export default function health(host: ExtensionHost) {
             'a provider notice is advisory: the next failure of the same provider posts it',
             report(
               message.stopReason === 'error'
-                ? { provider: message.provider, ok: false, error: message.errorMessage ?? 'error' }
+                ? failureReport(message.provider, { error: message.errorMessage ?? 'error' })
                 : { provider: message.provider, ok: true },
             ),
           )

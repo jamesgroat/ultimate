@@ -81,5 +81,7 @@ the reading's `resetsAt`, the same episode a model error opens, so the two paths
 posts nothing.
 
 **Reporting in.** Every real model response feeds the episodes. Extensions that call a provider outside the model
-catalogue report each outcome with `HealthApi.report({ provider, ok, status?, error?, resetsAt? })` (`want` it);
-`classify` reports TypeSafe this way. The error is only classified, never stored or shown.
+catalogue report each outcome with `HealthApi.report` (`want` it): `{ provider, ok: true }`, or
+`{ provider, ok: false, failure, resetsAt? }` with the failure's class (`billing`, `usage`, `auth` or `other`). A
+report never carries the error's text: service arguments are traced, so the caller classifies its own failure.
+`classify` reports TypeSafe this way, from the HTTP status (402 billing, 401 and 403 auth).

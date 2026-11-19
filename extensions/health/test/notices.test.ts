@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest'
-import { classifyFailure } from '../failure.ts'
+import { classifyFailure, failureReport } from '../failure.ts'
 import { notifier } from '../server.ts'
 import { noticeFor } from '../notice.ts'
 import { apis, removeTemps, temp, until } from '../../../test/helpers.ts'
@@ -125,12 +125,12 @@ async function setup(home?: string) {
   }
 }
 
-const credits = {
-  provider: 'typesafe',
-  ok: false,
-  status: 402,
-  error: 'no available TypeSafe API credits',
-}
+const credits = failureReport(
+  'typesafe',
+  { status: 402, error: 'no available TypeSafe API credits' },
+  NOW,
+)
+const rejected = failureReport('typesafe', { status: 401, error: 'invalid key' }, NOW)
 
 it('500 consecutive 402s post one notice; a success re-arms, and the next episode replaces it in its slot', async () => {
   const t = await setup()
@@ -168,7 +168,7 @@ it('transient and other failures never post', async () => {
     'fetch failed: ETIMEDOUT',
     '500 server_error',
   ])
-    await t.health.report({ provider: 'openai-codex', ok: false, error })
+    await t.health.report(failureReport('openai-codex', { error }, NOW))
   expect(t.posted).toEqual([])
 })
 
@@ -194,11 +194,9 @@ it('subscription routing exhaustion posts once with its reset, and shares the ep
   expect(t.posted).toEqual([])
   await t.health.routing(plan(true))
   await t.health.routing(plan(true))
-  await t.health.report({
-    provider: 'claude-code',
-    ok: false,
-    error: 'Claude AI usage limit reached',
-  })
+  await t.health.report(
+    failureReport('claude-code', { error: 'Claude AI usage limit reached' }, NOW),
+  )
   expect(t.posted).toHaveLength(1)
   expect(t.posted[0]).toMatchObject({
     slot: 'health:claude-code',
@@ -210,7 +208,7 @@ it('subscription routing exhaustion posts once with its reset, and shares the ep
 it('an episode per class: billing, auth, billing again without a success posts two notices, not three', async () => {
   const t = await setup()
   await t.health.report(credits)
-  await t.health.report({ provider: 'typesafe', ok: false, status: 401, error: 'invalid key' })
+  await t.health.report(rejected)
   await t.health.report(credits)
   expect(t.posted.map((notice) => notice.key.split(':')[2])).toEqual(['billing', 'auth'])
 })
@@ -278,7 +276,7 @@ it('drain waits for a report still blocked on its opening write, and admits noth
   const reporting = t.health.report(credits)
   let drained = false
   const draining = t.health.drain().then(() => (drained = true))
-  await t.health.report({ ...credits, status: 401, error: 'invalid key' })
+  await t.health.report(rejected)
   await new Promise((resolve) => setImmediate(resolve))
   expect(drained).toBe(false)
   blocked.resolve()
@@ -325,7 +323,7 @@ it('a facet released and opened again, as on a failed handoff, keeps closing and
   await cycle(releasers)
   await cycle(openers)
   await health.report({ provider: 'typesafe', ok: true })
-  await health.report({ ...credits, status: 401, error: 'invalid key' })
+  await health.report(rejected)
   expect(posted.map((key) => key.split(':')[2])).toEqual(['billing', 'auth'])
   await cycle(releasers)
 })

@@ -167,14 +167,10 @@ it('reports each TypeSafe outcome to health, which owns the Inbox notice', async
   vi.advanceTimersByTime(cooldownMs)
   expect((await service.ask(request, signal)).model).toBe('jev-1.14.0')
   expect(report.mock.calls.map(([each]) => each)).toEqual([
-    {
-      provider: 'typesafe',
-      ok: false,
-      status: 402,
-      error: 'TypeSafe 402: no available TypeSafe API credits',
-    },
+    { provider: 'typesafe', ok: false, failure: 'billing' },
     { provider: 'typesafe', ok: true },
   ])
+  expect(JSON.stringify(report.mock.calls)).not.toContain('available')
 })
 
 it.each([

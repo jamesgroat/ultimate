@@ -3,7 +3,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { readSecret } from '../../lib/secrets.ts'
 import { inProcess } from '../../lib/errors.ts'
 import { HealthApi } from '../health/api.ts'
-import type { ProviderReport } from '../health/api.ts'
+import type { FailureClass, ProviderReport } from '../health/api.ts'
 import { ClassifyApi } from './api.ts'
 import type { ClassifyAnswer, ClassifyService } from './api.ts'
 
@@ -26,14 +26,17 @@ const rejected: Record<number, string> = {
   402: 'TypeSafe: out of credits',
   403: 'TypeSafe: API key not allowed',
 }
+const failureOf = (status: number): FailureClass =>
+  status === 402 ? 'billing' : status === 401 || status === 403 ? 'auth' : 'other'
+
 export default function classify(host: ExtensionHost) {
   let billingOrAuthPause: { key: string; until: number; error: string } | undefined
-  const reportToHealth = (report: Omit<ProviderReport, 'provider'>) => {
+  const reportToHealth = (report: ProviderReport) => {
     const health = host.want(HealthApi)
     if (health)
       inProcess(
         'health keeps its episodes on disk; a lost report is made up by the next call',
-        health.report({ provider: 'typesafe', ...report }),
+        health.report(report),
       )
   }
   const service: ClassifyService = {
@@ -73,10 +76,10 @@ export default function classify(host: ExtensionHost) {
           }
           host.notice(`${status}; classification paused for ${cooldownMs / 60_000} minutes`)
         }
-        reportToHealth({ ok: false, status: response.status, error })
+        reportToHealth({ provider: 'typesafe', ok: false, failure: failureOf(response.status) })
         throw new Error(error)
       }
-      reportToHealth({ ok: true })
+      reportToHealth({ provider: 'typesafe', ok: true })
       const body: unknown = await response.json()
       if (
         !record(body) ||
