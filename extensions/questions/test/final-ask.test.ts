@@ -29,6 +29,8 @@ import { Messages } from '../../messages/api.ts'
 import { Standing } from '../../subagents/api.ts'
 import questions from '../server.ts'
 import watchdog from '../../watchdog/server.ts'
+import { ClassifyApi } from '../../classify/api.ts'
+import type { ClassifyService } from '../../classify/api.ts'
 
 const ASK = 'Want me to run the QA re-check now, or wait until the change is merged?'
 const card = fauxAssistantMessage(
@@ -47,7 +49,13 @@ afterEach(async () => {
 })
 
 async function fixture(
-  options: { off?: boolean; noMessage?: boolean; restart?: boolean; retry?: boolean } = {},
+  options: {
+    off?: boolean
+    noMessage?: boolean
+    restart?: boolean
+    retry?: boolean
+    classify?: ClassifyService['ask']
+  } = {},
 ) {
   const home = await temp('ultimate-final-ask-')
   cleanups.push(() => removeTemp(home))
@@ -75,6 +83,8 @@ async function fixture(
     emit,
     harness: () => opened.harness,
     implement: () => {},
+    want: (api: unknown) =>
+      api === ClassifyApi && options.classify ? { ask: options.classify } : undefined,
     need: (api: Parameters<typeof idleNeed>[0]) =>
       api.name === 'subagents' ? { residents: async () => [] } : idleNeed(api),
     conversations: () => [],
@@ -311,4 +321,74 @@ it('does not nudge when this conversation already has an open native card', asyn
   ])
   expect(turns).toBe(1)
   expect((await f.log())!.messages).toHaveLength(1)
+})
+
+const SK_MISS =
+  'Two ways forward.\n- **Build now:** go ahead with steps 1–3 (parser, card, tests)?\n- **Wait:** hold for the API.'
+const noul = (p: number) => async () => ({
+  model: 'fake',
+  answers: { ask: { type: 'noul' as const, noul: p } },
+  usage: { inputTokens: 0 },
+})
+
+it('nudges an ask only the classifier catches, and leaves one it scores low alone', async () => {
+  for (const [p, expected] of [
+    [0.93, 2],
+    [0.4, 1],
+  ] as const) {
+    const states: unknown[] = []
+    const f = await fixture({
+      classify: async (request, signal) => {
+        states.push(request.state)
+        expect(signal).toBeInstanceOf(AbortSignal)
+        return noul(p)()
+      },
+    })
+    let turns = 0
+    await f.run([
+      () => {
+        turns++
+        return fauxAssistantMessage([fauxText(SK_MISS + '\n```\nsecret code\n```\n> quoted')])
+      },
+      () => {
+        turns++
+        return card
+      },
+    ])
+    expect(turns).toBe(expected)
+    expect(states).toHaveLength(1)
+    expect(states[0]).toContain('Build now')
+    expect(states[0]).not.toContain('secret code')
+    expect(states[0]).not.toContain('quoted')
+  }
+})
+
+it('falls back to the regex when classify is unavailable, failing or slow', async () => {
+  const never = () => new Promise<never>(() => {})
+  for (const classify of [undefined, async () => Promise.reject(new Error('402')), never]) {
+    const f = await fixture(classify ? { classify } : {})
+    let turns = 0
+    const started = Date.now()
+    await f.run([
+      () => {
+        turns++
+        return fauxAssistantMessage([fauxText(SK_MISS)])
+      },
+    ])
+    expect(turns).toBe(1)
+    expect(Date.now() - started).toBeLessThan(6_000)
+  }
+  const f = await fixture({ classify: never })
+  let turns = 0
+  await f.run([
+    () => {
+      turns++
+      return fauxAssistantMessage([fauxText(ASK)])
+    },
+    () => {
+      turns++
+      return card
+    },
+  ])
+  expect(turns).toBe(2)
 })

@@ -48,7 +48,16 @@ of their model role. Watchdog's automatic retry submissions are excluded by thei
 even though they use the same `pi.user` entry kind as typed input. The message tool must be available and the
 conversation must have no open native answer card.
 The heuristic ignores code and quoted text (a quoted “go” after say or reply still counts) and does not treat arbitrary
-question marks or mentions of a go as asks.
+question marks or mentions of a go as asks. It also catches an ask after a short `**Label:**` and an answer ending in
+“let me know which/whether…”, “tell me which/whether…” or “confirm and I…”.
+
+When the heuristic finds nothing and the optional [classify](../classify/README.md) extension is on, the answer's
+prose (code blocks and quoted lines removed, its last 4,000 characters) goes to TypeSafe's Jev with one yes/no
+question: does it end by asking the user for a go-ahead, choice or decision? A probability of at least 0.8
+(`FINAL_ASK_PROBABILITY`) counts as an ask. This runs only after every other guard passes, so at most once per
+qualifying answer. The classifier path needs a funded TypeSafe account: without a key, out of credits (a 402, which
+pauses classify and makes it throw at once), on any other failure or after 3 seconds, the heuristic's verdict stands and
+the answer yields normally.
 
 The nudge asks the model to send its actual decision through `message` with `questions` if an answer is needed, or to
 conclude without asking. It never creates a card itself, invents choices or answers a decision. The candidate stays in

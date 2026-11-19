@@ -28,3 +28,25 @@ it.each([
 it('still catches question-mark asks', () => {
   expect(finalAsk('Want me to run the QA re-check now?')).toBe(true)
 })
+
+it.each([
+  'Two options.\n- **Build now:** want me to go ahead with steps 1–3 (the parser and the card)?',
+  'Plan is ready. Say go and I start the branch.',
+  'Both work. Let me know which you prefer.',
+  'The fix is staged. Tell me whether to push it.',
+  'Review passed. Confirm and I land it.',
+  'I can do either. Let me know if you would like the smaller one.',
+])('catches a labelled or imperative ask: %s', (text) => {
+  expect(finalAsk(text)).toBe(true)
+})
+
+it.each([
+  'I will go ahead and land it now.',
+  '> Should I keep the old flag?\nYes: I kept it, since two callers read it.',
+  'You asked "should I keep the old flag?" and I kept it.',
+  'Why not? The cache already holds it, so I reused it.',
+  'Let me know if anything breaks; the change is live.',
+  'Tell me which file broke and I will look, but nothing is pending now. Landed.',
+])('leaves a statement, quote or rhetorical question alone: %s', (text) => {
+  expect(finalAsk(text)).toBe(false)
+})
