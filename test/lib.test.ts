@@ -29,6 +29,8 @@ it('masks token-shaped text and keeps ordinary error text readable', () => {
     'AKIAABCDEFGHIJKLMNOP',
     'deadbeef0123456789abcdef01234567',
     'dGhpcyBpcyBhIHNlY3JldCB2YWx1ZQ1==',
+    'passphrase: opensesame',
+    'Set-Cookie: sid=abc',
   ]
   for (const secret of fake) expect(redactSecrets(`failed: ${secret} end`)).toContain('[redacted]')
   expect(redactSecrets('Error: x token=abc123 y')).toBe('Error: x token=[redacted] y')
@@ -39,8 +41,25 @@ it('masks token-shaped text and keeps ordinary error text readable', () => {
   expect(redactSecrets('url: token=abc key: Bearer x')).toBe(
     'url: token=[redacted] key: Bearer [redacted]',
   )
+  expect(redactSecrets('jwt eyJhbGciOi.eyJzdWIi.c2ln end')).toBe('jwt [redacted] end')
+  expect(redactSecrets('clone https://bot:hunter2@host.example/a/b failed')).toBe(
+    'clone https://bot:[redacted]@host.example/a/b failed',
+  )
+  expect(redactSecrets('Authorization: token abc123def end')).toBe('Authorization: [redacted] end')
+  expect(redactSecrets('x-api-key: abcd1234 end')).toBe('x-api-key: [redacted] end')
+  expect(
+    redactSecrets(
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7bq\n-----END RSA PRIVATE KEY-----',
+    ),
+  ).toBe('[redacted]')
+  expect(redactSecrets('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNz cut')).toBe('[redacted]')
+  const labels = 'author: james; keyboard: us; tokenizer: bpe; Unexpected token } in JSON'
+  expect(redactSecrets(labels)).toBe(labels)
+  const started = performance.now()
+  for (const hostile of ['eyJa-', 'key="a ', 'x"', '://a:b']) redactSecrets(hostile.repeat(80_000))
+  expect(performance.now() - started).toBeLessThan(2000)
   const plain =
-    'TimeoutError: locator.waitFor: selector timed out after 60s at /Users/james/src/my-project-2026-backup-directory/file.ts:120 (2026-11-18T20:21:23.000Z)'
+    'TimeoutError: locator.waitFor: selector timed out after 60s at /Users/james/src/my-project-2026-backup-directory/file.ts:120 (2026-11-18T20:21:23.000Z) uuid 123e4567-e89b-12d3-a456-426614174000'
   expect(redactSecrets(plain)).toBe(plain)
 })
 

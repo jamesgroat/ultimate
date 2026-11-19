@@ -1,6 +1,10 @@
 const MASK = '[redacted]'
 
 const RULES: [RegExp, string][] = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, MASK],
+  [/(:\/\/[^\s/:@]*:)[^\s/@]+@/g, `$1${MASK}@`],
+  [/\b(Authorization["']?\s*[:=]\s*["']?)(?!(?:Bearer|Basic)\s)[\w-]+ +[^\s"',]+/gi, `$1${MASK}`],
+  [/(?<![\w-])eyJ[\w-]+\.[\w-]+\.[\w-]*/g, MASK],
   [/\b(Bearer|Basic)\s+[\w.~+/=-]+/gi, `$1 ${MASK}`],
   [/\b(?:sk|pk|rk)-[\w-]{8,}/g, MASK],
   [/\bgh[pousr]_\w{4,}/g, MASK],
@@ -10,7 +14,8 @@ const RULES: [RegExp, string][] = [
 ]
 
 const LABEL = /(?<![\w-])[\w-]+["']?\s*[=:]\s*/g
-const SECRET_LABEL = /key|token|secret|password|passwd|pwd|auth/i
+const SECRET_LABEL =
+  /(?:key|token|secret|password|passwd|pwd|passphrase|credentials?|cookie|auth|authorization)[\d_]*["']?\s*[=:]\s*$/i
 const VALUE = /(?!(?:Bearer|Basic) |\[redacted\])(?:"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|\S+)/y
 
 function maskAssignments(text: string) {
