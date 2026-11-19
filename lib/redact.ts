@@ -2,10 +2,10 @@ const MASK = '[redacted]'
 
 const RULES: [RegExp, string][] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, MASK],
-  [/(:\/\/[^\s/:@]*:)[^\s/@]+@/g, `$1${MASK}@`],
+  [/(:\/\/[^\s/:@"']*:)[^\s/@"']+@/g, `$1${MASK}@`],
   [/\b(Authorization["']?\s*[:=]\s*["']?)(?!(?:Bearer|Basic)\s)[\w-]+ +[^\s"',]+/gi, `$1${MASK}`],
-  [/(?<![\w-])eyJ[\w-]+\.[\w-]+\.[\w-]*/g, MASK],
-  [/\b(Bearer|Basic)\s+[\w.~+/=-]+/gi, `$1 ${MASK}`],
+  [/(?<![\w-])eyJ[\w-]+\.[\w-]+(?:\.[\w-]*)?/g, MASK],
+  [/\b([Bb]earer|BEARER|[Bb]asic|BASIC)\s+(?![a-z]{1,15}(?![\w.~+/=-]))[\w.~+/=-]+/g, `$1 ${MASK}`],
   [/\b(?:sk|pk|rk)-[\w-]{8,}/g, MASK],
   [/\bgh[pousr]_\w{4,}/g, MASK],
   [/\bgithub_pat_\w{4,}/g, MASK],
@@ -37,8 +37,13 @@ const RUN = /(?<![\w+/=-])[\w+/=-]{24,}/g
 
 const gitObjectId = /^[0-9a-f]{40}$/
 
+const absolutePath = /^\/[\w-]+\/[\w/-]*$/
+
 const tokenShaped = (run: string) =>
-  !gitObjectId.test(run) && /\d/.test(run) && run.split(/[-_/.=]/).some((part) => part.length >= 16)
+  !gitObjectId.test(run) &&
+  !absolutePath.test(run) &&
+  /\d/.test(run) &&
+  run.split(/[-_/.=]/).some((part) => part.length >= 16)
 
 export const redactSecrets = (text: string) =>
   maskAssignments(

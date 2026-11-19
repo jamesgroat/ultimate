@@ -9,6 +9,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { SubagentsApi } from '../subagents/api.ts'
 import { MessagesApi } from '../messages/api.ts'
 import { discoverAgents, hostDefault } from '../../lib/agents.ts'
+import { redactSecrets } from '../../lib/redact.ts'
 import { nextAt } from './schedule.ts'
 import type { Automation, Run } from './types.ts'
 import { RUN_TASK } from './types.ts'
@@ -345,6 +346,10 @@ function finish(
   if (run) {
     run.status = status
     run.finishedAt = Date.now()
-    if (answer !== undefined) run.answer = answer.trim().split('\n')[0].slice(0, 200)
+    if (answer !== undefined)
+      run.answer = (status === 'failed' ? redactSecrets(answer) : answer)
+        .trim()
+        .split('\n')[0]
+        .slice(0, 200)
   }
 }

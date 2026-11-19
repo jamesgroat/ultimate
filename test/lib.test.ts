@@ -38,10 +38,15 @@ it('masks token-shaped text and keeps ordinary error text readable', () => {
   expect(redactSecrets("secret: 'a\\'b c' next")).toBe('secret: [redacted] next')
   expect(redactSecrets('pwd=a;b&c next')).toBe('pwd=[redacted] next')
   expect(redactSecrets('cut at ghp_abcdefgh')).toBe('cut at [redacted]')
-  expect(redactSecrets('url: token=abc key: Bearer x')).toBe(
+  expect(redactSecrets('url: token=abc key: Bearer x1')).toBe(
     'url: token=[redacted] key: Bearer [redacted]',
   )
   expect(redactSecrets('jwt eyJhbGciOi.eyJzdWIi.c2ln end')).toBe('jwt [redacted] end')
+  expect(redactSecrets('jwt eyJhbGciOi.eyJzdWIi end')).toBe('jwt [redacted] end')
+  const listening = '{"url":"http://127.0.0.1:4747","share":["someone@example.com"]}'
+  expect(redactSecrets(listening)).toBe(listening)
+  const missing = "open '/var/folders/j1/4sz1n4qj5698kfcj7grx7k_r0000gn/T/speech-a1b2c3/out.wav'"
+  expect(redactSecrets(missing)).toBe(missing)
   expect(redactSecrets('clone https://bot:hunter2@host.example/a/b failed')).toBe(
     'clone https://bot:[redacted]@host.example/a/b failed',
   )
@@ -53,7 +58,8 @@ it('masks token-shaped text and keeps ordinary error text readable', () => {
     ),
   ).toBe('[redacted]')
   expect(redactSecrets('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNz cut')).toBe('[redacted]')
-  const labels = 'author: james; keyboard: us; tokenizer: bpe; Unexpected token } in JSON'
+  const labels =
+    'author: james; keyboard: us; tokenizer: bpe; Unexpected token } in JSON; basic auth failed'
   expect(redactSecrets(labels)).toBe(labels)
   const started = performance.now()
   for (const hostile of ['eyJa-', 'key="a ', 'x"', '://a:b']) redactSecrets(hostile.repeat(80_000))
