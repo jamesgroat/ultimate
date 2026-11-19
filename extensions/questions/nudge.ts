@@ -26,7 +26,8 @@ const Attempt = defineDoc<{ run?: SubmissionId; generation?: TaskId }>({
 
 export const FINAL_ASK_PROBABILITY = 0.8
 const CLASSIFY_TIMEOUT_MS = 3_000
-const CLASSIFY_CHARS = 4_000
+const TAIL_CHARS = 800
+const HEAD_CHARS = 200
 
 function unquotedProse(text: string) {
   return text
@@ -65,8 +66,16 @@ export function finalAsk(text: string) {
   ).test(prose.trimEnd())
 }
 
-export function finalAskState(text: string) {
-  return unquotedProse(text).trim().slice(-CLASSIFY_CHARS)
+export function finalAskState(
+  text: string,
+): { head: string; tail: string } | { tail: string } | undefined {
+  const paragraphs = unquotedProse(text)
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+  const tail = paragraphs.slice(-2).join('\n\n').slice(-TAIL_CHARS)
+  if (!tail) return undefined
+  return paragraphs.length > 2 ? { head: paragraphs[0].slice(0, HEAD_CHARS), tail } : { tail }
 }
 
 async function classifiedAsk(host: ExtensionHost, text: string, signal: AbortSignal | undefined) {
@@ -86,11 +95,11 @@ async function classifiedAsk(host: ExtensionHost, text: string, signal: AbortSig
             ask: {
               type: 'noul',
               instructions:
-                'Does this message end by asking the user for a go-ahead, choice or decision that it expects them to answer (not rhetorical, not a question it answers itself)?',
+                "`tail` is the closing part of an AI assistant's final reply to its user (`head` is how the reply began). Does it leave the next step waiting on the user: asking them to choose, approve, confirm or say go, or offering to proceed only if they say so ('if you give me the go', 'happy to start whenever you want', 'your call')? Rhetorical questions, quoted earlier questions, conditional statements of fact, and plans the assistant will carry out without an answer do not count.",
               criteria: {
-                true: 'The closing lines ask the user to approve, choose or decide something before work continues, with or without a question mark.',
+                true: 'The next step waits on the user: it asks them to choose, approve, confirm or say go, or offers to proceed only once they say so, with or without a question mark.',
                 false:
-                  'It reports, concludes or states what happens next; any question is rhetorical, quoted, or answered in the message itself.',
+                  'It reports results or states what the assistant will do next without needing an answer; any question is rhetorical, quoted or answered in the reply itself.',
               },
             },
           },

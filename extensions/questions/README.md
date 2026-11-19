@@ -51,9 +51,13 @@ The heuristic ignores code and quoted text (a quoted “go” after say or reply
 question marks or mentions of a go as asks. It also catches an ask after a short `**Label:**` and an answer ending in
 “let me know which/whether…”, “tell me which/whether…” or “confirm and I…”.
 
-When the heuristic finds nothing and the optional [classify](../classify/README.md) extension is on, the answer's
-prose (code blocks and quoted lines removed, its last 4,000 characters) goes to TypeSafe's Jev with one yes/no
-question: does it end by asking the user for a go-ahead, choice or decision? A probability of at least 0.8
+When the heuristic finds nothing and the optional [classify](../classify/README.md) extension is on, the closing part
+of the answer's prose goes to TypeSafe's Jev: code blocks and quoted lines removed, then its last two paragraphs
+(at most 800 characters) as `tail`, with the first 200 characters of its opening paragraph as `head` when there is more
+before them. Sending the whole answer buried a closing "say go and I start the branch" under the report above it. The
+one yes/no question asks whether the next step waits on the user: asking them to choose, approve, confirm or say go,
+or offering to proceed only once they say so ("happy to start whenever you want", "your call"); rhetorical or quoted
+questions, conditional facts and plans the assistant carries out anyway do not count. A probability of at least 0.8
 (`FINAL_ASK_PROBABILITY`) counts as an ask. This runs only after every other guard passes, so at most once per
 qualifying answer. The classifier path needs a funded TypeSafe account: without a key, out of credits (a 402, which
 pauses classify and makes it throw at once), on any other failure or after 3 seconds, the heuristic's verdict stands and

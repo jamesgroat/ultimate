@@ -357,9 +357,46 @@ it('nudges an ask only the classifier catches, and leaves one it scores low alon
     ])
     expect(turns).toBe(expected)
     expect(states).toHaveLength(1)
-    expect(states[0]).toContain('Build now')
-    expect(states[0]).not.toContain('secret code')
-    expect(states[0]).not.toContain('quoted')
+    expect(states[0]).toEqual({ tail: SK_MISS.replaceAll('**', '') })
+  }
+})
+
+it('sends only the closing paragraphs, so soft offers count and a long plan does not', async () => {
+  const filler = Array.from(
+    { length: 6 },
+    (_, i) => `Finding ${i}: ${'the tile reads the cached Walmart row and shows it. '.repeat(6)}`,
+  )
+  const opening = 'Here is the review of the Send to WFS idea, in three parts.'
+  for (const [closing, expected] of [
+    ['Happy to start the branch whenever you want.', 2],
+    ["If you end up telling me to take the registry approach, I'll rework the branch tonight.", 2],
+    ['Next I run the live probe, then build the tile and land it.', 1],
+  ] as const) {
+    const states: { head?: string; tail: string }[] = []
+    const f = await fixture({
+      classify: async (request) => {
+        const state = request.state as { head?: string; tail: string }
+        states.push(state)
+        return noul(/happy to|end up telling me/i.test(state.tail) ? 0.95 : 0.1)()
+      },
+    })
+    let turns = 0
+    await f.run([
+      () => {
+        turns++
+        return fauxAssistantMessage([fauxText([opening, ...filler, closing].join('\n\n'))])
+      },
+      () => {
+        turns++
+        return card
+      },
+    ])
+    expect(turns).toBe(expected)
+    expect(states).toHaveLength(1)
+    expect(states[0].head).toBe(opening)
+    expect(states[0].tail.length).toBeLessThanOrEqual(800)
+    expect(states[0].tail.endsWith(closing)).toBe(true)
+    expect(states[0].tail).not.toContain('Finding 3')
   }
 })
 
