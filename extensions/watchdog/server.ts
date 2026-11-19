@@ -21,6 +21,7 @@ import {
 } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { rateLimited } from '../../lib/rate-limit.ts'
+import { redactSecrets } from '../../lib/redact.ts'
 import { Messages } from '../messages/api.ts'
 import type { Message } from '../messages/api.ts'
 import { Standing, Subagents } from '../subagents/api.ts'
@@ -315,7 +316,7 @@ export default function watchdog(host: ExtensionHost) {
           conversation,
           recipient,
           title,
-          error: `Message ${message.id} to ${typeof message.to === 'number' ? `#${message.to}` : message.to} was not delivered: ${task.state.outcome.error.message}`,
+          error: `Message ${message.id} to ${typeof message.to === 'number' ? `#${message.to}` : message.to} was not delivered: ${redactSecrets(task.state.outcome.error.message)}`,
           step: 'message delivery',
           retried: false,
           temporary: false,
@@ -385,9 +386,9 @@ export default function watchdog(host: ExtensionHost) {
           conversation: child.id,
           recipient,
           title: info.title,
-          error,
+          error: redactSecrets(error),
           step: info.step,
-          ...(hint ? { hint } : {}),
+          ...(hint ? { hint: redactSecrets(hint) } : {}),
           retried: runInputs.some((input) => input.requestId?.startsWith('watchdog-retry:')),
           temporary,
           until: (task.endedAt ?? Date.now()) + TEMPORARY_FAILURE_RETRY_DELAY_MS,

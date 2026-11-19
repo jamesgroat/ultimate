@@ -59,7 +59,7 @@ it('masks token-shaped text and keeps ordinary error text readable', () => {
   for (const hostile of ['eyJa-', 'key="a ', 'x"', '://a:b']) redactSecrets(hostile.repeat(80_000))
   expect(performance.now() - started).toBeLessThan(2000)
   const plain =
-    'TimeoutError: locator.waitFor: selector timed out after 60s at /Users/james/src/my-project-2026-backup-directory/file.ts:120 (2026-11-18T20:21:23.000Z) uuid 123e4567-e89b-12d3-a456-426614174000'
+    'TimeoutError: locator.waitFor: selector timed out after 60s at /Users/james/src/my-project-2026-backup-directory/file.ts:120 (2026-11-18T20:21:23.000Z) uuid 123e4567-e89b-12d3-a456-426614174000 fatal: bad object 20f9057a3c1e4b2d9f0a8e7b6c5d4e3f2a1b0c9d'
   expect(redactSecrets(plain)).toBe(plain)
 })
 

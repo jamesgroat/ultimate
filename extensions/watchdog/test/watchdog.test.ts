@@ -359,6 +359,34 @@ it('routes an owned child failure only to its parent', async () => {
   expect(await f.entries(parent, 'subagents.report')).toHaveLength(0)
 })
 
+it('keeps a secret in a failed run’s own entries, never in its parent’s report', async () => {
+  const secret = 'sk-test-FAKE0123456789abcdef'
+  const f = await fixture((transcript) =>
+    inputText(transcript) === 'fail'
+      ? error(`Provider is not configured: ${secret}`)
+      : fauxAssistantMessage('ok'),
+  )
+  const parent = await f.conversation('Coordinator')
+  const child = await f.conversation('Scout', parent)
+  await (await f.submit(child, 'fail')).wait(context)
+  await until(async () => (await f.entries(parent)).length === 1)
+  const all = async (id: ConversationId) =>
+    JSON.stringify(
+      (
+        await f.harness.commit(
+          (tx) => tx.scanEntries({ conversationId: id, order: 'ascending' }, 500),
+          context,
+        )
+      ).items,
+    )
+  expect(await all(child)).toContain(secret)
+  expect(await all(parent)).not.toContain(secret)
+  expect((await f.entries(parent))[0].data).toMatchObject({
+    error: 'Provider is not configured: [redacted]',
+    hint: expect.stringContaining('[redacted] has no login here'),
+  })
+})
+
 it('routes a failure owned by a tally, such as a scheduled run, to @ultimate', async () => {
   const f = await fixture((transcript) =>
     inputText(transcript) === 'fail' ? error() : fauxAssistantMessage('ok'),

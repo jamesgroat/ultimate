@@ -35,8 +35,10 @@ function maskAssignments(text: string) {
 
 const RUN = /(?<![\w+/=-])[\w+/=-]{24,}/g
 
+const gitObjectId = /^[0-9a-f]{40}$/
+
 const tokenShaped = (run: string) =>
-  /\d/.test(run) && run.split(/[-_/.=]/).some((part) => part.length >= 16)
+  !gitObjectId.test(run) && /\d/.test(run) && run.split(/[-_/.=]/).some((part) => part.length >= 16)
 
 export const redactSecrets = (text: string) =>
   maskAssignments(
