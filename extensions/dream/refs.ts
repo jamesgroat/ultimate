@@ -81,7 +81,7 @@ export const ChaptersAction = actionRef<
 /** `{ chapter }`: restart into an existing, idle chapter. User-only; a returned error means restart failed. */
 export const SwitchAction = actionRef<{ chapter: string }, never>('dream', 'switch')
 
-/** Calls and failures grouped by one side of the call, most calls first. */
+/** Calls and failures grouped by one side of the call (an extension, or `agent`), most calls first. */
 export type CallCounts = {
   byCaller: { name: string; calls: number; failed: number }[]
   byCallee: { name: string; calls: number; failed: number }[]
@@ -104,7 +104,7 @@ export type ToolStats = {
   services: CallCounts
   actions: CallCounts
 }
-/** `{ since?, until? }` (ISO times, default the chapter's whole trace) → call statistics from `trace.sqlite`, no model involved. */
+/** `{ since?, until? }` (both inclusive; an ISO time with `Z` or an offset, or a date alone for its UTC midnight; default the chapter's whole trace) → call statistics from `trace.sqlite`, no model involved. */
 export const StatsAction = actionRef<{ since?: string; until?: string } | null, ToolStats>(
   'dream',
   'stats',

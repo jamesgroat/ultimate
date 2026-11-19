@@ -109,7 +109,7 @@ const terminalError = (error: string) => {
 }
 
 const ISO_TIME =
-  /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?$/
+  /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))?$/
 
 const instant = (value: unknown, name: string) => {
   if (value === undefined || value === null) return undefined
@@ -117,7 +117,7 @@ const instant = (value: unknown, name: string) => {
   const calendar = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)))
   const at = Date.parse(value as string)
   if (!day || calendar.getUTCDate() !== Number(day) || Number.isNaN(at))
-    throw new Error(`${name} must be an ISO time`)
+    throw new Error(`${name} must be an ISO date or an ISO time with Z or an offset`)
   return at
 }
 
@@ -147,8 +147,11 @@ export function toolStats(
       actions: none,
     }
   const db = new DatabaseSync(database, { readOnly: true })
-  const inRange = 'at >= ? AND at <= ?'
-  const bounds = [range.since ?? 0, range.until ?? Number.MAX_SAFE_INTEGER]
+  const wholeTraceScansWithoutTheTimeIndex = range.since === undefined && range.until === undefined
+  const inRange = wholeTraceScansWithoutTheTimeIndex ? 'true' : 'at >= ? AND at <= ?'
+  const bounds = wholeTraceScansWithoutTheTimeIndex
+    ? []
+    : [range.since ?? 0, range.until ?? Number.MAX_SAFE_INTEGER]
   try {
     const window = db
       .prepare(

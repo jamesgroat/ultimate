@@ -420,10 +420,10 @@ it('counts service and action calls per caller and callee inside the asked windo
   insert.run('4', 220, 'phase', 'plan', 'service', 'plan.openCriteria', 1, null, null)
   insert.run('5', 230, 'keep-warm', 'pause', 'service', 'pause.paused', 1, null, null)
   insert.run('6', 240, 'ui', 'codemode', 'action', 'codemode/read', 0, 'nope', 'secret-arg')
-  insert.run('7', 900, 'phase', 'classify', 'service', 'classify.ask', 0, 'late', null)
+  insert.run('7', 241, 'phase', 'classify', 'service', 'classify.ask', 0, 'late', null)
   db.close()
-  const window = { since: Date.parse('1970-01-01T00:00:00.150Z'), until: 500 }
-  const stats = toolStats(file, ['bash'], window)
+  const bothEndsInclusive = { since: Date.parse('1970-01-01T00:00:00.200Z'), until: 240 }
+  const stats = toolStats(file, ['bash'], bothEndsInclusive)
   expect(stats).toMatchObject({
     calls: 0,
     services: {
@@ -456,8 +456,9 @@ it('takes only real ISO times as the stats window', () => {
     since: Date.parse('2026-11-19'),
     until: Date.parse('2026-11-19T13:30:00Z'),
   })
-  for (const since of ['10/11/2026', '2026-02-30T00:00:00Z', 'yesterday', 5])
-    expect(() => statsWindow({ since })).toThrow('since must be an ISO time')
+  const hostZoneDependent = '2026-11-19T03:00:00'
+  for (const since of ['10/11/2026', '2026-02-30T00:00:00Z', hostZoneDependent, '', 5])
+    expect(() => statsWindow({ since })).toThrow('since must be an ISO date or an ISO time with')
 })
 
 it('keeps failed calls out of dream stats: no args, and secrets in errors masked', async () => {
