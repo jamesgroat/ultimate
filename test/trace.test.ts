@@ -1,5 +1,5 @@
 import type { ConversationId } from '@earendil-works/pi-durable'
-import { mkdir, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import { afterAll, expect, it, vi } from 'vitest'
@@ -616,6 +616,55 @@ it('records a tool that returns an error result as failed, with its text', async
   expect(rows.find((row) => row.name === 'fine')).toMatchObject({ ok: true })
   expect(rows.find((row) => row.name === 'fine')).not.toHaveProperty('error')
   trace.close()
+})
+
+it('masks secrets in thrown, returned and argument text before they reach trace.sqlite', async () => {
+  const secret = 'sk-test-FAKE0123456789abcdef'
+  const file = join(await temp(), 'trace.sqlite')
+  const trace = callTrace(file)
+  trace.open()
+  const [thrown, returned] = trace.tools({
+    name: 'ext',
+    tools: [
+      {
+        name: 'thrown',
+        execute: async () => {
+          throw new Error(`auth failed ${secret}`)
+        },
+      },
+      {
+        name: 'returned',
+        execute: async () => ({ isError: true, output: [{ type: 'text', text: `401 ${secret}` }] }),
+      },
+    ] as never,
+  }).tools!
+  const api = (callId: string) =>
+    ({
+      conversationId: 1,
+      taskId: 1,
+      callId,
+      getTask: async () => ({ input: model(callId) }),
+    }) as never
+  await expect(thrown.execute({}, api('a'), {} as never)).rejects.toThrow(secret)
+  await returned.execute({}, api('b'), {} as never)
+  expect(() =>
+    trace.run(call('service'), () => {
+      throw new Error(`curl -H 'Authorization: Bearer ${secret}'`)
+    }),
+  ).toThrow(secret)
+  trace.run({ ...call('args'), args: [{ command: `echo ${secret}` }] }, () => ({ out: secret }))
+  const rows = trace.reader.query()
+  expect(rows.find((row) => row.name === 'thrown')?.error).toBe('auth failed [redacted]')
+  expect(rows.find((row) => row.name === 'returned')?.error).toBe('401 [redacted]')
+  expect(rows.find((row) => row.name === 'args')?.args).toBe('[{"command":"echo [redacted]"}]')
+  trace.close()
+  expect((await readFile(file)).toString('latin1')).not.toContain(secret)
+  // Masking shortens the first token, which must not pull a token the cut splits into the stored text.
+  expect(summary(`sk-${'A'.repeat(486)} sk-123456789abcdef`)).toBe('"[redacted] …"')
+  expect(summary('x'.repeat(501))).toBe('"…"')
+  expect(summary('fatal: bad object 20f9057a3c1e4b2d9f0a8e7b6c5d4e3f2a1b0c9d')).toBe(
+    '"fatal: bad object 20f9057a3c1e4b2d9f0a8e7b6c5d4e3f2a1b0c9d"',
+  )
 })
 
 it('names a failed shell command by its exit code, from the error diagnostic', async () => {

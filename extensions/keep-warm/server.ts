@@ -12,6 +12,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { UserInputEvent } from '../../shared/events.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { every } from '../../lib/timers.ts'
+import { redactSecrets } from '../../lib/redact.ts'
 import type { ResponseReceipt } from '../conversations/summary.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { PauseApi } from '../pause/api.ts'
@@ -217,7 +218,7 @@ async function sendOneShotPingWithoutSession(
       at,
       provider,
       model: found.model,
-      error: error instanceof Error ? error.message : String(error),
+      error: redactSecrets(error instanceof Error ? error.message : String(error)),
     })
     return
   }
@@ -226,7 +227,12 @@ async function sendOneShotPingWithoutSession(
     host,
     id,
     failed
-      ? { at, provider, model: found.model, error: answer.errorMessage ?? answer.stopReason }
+      ? {
+          at,
+          provider,
+          model: found.model,
+          error: redactSecrets(answer.errorMessage ?? answer.stopReason),
+        }
       : {
           at,
           provider,

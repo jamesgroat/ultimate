@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { git, isolatable, noCommit, noRepository } from '../lib/git.ts'
 import { readJson, updateJson, writeJson } from '../lib/json-file.ts'
+import { redactSecrets } from '../lib/redact.ts'
 import { readSettings, updateSettings } from '../lib/settings.ts'
 import { shortTitle } from '../lib/title.ts'
 import { temp } from './helpers.ts'
@@ -14,6 +15,58 @@ it('titles a long Markdown prompt by its first meaningful line, cut short', () =
   expect(title.length).toBeLessThanOrEqual(60)
   expect(shortTitle('**Task:** find the callers')).toBe('Task: find the callers')
   expect(shortTitle('fork task')).toBe('fork task')
+})
+
+it('masks token-shaped text and keeps ordinary error text readable', () => {
+  const fake = [
+    'Bearer eyJhbGciOi.payload.sig',
+    'password: hunter2',
+    '"apiKey": "abc123"',
+    'token=abc',
+    'sk-proj-0123456789ab',
+    'ghp_0123456789abcdefABCDEF',
+    'xoxb-1234-5678-abcdef',
+    'AKIAABCDEFGHIJKLMNOP',
+    'deadbeef0123456789abcdef01234567',
+    'dGhpcyBpcyBhIHNlY3JldCB2YWx1ZQ1==',
+    'passphrase: opensesame',
+    'Set-Cookie: sid=abc',
+  ]
+  for (const secret of fake) expect(redactSecrets(`failed: ${secret} end`)).toContain('[redacted]')
+  expect(redactSecrets('Error: x token=abc123 y')).toBe('Error: x token=[redacted] y')
+  expect(redactSecrets('password="correct horse, battery" next')).toBe('password=[redacted] next')
+  expect(redactSecrets("secret: 'a\\'b c' next")).toBe('secret: [redacted] next')
+  expect(redactSecrets('pwd=a;b&c next')).toBe('pwd=[redacted] next')
+  expect(redactSecrets('cut at ghp_abcdefgh')).toBe('cut at [redacted]')
+  expect(redactSecrets('url: token=abc key: Bearer x1')).toBe(
+    'url: token=[redacted] key: Bearer [redacted]',
+  )
+  expect(redactSecrets('jwt eyJhbGciOi.eyJzdWIi.c2ln end')).toBe('jwt [redacted] end')
+  expect(redactSecrets('jwt eyJhbGciOi.eyJzdWIi end')).toBe('jwt [redacted] end')
+  const listening = '{"url":"http://127.0.0.1:4747","share":["someone@example.com"]}'
+  expect(redactSecrets(listening)).toBe(listening)
+  const missing = "open '/var/folders/j1/4sz1n4qj5698kfcj7grx7k_r0000gn/T/speech-a1b2c3/out.wav'"
+  expect(redactSecrets(missing)).toBe(missing)
+  expect(redactSecrets('clone https://bot:hunter2@host.example/a/b failed')).toBe(
+    'clone https://bot:[redacted]@host.example/a/b failed',
+  )
+  expect(redactSecrets('Authorization: token abc123def end')).toBe('Authorization: [redacted] end')
+  expect(redactSecrets('x-api-key: abcd1234 end')).toBe('x-api-key: [redacted] end')
+  expect(
+    redactSecrets(
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7bq\n-----END RSA PRIVATE KEY-----',
+    ),
+  ).toBe('[redacted]')
+  expect(redactSecrets('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNz cut')).toBe('[redacted]')
+  const labels =
+    'author: james; keyboard: us; tokenizer: bpe; Unexpected token } in JSON; basic auth failed'
+  expect(redactSecrets(labels)).toBe(labels)
+  const started = performance.now()
+  for (const hostile of ['eyJa-', 'key="a ', 'x"', '://a:b']) redactSecrets(hostile.repeat(80_000))
+  expect(performance.now() - started).toBeLessThan(2000)
+  const plain =
+    'TimeoutError: locator.waitFor: selector timed out after 60s at /Users/james/src/my-project-2026-backup-directory/file.ts:120 (2026-11-18T20:21:23.000Z) uuid 123e4567-e89b-12d3-a456-426614174000 fatal: bad object 20f9057a3c1e4b2d9f0a8e7b6c5d4e3f2a1b0c9d'
+  expect(redactSecrets(plain)).toBe(plain)
 })
 
 it('reads a missing JSON file as the fallback and rejects unreadable JSON', async () => {

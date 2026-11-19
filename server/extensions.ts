@@ -41,6 +41,7 @@ import { inExtensionTests } from '../shared/extension-api.ts'
 import { secretMetadata } from '../lib/secrets.ts'
 import type { Device } from '../shared/events.ts'
 import { inProcess, isMissing, meansNone } from '../lib/errors.ts'
+import { redactSecrets } from '../lib/redact.ts'
 
 export type ExtensionHost = Pick<
   PreparedHost,
@@ -171,7 +172,8 @@ export async function loadExtensions(
       need: <S>(api: Api<string, S>): S =>
         apis.need(facetHost, name, api, facetHosts.get(name) !== facetHost),
       want: <S>(api: Api<string, S>): S | undefined => apis.want(facetHost, name, api),
-      notice: (message, options) => {
+      notice: (text, options) => {
+        const message = redactSecrets(text)
         const messages = facetNotices.get(facetHost)
         const facetWasDisposed = !messages
         if (facetWasDisposed) return
