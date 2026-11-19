@@ -17,6 +17,12 @@ it('classifies real provider errors as billing, usage, auth or other', () => {
     ],
     ['TypeSafe 402: no available TypeSafe API credits', undefined, 'billing'],
     ['402 Payment Required', undefined, 'billing'],
+    ['Your plan has no usage credits left', 402, 'billing'],
+    [
+      '429 Rate limit reached for gpt-6 on tokens per min (TPM). Please try again in 2s.',
+      undefined,
+      'other',
+    ],
     ['OpenRouter: insufficient funds', undefined, 'billing'],
     [
       'You have hit your ChatGPT usage limit (plus plan). Try again in ~42 min.',
@@ -66,32 +72,38 @@ it('classifies real provider errors as billing, usage, auth or other', () => {
   ).toBe(1795100000_000)
 })
 
-async function setup() {
-  const home = await temp()
+async function setup(home?: string) {
+  home ??= await temp()
   let now = NOW
   const posted: { key: string; slot: string; title: string; text: string }[] = []
   const inbox = new Map<string, { key: string; title: string }>()
   const keys = new Set<string>()
-  const health = notifier({
-    home,
-    now: () => now,
-    post: async (notice) => {
-      posted.push(notice)
-      if (keys.has(notice.key)) return
-      keys.add(notice.key)
-      inbox.set(notice.slot, notice)
-    },
-    describe: async (provider, cls, resetsAt) =>
-      noticeFor({
-        provider,
-        name: provider === 'typesafe' ? 'TypeSafe' : 'Claude Code',
-        class: cls,
-        resetsAt,
-        agents: ['coordinator'],
-        timeZone: 'America/Phoenix',
-      }),
-  })
-  return { health, posted, inbox, tick: (ms: number) => (now += ms) }
+  const delivery = { down: false }
+  const queue = { writes: Promise.resolve() as Promise<unknown> }
+  const make = () =>
+    notifier({
+      home,
+      queue,
+      now: () => now,
+      post: async (notice) => {
+        if (delivery.down) throw new Error('notices unavailable')
+        posted.push(notice)
+        if (keys.has(notice.key)) return true
+        keys.add(notice.key)
+        inbox.set(notice.slot, notice)
+        return true
+      },
+      describe: async (provider, cls, resetsAt) =>
+        noticeFor({
+          provider,
+          name: provider === 'typesafe' ? 'TypeSafe' : 'Claude Code',
+          class: cls,
+          resetsAt,
+          agents: ['coordinator'],
+          timeZone: 'America/Phoenix',
+        }),
+    })
+  return { health: make(), make, delivery, posted, inbox, tick: (ms: number) => (now += ms) }
 }
 
 const credits = {
@@ -173,4 +185,35 @@ it('subscription routing exhaustion posts once with its reset, and shares the ep
     title: 'Claude Code: usage limit reached (resets 3:40 PM)',
   })
   expect(t.posted[0].text).toContain('the coordinator agent')
+})
+
+it('an episode per class: billing, auth, billing again without a success posts two notices, not three', async () => {
+  const t = await setup()
+  await t.health.report(credits)
+  await t.health.report({ provider: 'typesafe', ok: false, status: 401, error: 'invalid key' })
+  await t.health.report(credits)
+  expect(t.posted.map((notice) => notice.key.split(':')[2])).toEqual(['billing', 'auth'])
+})
+
+it('a notice that could not be delivered is retried with its original key on the next failure', async () => {
+  const t = await setup()
+  t.delivery.down = true
+  await t.health.report(credits)
+  t.delivery.down = false
+  t.tick(5000)
+  await t.health.report(credits)
+  await t.health.report(credits)
+  expect(t.posted).toHaveLength(1)
+  expect(t.posted[0].key).toBe(`health:typesafe:billing:${NOW}`)
+})
+
+it('notifiers sharing a queue, as across a facet reload, open one episode for concurrent failures', async () => {
+  const t = await setup()
+  const replacement = t.make()
+  await Promise.all([
+    t.health.report(credits),
+    replacement.report(credits),
+    t.health.report(credits),
+  ])
+  expect(t.posted).toHaveLength(1)
 })

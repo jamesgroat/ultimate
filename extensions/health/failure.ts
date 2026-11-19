@@ -5,7 +5,7 @@ export type FailureClass = 'billing' | 'usage' | 'auth' | 'other'
 
 const BILLING = /\bcredits?\b|insufficient[ _]funds|billing_error|payment required|out of budget/i
 const USAGE =
-  /usage[ _]limit|usage_not_included|insufficient_quota|quota exceeded|exceeded your (?:current )?quota|limit reached|hit your (?:\w+ )?limit|extra usage|usage credits/i
+  /usage[ _]limit|usage_not_included|insufficient_quota|quota exceeded|exceeded your (?:current )?quota|hit your (?:\w+ )?limit|extra usage|usage credits/i
 const LOGGED_OUT = /not logged in|logged out|log in again|OAuth refresh failed/i
 
 const MINUTE = 60_000
@@ -29,12 +29,14 @@ export function classifyFailure(
   const resetsAt = resetsAtOf(text, now)
   const withReset = (cls: FailureClass) => ({ class: cls, ...(resetsAt ? { resetsAt } : {}) })
   if (kind === 'auth' || LOGGED_OUT.test(text)) return { class: 'auth' }
-  if (USAGE.test(text)) return withReset('usage')
-  if (kind === 'billing' || BILLING.test(text)) return { class: 'billing' }
+  if (kind === 'billing') return { class: 'billing' }
   const retryable = isRetryableAssistantError({
     stopReason: 'error',
     errorMessage: text,
   } as AssistantMessage)
+  const exhausted = !retryable || /usage_limit_reached|usage_not_included/i.test(text)
+  if (exhausted && USAGE.test(text)) return withReset('usage')
+  if (BILLING.test(text)) return { class: 'billing' }
   if (kind === 'capacity' && !retryable) return withReset('usage')
   return { class: 'other' }
 }

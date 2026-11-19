@@ -4,21 +4,26 @@ import { settled } from '../../lib/errors.ts'
 import type { FailureClass } from './failure.ts'
 
 export type NoticeClass = Exclude<FailureClass, 'other'>
-type Episode = { class: NoticeClass; since: number }
+type Episode = { since: number; posted?: boolean }
+type ProviderEpisodes = Partial<Record<NoticeClass, Episode>>
 export type EpisodeFile = {
-  open: Record<string, Episode>
+  open: Record<string, ProviderEpisodes>
   exhausted: Record<string, boolean>
 }
+export type EpisodeQueue = { writes: Promise<unknown> }
 
 export const episodesPath = (home: string) => join(home, 'health-notices.json')
-export const noticeKey = (provider: string, episode: Episode) =>
-  `health:${provider}:${episode.class}:${episode.since}`
+export const noticeKey = (provider: string, cls: NoticeClass, since: number) =>
+  `health:${provider}:${cls}:${since}`
 export const noticeSlot = (provider: string) => `health:${provider}`
 
-const queues = new Map<string, Promise<unknown>>()
-export function updateEpisodes<T>(home: string, change: (file: EpisodeFile) => T): Promise<T> {
+export function updateEpisodes<T>(
+  home: string,
+  queue: EpisodeQueue,
+  change: (file: EpisodeFile) => T,
+): Promise<T> {
   const path = episodesPath(home)
-  const operation = settled(queues.get(path) ?? Promise.resolve()).then(async () => {
+  const operation = settled(queue.writes).then(async () => {
     const stored = await readJson<Partial<EpisodeFile>>(path, {})
     const file: EpisodeFile = { open: stored.open ?? {}, exhausted: stored.exhausted ?? {} }
     const before = JSON.stringify(file)
@@ -26,19 +31,30 @@ export function updateEpisodes<T>(home: string, change: (file: EpisodeFile) => T
     if (JSON.stringify(file) !== before) await writeJson(path, file)
     return result
   })
-  queues.set(path, operation)
+  queue.writes = operation
   return operation
 }
+
+export type Unposted = { class: NoticeClass; since: number }
+
 export function step(
   file: EpisodeFile,
   provider: string,
   outcome: { ok: true } | { ok: false; class: FailureClass; at: number },
-): Episode | undefined {
+): Unposted | undefined {
   if (outcome.ok) {
     delete file.open[provider]
     return undefined
   }
   if (outcome.class === 'other') return undefined
-  if (file.open[provider]?.class === outcome.class) return undefined
-  return (file.open[provider] = { class: outcome.class, since: outcome.at })
+  const episodes = (file.open[provider] ??= {})
+  const episode = (episodes[outcome.class] ??= { since: outcome.at })
+  if (episode.posted) return undefined
+  episode.posted = true
+  return { class: outcome.class, since: episode.since }
+}
+
+export function releaseClaim(file: EpisodeFile, provider: string, claimed: Unposted) {
+  const episode = file.open[provider]?.[claimed.class]
+  if (episode?.since === claimed.since) delete episode.posted
 }

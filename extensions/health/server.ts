@@ -8,7 +8,7 @@ import {
 import type { DocumentWatch, JsonObject } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
-import { inProcess } from '../../lib/errors.ts'
+import { inProcess, settled } from '../../lib/errors.ts'
 import { discoverAgents } from '../../lib/agents.ts'
 import { readHealth, record, reset } from './store.ts'
 import { HealthApi } from './api.ts'
@@ -18,8 +18,8 @@ import { NoticesApi } from '../notices/api.ts'
 import type { Flip, HealthEntry } from './store.ts'
 import { Changed } from './refs.ts'
 import { classifyFailure } from './failure.ts'
-import { noticeKey, noticeSlot, step, updateEpisodes } from './episodes.ts'
-import type { NoticeClass } from './episodes.ts'
+import { releaseClaim, noticeKey, noticeSlot, step, updateEpisodes } from './episodes.ts'
+import type { EpisodeQueue, NoticeClass } from './episodes.ts'
 import { noticeFor } from './notice.ts'
 
 const ROUTING_STATE = 'subscription-routing.state'
@@ -56,6 +56,7 @@ export type Notifier = {
 
 export function notifier(options: {
   home: string
+  queue: EpisodeQueue
   now: () => number
   post: (notice: {
     key: string
@@ -63,7 +64,7 @@ export function notifier(options: {
     tag: string
     title: string
     text: string
-  }) => Promise<unknown>
+  }) => Promise<boolean>
   describe: (
     provider: string,
     cls: NoticeClass,
@@ -76,18 +77,29 @@ export function notifier(options: {
     resetsAt?: number,
   ) => {
     const at = options.now()
-    const episode = await updateEpisodes(options.home, (file) => {
-      return step(file, provider, outcome.ok ? outcome : { ...outcome, at })
-    })
-    if (!episode) return
-    const { title, text } = await options.describe(provider, episode.class, resetsAt)
-    await options.post({
-      key: noticeKey(provider, episode),
-      slot: noticeSlot(provider),
-      tag: 'Provider',
-      title,
-      text,
-    })
+    const unposted = await updateEpisodes(options.home, options.queue, (file) =>
+      step(file, provider, outcome.ok ? outcome : { ...outcome, at }),
+    )
+    if (!unposted) return
+    const delivered = await options
+      .describe(provider, unposted.class, resetsAt)
+      .then(({ title, text }) =>
+        options.post({
+          key: noticeKey(provider, unposted.class, unposted.since),
+          slot: noticeSlot(provider),
+          tag: 'Provider',
+          title,
+          text,
+        }),
+      )
+      .catch((error: unknown) => {
+        console.error('health: posting a provider notice failed:', error)
+        return false
+      })
+    if (!delivered)
+      await updateEpisodes(options.home, options.queue, (file) =>
+        releaseClaim(file, provider, unposted),
+      )
   }
   const logged = (work: Promise<unknown>) =>
     work.then(
@@ -112,7 +124,7 @@ export function notifier(options: {
   }
   async function readRouting(state: unknown) {
     const now = exhaustedProviders(state)
-    const flipped = await updateEpisodes(options.home, (file) => {
+    const flipped = await updateEpisodes(options.home, options.queue, (file) => {
       const newly = [...now.keys()].filter((provider) => !file.exhausted[provider])
       file.exhausted = Object.fromEntries([...now.keys()].map((provider) => [provider, true]))
       return newly
@@ -173,12 +185,18 @@ async function agentsOn(host: ExtensionHost, provider: string) {
 
 export default function health(host: ExtensionHost) {
   const announceHealthFlip = (flips: Flip[]) => announce(host, flips)
+  const queue = host.resource<EpisodeQueue>('health.episodes', () => ({
+    writes: Promise.resolve(),
+  }))
   const notices = notifier({
     home: host.home,
+    queue,
     now: Date.now,
     post: async (notice) => {
       const service = host.want(NoticesApi)
-      if (service) await service.post(notice)
+      if (!service) return false
+      await service.post(notice)
+      return true
     },
     describe: async (provider, cls, resetsAt) =>
       noticeFor({
@@ -190,22 +208,52 @@ export default function health(host: ExtensionHost) {
       }),
   })
   let routing: DocumentWatch<JsonObject> | undefined
-  host.onOpen(async () => {
+  let attaching: Promise<void> | undefined
+  let released = true
+  const attach = async () => {
     const token = host.doc(ROUTING_STATE)
-    if (!token) return
-    routing = await host.harness().watchDoc(token, ROOT_CONVERSATION_ID, context)
-    if (!routing) return
-    await notices.routing(routing.value)
-    routing.start(async (call) => {
+    const watch = token
+      ? await host.harness().watchDoc(token, ROOT_CONVERSATION_ID, context)
+      : undefined
+    if (!watch) return
+    if (released) {
+      await watch.stop()
+      return
+    }
+    routing = watch
+    await notices.routing(watch.value)
+    watch.start(async (call) => {
       if (call.kind === 'value') await notices.routing(call.value)
     })
+  }
+  const watchRouting = () => {
+    if (released || routing || attaching) return attaching
+    return (attaching = attach()
+      .catch((error: unknown) =>
+        console.error('health: watching subscription routing failed:', error),
+      )
+      .finally(() => (attaching = undefined)))
+  }
+  host.onOpen(async () => {
+    released = false
+    await watchRouting()
   })
-  const stopRouting = async () => {
+  const report = (outcome: ProviderReport) => {
+    inProcess(
+      'subscription routing may load after health: the next report attaches again',
+      settled(watchRouting() ?? Promise.resolve()),
+    )
+    return notices.report(outcome)
+  }
+  const release = async () => {
+    released = true
+    await attaching
     await routing?.stop()
     routing = undefined
+    await settled(queue.writes)
   }
-  host.onRelease(stopRouting)
-  host.onClose(stopRouting)
+  host.onRelease(release)
+  host.onClose(release)
   host.react('login-changed', [LoginChanged], async (tx, { data }) => {
     for (const { provider, from, to } of await reset(host.userHome, [data.provider]))
       if (from !== to) await host.emit(tx, Changed, { provider, state: to })
@@ -215,7 +263,7 @@ export default function health(host: ExtensionHost) {
       (await readHealth(host.userHome)).filter(
         (entry) => host.modelRuntime.getProviderAuthStatus(entry.provider).configured,
       ),
-    report: (report) => notices.report(report),
+    report,
   })
   return defineExtension({
     name: 'health',
@@ -228,7 +276,7 @@ export default function health(host: ExtensionHost) {
           if (!hasLocalLogin) return
           inProcess(
             'a provider notice is advisory: the next failure of the same provider posts it',
-            notices.report(
+            report(
               message.stopReason === 'error'
                 ? { provider: message.provider, ok: false, error: message.errorMessage ?? 'error' }
                 : { provider: message.provider, ok: true },

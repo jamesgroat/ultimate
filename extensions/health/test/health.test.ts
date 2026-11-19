@@ -19,7 +19,12 @@ const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const NOW = 1_000 * HOUR
 
-const lifecycle = { onOpen: () => {}, onRelease: () => {}, onClose: () => {} }
+const lifecycle = {
+  onOpen: () => {},
+  onRelease: () => {},
+  onClose: () => {},
+  resource: <T>(_key: string, create: () => T) => create(),
+}
 
 const message = (stopReason: AssistantMessage['stopReason'], errorMessage?: string) =>
   ({ provider: 'anthropic', stopReason, errorMessage }) as AssistantMessage

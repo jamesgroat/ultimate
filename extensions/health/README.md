@@ -56,22 +56,25 @@ built-in only toasts). Its title says what happened ("TypeSafe: out of credits",
 (resets 3:40 PM)", "OpenAI: key rejected"); its text names the agent definitions that run on that provider and the
 extensions known to call it, the reset time when known, and where to add credits or check usage.
 
-`classifyFailure` (`failure.ts`) sorts a failure from its HTTP status and message: `auth` and 402 come from
-`failureKind` in `store.ts`; `usage` is a used-up plan or quota (Codex "usage limit", `insufficient_quota`, Claude Code's
-usage-credit refusal, and any capacity error Pi treats as non-retryable), with `resetsAt` when the error names it;
-`billing` is a 402 or credit wording. Everything else is `other`, and so is a retryable throttle or overload:
-`watchdog` owns those, and they never post.
+`classifyFailure` (`failure.ts`) sorts a failure from its HTTP status and message: `auth` and 402 (`billing`) come
+from `failureKind` in `store.ts` and win over any wording; `usage` is a used-up plan or quota that Pi does not retry
+(Codex "usage limit", `insufficient_quota`, Claude Code's usage-credit refusal), with `resetsAt` when the error names
+it; credit wording without a status is `billing`. Everything else is `other`, and so is a retryable throttle such as a
+tokens-per-minute 429: `watchdog` owns those, and they never post.
 
 **One notice per episode.** An episode is one provider in one class, open from its first failure until that
-provider's next success (`episodes.ts`, kept in `<project home>/health-notices.json`, so a restart does not post
-again). Failures while it is open post nothing, however many there are. A failure of another class starts a new
-episode. The key is `health:<provider>:<class>:<epoch ms of the first failure>`; the notices channel never reposts a
+provider's next success, which closes all of the provider's episodes (`episodes.ts`, kept in
+`<project home>/health-notices.json`, so a restart does not post again). Failures while it is open post nothing,
+however many there are; a provider failing in two classes in turn has two episodes, never more. The episode is claimed
+in the write that opens it; a post that fails (or finds no notices service) releases the claim, and the next failure
+posts again under the same key. Writes go through one queue per project home that outlives facet reloads and is
+drained on release. The key is `health:<provider>:<class>:<epoch ms of the first failure>`; the notices channel never reposts a
 key, also after Done. Every episode of a provider posts into the slot `health:<provider>`, so a new episode replaces
 the provider's notice while it still waits, and a flapping provider keeps a single Inbox item (Life's notices also
 coalesce more than three posts an hour into one slot).
 
 **Subscription exhaustion.** Health watches subscription routing's root document (`subscription-routing.state`, when
-that extension is loaded). When a pair's reading for a provider flips to `exhausted`, that opens a `usage` episode with
+that extension is loaded; when it is not yet, each provider report tries to attach again). When a pair's reading for a provider flips to `exhausted`, that opens a `usage` episode with
 the reading's `resetsAt`, the same episode a model error opens, so the two paths never post twice. `paced` alone
 posts nothing.
 
