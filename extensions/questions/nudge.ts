@@ -24,11 +24,17 @@ const Attempt = defineDoc<{ run?: SubmissionId; generation?: TaskId }>({
 })
 
 export function finalAsk(text: string) {
-  const prose = text
+  const unquoted = text
     .replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^\s*\1[^\n]*(?:\n|$)|(?![\s\S]))/gm, '')
     .replace(/^(?: {4}|\t|\s*>).*$/gm, '')
-    .replace(/`+[^`]*`+|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^'\n]+'(?!\w)/g, '')
     .replace(/\*\*|__/g, '')
+  if (
+    /(?:^|[.!?]\s+|\n)\s*(?:[-*]\s+)?(?:[^.!?\n,]{1,40},\s*|(?:just|then|so)\s+)?(?:say|give me (?:a|the|your)|tell me|reply(?: with)?)\s+["“‘'`]?go(?: ahead)?\b(?![-'’])/im.test(
+      unquoted,
+    )
+  )
+    return true
+  const prose = unquoted.replace(/`+[^`]*`+|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^'\n]+'(?!\w)/g, '')
   return /(?:^|[.!]\s+|\n)\s*(?:[-*]\s+)?(?:want me to\b|should I\b|(?:do you want|would you like|(?:can|could|would|will) you|are you ready|which (?:option|approach) do you|what would you prefer)\b)[^?\n]*\?/im.test(
     prose,
   )

@@ -37,7 +37,8 @@ with a line listing it by its questions (see [Messages](../messages/README.md)).
 ## Fork corrective nudge
 
 By default, `questions.nudgeFinalAsk` gives the primary standing Ultimate one corrective continuation when a final
-answer contains a clear prose ask such as “Want me to…” or “Should I…”. Set it to `false` in user or project settings
+answer contains a clear prose ask such as “Want me to…” or “Should I…”, or asks for a go without a question mark
+(“Say go when you want it”, “Reply with go”). Set it to `false` in user or project settings
 to opt out; disabling this optional extension also removes the nudge. This is a fork-specific exception to the
 repository's prompt-only behavioural policy, not a guarantee that every question will be caught.
 
@@ -46,7 +47,8 @@ input attributed to the user). Peer, branch, subagent, automation and unknown or
 of their model role. Watchdog's automatic retry submissions are excluded by their `watchdog-retry:` request provenance,
 even though they use the same `pi.user` entry kind as typed input. The message tool must be available and the
 conversation must have no open native answer card.
-The heuristic ignores code and quoted text and does not treat arbitrary question marks as asks.
+The heuristic ignores code and quoted text (a quoted “go” after say or reply still counts) and does not treat arbitrary
+question marks or mentions of a go as asks.
 
 The nudge asks the model to send its actual decision through `message` with `questions` if an answer is needed, or to
 conclude without asking. It never creates a card itself, invents choices or answers a decision. The candidate stays in
