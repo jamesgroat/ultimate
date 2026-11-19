@@ -11,7 +11,7 @@ import type { EntryId, EntryRecord, GenerationHooks, HookApi } from '@earendil-w
 import { afterEach, expect, it, vi } from 'vitest'
 import { onCommit } from '../../../lib/commits.ts'
 import { context } from '../../../server/harness.ts'
-import phase, { MIN_INTERVAL_MS, Phases } from '../server.ts'
+import phase, { MIN_INTERVAL_MS, Phases, SKIP_AT_MOST_MS } from '../server.ts'
 import { phaseState } from '../state.ts'
 import type { ClassifyService } from '../../classify/api.ts'
 import { PlanApi } from '../../plan/api.ts'
@@ -94,6 +94,10 @@ async function fixture(service?: ClassifyService, plan?: PlanService) {
   const storage = new MemoryStorage()
   storage.close = async () => {}
   let now = 1_000_000
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+  cleanups.push(async () => {
+    clock.mockRestore()
+  })
   const options = { models: createModels(), registry, now: () => now }
   harness = await Harness.open(storage, options, context)
   cleanups.push(async () => {
@@ -135,7 +139,19 @@ async function fixture(service?: ClassifyService, plan?: PlanService) {
     harness.resume()
   }
   const row = async () => (await snapshot())?.conversations[root.id]
-  return { harness, root, round, snapshot, yieldRun, startRun, reopen, advance, row }
+  return {
+    get harness() {
+      return harness
+    },
+    root,
+    round,
+    snapshot,
+    yieldRun,
+    startRun,
+    reopen,
+    advance,
+    row,
+  }
 }
 const answer = (confidence: number, choice = 'editing') => ({
   model: 'fake',
@@ -446,7 +462,7 @@ it('abandons a request on restart without resending and clears pending', async (
 })
 
 it('classifies the first round at once, then at most once per interval over the newest round', async () => {
-  const ask = vi.fn<ClassifyService['ask']>().mockResolvedValue(answer(0.9))
+  const ask = vi.fn<ClassifyService['ask']>().mockResolvedValue(answer(0.8))
   const f = await fixture({ ask })
   const tool = async (command: string) => {
     await f.harness.commit(async (tx) => {
@@ -504,16 +520,70 @@ it('holds the interval after a failed first classification', async () => {
   await until(async () => (await f.harness.inspect(context)).tasks.length === 0)
   expect((await f.snapshot())?.conversations).toEqual({})
 })
+it('skips rounds of the same tools after a confident answer, for at most a minute', async () => {
+  const ask = vi.fn<ClassifyService['ask']>().mockResolvedValue(answer(0.95))
+  const f = await fixture({ ask })
+  const tools = async (...names: string[]) => {
+    await f.harness.commit(async (tx) => {
+      await tx.appendEntry(f.root.id, {
+        kind: 'pi.assistant',
+        model: [
+          fauxAssistantMessage(
+            names.map((name, i) => fauxToolCall(name, { path: `/project/${i}` }, { id: name })),
+          ),
+        ],
+      })
+    }, context)
+    await f.round()
+  }
+  const settled = () => until(async () => (await f.row())?.pending === undefined)
+  await tools('read', 'bash')
+  await settled()
+  expect((await f.row())?.tools).toEqual(['read', 'bash'])
+  f.advance(MIN_INTERVAL_MS)
+  await tools('read')
+  f.advance(MIN_INTERVAL_MS)
+  await tools('bash', 'read')
+  expect((await f.row())?.pending).toBeUndefined()
+  expect(ask).toHaveBeenCalledTimes(1)
+  f.advance(SKIP_AT_MOST_MS - 2 * MIN_INTERVAL_MS)
+  await tools('read')
+  await until(() => ask.mock.calls.length === 2)
+  await settled()
+  ask.mockResolvedValue(answer(0.8))
+  f.advance(1_000)
+  await tools('edit')
+  await until(async () => (await f.row())?.due !== undefined)
+  f.advance(MIN_INTERVAL_MS)
+  await until(() => ask.mock.calls.length === 3)
+  await settled()
+  expect((await f.row())?.tools).toBeUndefined()
+  f.advance(MIN_INTERVAL_MS)
+  await tools('edit')
+  await until(() => ask.mock.calls.length === 4)
+  await settled()
+})
 it('classifies at once after a restart abandons a trailing request', async () => {
   const ask = vi.fn<ClassifyService['ask']>().mockResolvedValue(answer(0.9))
   const f = await fixture({ ask })
-  await f.round()
+  const tool = async (name: string) => {
+    await f.harness.commit(async (tx) => {
+      await tx.appendEntry(f.root.id, {
+        kind: 'pi.assistant',
+        model: [fauxAssistantMessage([fauxToolCall(name, {}, { id: name })])],
+      })
+    }, context)
+    await f.round()
+  }
+  await tool('bash')
   await until(async () => (await f.row())?.phase === 'editing')
-  await f.round()
+  await tool('read')
   await until(async () => (await f.row())?.due !== undefined)
+  expect((await f.row())?.tools).toEqual(['bash'])
   await f.reopen()
   await until(async () => (await f.row())?.pending === undefined)
   expect((await f.row())?.classifiedAt).toBeUndefined()
-  await f.round()
+  expect((await f.row())?.tools).toBeUndefined()
+  await tool('bash')
   await until(() => ask.mock.calls.length === 2)
 })

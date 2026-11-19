@@ -79,6 +79,14 @@ type Asked = {
   open: { epic: string; revision: number; criteria: OpenCriterion[] } | null
   at: number
   answers: ClassifyResult['answers']
+  tools?: string[]
+}
+function toolNames(entry: EntryRecord | undefined) {
+  const names = new Set<string>()
+  for (const message of entry?.model ?? [])
+    if (message.role === 'assistant')
+      for (const block of message.content) if (block.type === 'toolCall') names.add(block.name)
+  return [...names]
 }
 export function estimatesOf(
   criteria: readonly OpenCriterion[],
@@ -95,6 +103,9 @@ export function estimatesOf(
   return estimates
 }
 export const MIN_INTERVAL_MS = 20_000
+export const SKIP_CONFIDENCE = 0.9
+export const SKIP_AT_MOST_MS = 60_000
+const MAX_SKIP_TOOLS = 20
 const terminal = {
   status: 'terminal' as const,
   outcome: { status: 'completed' as const, result: null },
@@ -117,6 +128,7 @@ export default function phase(
           delete row.pending
           delete row.due
           delete row.classifiedAt
+          delete row.tools
           if (!row.phase) delete state.conversations[runtime.conversationId]
         }
         return terminal
@@ -208,6 +220,10 @@ export default function phase(
                 open,
                 at: at ?? entries.at(-1)?.id ?? 0,
                 answers: result.answers,
+                tools: toolNames(entries.findLast((entry) => toolNames(entry).length > 0)).slice(
+                  0,
+                  MAX_SKIP_TOOLS,
+                ),
               },
               context,
             )
@@ -234,7 +250,17 @@ export default function phase(
           const row = state.conversations[runtime.conversationId]
           if (row?.pending === task.id) {
             delete row.pending
-            if (row.run === task.input.run) row.classifiedAt = runtime.now()
+            if (row.run === task.input.run) {
+              row.classifiedAt = runtime.now()
+              if (
+                answer?.type === 'choice' &&
+                answer.choice in question.criteria &&
+                answer.confidence >= SKIP_CONFIDENCE &&
+                asked?.tools?.length
+              )
+                row.tools = asked.tools
+              else delete row.tools
+            }
             if (
               row.run === task.input.run &&
               answer?.type === 'choice' &&
@@ -286,6 +312,15 @@ export default function phase(
             if (row?.pending !== undefined) {
               row.round = round
               return
+            }
+            if (row?.run === run && row.tools && row.classifiedAt !== undefined) {
+              const tools = toolNames(await tx.entry(assistant))
+              if (
+                tools.length > 0 &&
+                tools.every((name) => row.tools!.includes(name)) &&
+                Date.now() - row.classifiedAt < SKIP_AT_MOST_MS
+              )
+                return
             }
             const pending = await tx.createTask(
               ClassifyTask,
