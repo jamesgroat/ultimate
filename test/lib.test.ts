@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { git, isolatable, noCommit, noRepository } from '../lib/git.ts'
 import { readJson, updateJson, writeJson } from '../lib/json-file.ts'
+import { redactSecrets } from '../lib/redact.ts'
 import { readSettings, updateSettings } from '../lib/settings.ts'
 import { shortTitle } from '../lib/title.ts'
 import { temp } from './helpers.ts'
@@ -14,6 +15,33 @@ it('titles a long Markdown prompt by its first meaningful line, cut short', () =
   expect(title.length).toBeLessThanOrEqual(60)
   expect(shortTitle('**Task:** find the callers')).toBe('Task: find the callers')
   expect(shortTitle('fork task')).toBe('fork task')
+})
+
+it('masks token-shaped text and keeps ordinary error text readable', () => {
+  const fake = [
+    'Bearer eyJhbGciOi.payload.sig',
+    'password: hunter2',
+    '"apiKey": "abc123"',
+    'token=abc',
+    'sk-proj-0123456789ab',
+    'ghp_0123456789abcdefABCDEF',
+    'xoxb-1234-5678-abcdef',
+    'AKIAABCDEFGHIJKLMNOP',
+    'deadbeef0123456789abcdef01234567',
+    'dGhpcyBpcyBhIHNlY3JldCB2YWx1ZQ1==',
+  ]
+  for (const secret of fake) expect(redactSecrets(`failed: ${secret} end`)).toContain('[redacted]')
+  expect(redactSecrets('Error: x token=abc123 y')).toBe('Error: x token=[redacted] y')
+  expect(redactSecrets('password="correct horse, battery" next')).toBe('password=[redacted] next')
+  expect(redactSecrets("secret: 'a\\'b c' next")).toBe('secret: [redacted] next')
+  expect(redactSecrets('pwd=a;b&c next')).toBe('pwd=[redacted] next')
+  expect(redactSecrets('cut at ghp_abcdefgh')).toBe('cut at [redacted]')
+  expect(redactSecrets('url: token=abc key: Bearer x')).toBe(
+    'url: token=[redacted] key: Bearer [redacted]',
+  )
+  const plain =
+    'TimeoutError: locator.waitFor: selector timed out after 60s at /Users/james/src/my-project-2026-backup-directory/file.ts:120 (2026-11-18T20:21:23.000Z)'
+  expect(redactSecrets(plain)).toBe(plain)
 })
 
 it('reads a missing JSON file as the fallback and rejects unreadable JSON', async () => {

@@ -115,8 +115,10 @@ tally, `ultimate.entries(<root>)`) are the cheap way in; open a conversation onl
   and evidence (the memory review in extensions/lineage/README.md). Never drop or weaken the memory about the user.
 - **failures** — what failed often: `watchdog.failure` cards, tool and action errors in the trace, retries, reactor
   failures, lander rejections, runs the user had to stop. Group by cause; for the top ones propose a fix.
-- **tools** — `stats` gives calls, failures, mean duration and enabled tools never called. Explain the numbers: why a
-  tool fails, which are slow, which unused ones should be taught or removed, what agents did by hand that a tool
+- **tools** — `stats` gives calls, failures, mean duration and enabled tools never called. Each frequent error has
+  `{conversation, entry}` pointers and a masked error line, never the call's args: read an entry with
+  `ultimate.entries` only when the cause needs it, and never paste arguments into proposals or memories. Explain the
+  numbers: why a tool fails, which are slow, which unused ones should be taught or removed, what agents did by hand that a tool
   should do.
 - **corrections** — what the user had to say more than once, corrections of the agents' work, and the wishes: what
   Ultimate itself would like to have or be able to do, from friction seen in old conversations.

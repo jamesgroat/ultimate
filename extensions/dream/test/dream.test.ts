@@ -395,13 +395,68 @@ it('reads tool numbers from the trace, with unused tools and frequent errors', a
         name: 'edit',
         error: 'Could not find the exact text',
         count: 1,
-        examples: [
-          { at: '#7/42', args: '{"path":"a.ts"}', error: 'Could not find the exact text' },
-        ],
+        examples: [{ conversation: 7, entry: 42, error: 'Could not find the exact text' }],
       },
     ],
   })
   expect(toolStats(join(await temp(), 'none.sqlite'), ['read']).unused).toEqual(['read'])
+})
+
+it('keeps failed calls out of dream stats: no args, and secrets in errors masked', async () => {
+  const file = join(await temp(), 'trace.sqlite')
+  const db = new DatabaseSync(file)
+  db.exec(
+    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER)',
+  )
+  db.prepare('INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    '1',
+    100,
+    5,
+    'tool',
+    'bash',
+    0,
+    'Error: 401 for Authorization: Bearer abc.def.ghi with api_key=sk-test0123456789abcdef',
+    '{"command":"curl -H \'Authorization: Bearer abc.def.ghi\' https://x"}',
+    8,
+    9,
+  )
+  db.close()
+  const masked = 'Error: 401 for Authorization: Bearer [redacted] with api_key=[redacted]'
+  const stats = toolStats(file, ['bash'])
+  expect(stats.errors).toEqual([
+    {
+      name: 'bash',
+      error: masked,
+      count: 1,
+      examples: [{ conversation: 8, entry: 9, error: masked }],
+    },
+  ])
+  expect(JSON.stringify(stats)).not.toMatch(/abc\.def|sk-test|curl/)
+})
+
+it('masks a secret that straddles the stats excerpt boundaries', async () => {
+  const file = join(await temp(), 'trace.sqlite')
+  const db = new DatabaseSync(file)
+  db.exec(
+    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER)',
+  )
+  const token = 'ghp_' + 'abcdefghij'.repeat(4)
+  const tail = 'x'.repeat(190)
+  db.prepare('INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    '1',
+    100,
+    5,
+    'tool',
+    'bash',
+    0,
+    `${'.'.repeat(150)} ${token}\nfailed with Authorization: Bearer abcdefghijklmnop ${tail}`,
+    null,
+    1,
+    2,
+  )
+  db.close()
+  const text = JSON.stringify(toolStats(file, ['bash']))
+  expect(text).not.toMatch(/ghp_|abcdefghij/)
 })
 
 it('retains the terminal selector error through tracing into dream failure examples', async () => {
@@ -446,5 +501,5 @@ it('retains the terminal selector error through tracing into dream failure examp
   }
   const [group] = toolStats(file, ['browser']).errors
   expect(group.error).toContain(warning)
-  expect(group.examples).toEqual([{ at: '#7/43', args: '', error: timeout }])
+  expect(group.examples).toEqual([{ conversation: 7, entry: 43, error: timeout }])
 })
