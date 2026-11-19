@@ -2,7 +2,11 @@ import { afterEach, expect, it } from 'vitest'
 import { classifyFailure } from '../failure.ts'
 import { notifier } from '../server.ts'
 import { noticeFor } from '../notice.ts'
-import { removeTemps, temp, until } from '../../../test/helpers.ts'
+import { apis, removeTemps, temp, until } from '../../../test/helpers.ts'
+import healthExtension from '../server.ts'
+import { HealthApi } from '../api.ts'
+import { NoticesApi } from '../../notices/api.ts'
+import type { ExtensionHost } from '../../../server/extensions.ts'
 
 afterEach(removeTemps)
 
@@ -281,4 +285,47 @@ it('drain waits for a report still blocked on its opening write, and admits noth
   await draining
   await reporting
   expect(t.posted.map((notice) => notice.key)).toEqual([`health:typesafe:billing:${NOW}`])
+})
+
+it('a facet released and opened again, as on a failed handoff, keeps closing and opening episodes', async () => {
+  const home = await temp()
+  const openers: (() => Promise<void>)[] = []
+  const releasers: (() => Promise<void>)[] = []
+  const services = apis()
+  const posted: string[] = []
+  services.implement(NoticesApi, {
+    post: async (notice) => {
+      posted.push(notice.key)
+      return { id: posted.length, duplicate: false }
+    },
+  })
+  healthExtension({
+    ...services,
+    home,
+    userHome: home,
+    ultimateRoot: home,
+    projectRoot: home,
+    modelRuntime: {
+      getProvider: () => undefined,
+      getProviderAuthStatus: () => ({ configured: true }),
+    },
+    resource: <T>(_key: string, create: () => T) => create(),
+    doc: () => undefined,
+    react: () => {},
+    onOpen: (callback: () => Promise<void>) => openers.push(callback),
+    onRelease: (callback: () => Promise<void>) => releasers.push(callback),
+    onClose: () => {},
+  } as unknown as ExtensionHost)
+  const health = services.need(HealthApi)
+  const cycle = async (callbacks: (() => Promise<void>)[]) => {
+    for (const callback of callbacks) await callback()
+  }
+  await cycle(openers)
+  await health.report(credits)
+  await cycle(releasers)
+  await cycle(openers)
+  await health.report({ provider: 'typesafe', ok: true })
+  await health.report({ ...credits, status: 401, error: 'invalid key' })
+  expect(posted.map((key) => key.split(':')[2])).toEqual(['billing', 'auth'])
+  await cycle(releasers)
 })

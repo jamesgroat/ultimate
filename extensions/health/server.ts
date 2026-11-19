@@ -55,6 +55,7 @@ export type Notifier = {
   report(report: ProviderReport): Promise<void>
   routing(state: unknown): Promise<void>
   drain(): Promise<void>
+  resume(): void
 }
 
 export function notifier(options: {
@@ -123,6 +124,9 @@ export function notifier(options: {
     async drain() {
       draining = true
       while (operations.size) await Promise.all(operations)
+    },
+    resume() {
+      draining = false
     },
   }
   async function reportOutcome(report: ProviderReport) {
@@ -261,6 +265,7 @@ export default function health(host: ExtensionHost) {
   }
   host.onOpen(async () => {
     released = false
+    notices.resume()
     await watchRouting()
     if (!routing && !released)
       stopRetrying = every(ROUTING_ATTACH_RETRY, () => void watchRouting(), { unref: true })
