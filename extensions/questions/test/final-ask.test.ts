@@ -323,6 +323,60 @@ it('does not nudge when this conversation already has an open native card', asyn
   expect((await f.log())!.messages).toHaveLength(1)
 })
 
+const OTHER_ASK =
+  'Should I rotate the Sentry FTP credential tonight, or leave the release pipeline as it is?'
+
+it('nudges an ask that an open card about something else does not cover', async () => {
+  const f = await fixture()
+  await f.run([card])
+  let turns = 0
+  await f.run([
+    () => {
+      turns++
+      return fauxAssistantMessage([fauxText(OTHER_ASK)])
+    },
+    () => {
+      turns++
+      return card
+    },
+  ])
+  expect(turns).toBe(2)
+})
+
+it('lets the classifier judge coverage, and the word overlap decide when it fails', async () => {
+  const covers = (p: number) => async (request: { questions: object }) => ({
+    model: 'fake',
+    answers: Object.fromEntries(
+      Object.keys(request.questions).map((key) => [
+        key,
+        { type: 'noul' as const, noul: key === 'ask' ? 0.95 : p },
+      ]),
+    ),
+    usage: { inputTokens: 0 },
+  })
+  for (const [classify, ask, expected] of [
+    [covers(0.9), OTHER_ASK, 1],
+    [covers(0.1), ASK, 2],
+    [async () => Promise.reject(new Error('402')), ASK, 1],
+    [async () => Promise.reject(new Error('402')), OTHER_ASK, 2],
+  ] as const) {
+    const f = await fixture({ classify })
+    await f.run([card])
+    let turns = 0
+    await f.run([
+      () => {
+        turns++
+        return fauxAssistantMessage([fauxText(ask)])
+      },
+      () => {
+        turns++
+        return card
+      },
+    ])
+    expect(turns).toBe(expected)
+  }
+})
+
 const SK_MISS =
   'Two ways forward.\n- **Build now:** go ahead with steps 1–3 (parser, card, tests)?\n- **Wait:** hold for the API.'
 const noul = (p: number) => async () => ({

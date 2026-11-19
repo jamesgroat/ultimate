@@ -45,8 +45,11 @@ repository's prompt-only behavioural policy, not a guarantee that every question
 Only current runs whose placed inputs all come from the user qualify (typed input, a voice utterance, or a Messages
 input attributed to the user). Peer, branch, subagent, automation and unknown or mixed origins are excluded, regardless
 of their model role. Watchdog's automatic retry submissions are excluded by their `watchdog-retry:` request provenance,
-even though they use the same `pi.user` entry kind as typed input. The message tool must be available and the
-conversation must have no open native answer card.
+even though they use the same `pi.user` entry kind as typed input. The message tool must be available and no open native
+answer card of the conversation may already cover the ask: classify judges each open card against the closing text
+(0.8 counts as covered), and without it, on failure or after 3 seconds, a card covers the ask when its text and
+questions share at least 30% of the closing paragraphs' content words (Jaccard), so an unrelated open card no longer
+silences the nudge.
 The heuristic ignores code and quoted text (a quoted “go” after say or reply still counts) and does not treat arbitrary
 question marks or mentions of a go as asks. It also catches an ask after a short `**Label:**` and an answer ending in
 “let me know which/whether…”, “tell me which/whether…” or “confirm and I…”.
