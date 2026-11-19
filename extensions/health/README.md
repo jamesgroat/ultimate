@@ -1,4 +1,4 @@
-Warns you in the status line when a model provider stops working on this machine. It tracks whether each model provider works on this machine, from every real response, and reports a failing one to the `setup` status-line item.
+Warns you in the status line when a model provider stops working on this machine, and posts one Inbox notice when a provider runs out of credits, hits a usage limit or rejects its login. It tracks whether each model provider works on this machine, from every real response, and reports a failing one to the `setup` status-line item.
 
 ## What is stored
 
@@ -47,3 +47,34 @@ A `GenerationTask` `afterResponse` hook records every terminal provider message 
 ## Status line
 
 In every home the `setup` status-line item lists a failing provider with its error (`providers()`).
+
+## Inbox notices
+
+When a provider runs out of credits, hits a usage limit or rejects its login, health posts one Inbox notice (tag
+`Provider`) through the `NoticesApi` service of `notices/api.ts`, when a notices extension provides it (Life's does; the
+built-in only toasts). Its title says what happened ("TypeSafe: out of credits", "Claude Code: usage limit reached
+(resets 3:40 PM)", "OpenAI: key rejected"); its text names the agent definitions that run on that provider and the
+extensions known to call it, the reset time when known, and where to add credits or check usage.
+
+`classifyFailure` (`failure.ts`) sorts a failure from its HTTP status and message: `auth` and 402 come from
+`failureKind` in `store.ts`; `usage` is a used-up plan or quota (Codex "usage limit", `insufficient_quota`, Claude Code's
+usage-credit refusal, and any capacity error Pi treats as non-retryable), with `resetsAt` when the error names it;
+`billing` is a 402 or credit wording. Everything else is `other`, and so is a retryable throttle or overload:
+`watchdog` owns those, and they never post.
+
+**One notice per episode.** An episode is one provider in one class, open from its first failure until that
+provider's next success (`episodes.ts`, kept in `<project home>/health-notices.json`, so a restart does not post
+again). Failures while it is open post nothing, however many there are. A failure of another class starts a new
+episode. The key is `health:<provider>:<class>:<epoch ms of the first failure>`; the notices channel never reposts a
+key, also after Done. Every episode of a provider posts into the slot `health:<provider>`, so a new episode replaces
+the provider's notice while it still waits, and a flapping provider keeps a single Inbox item (Life's notices also
+coalesce more than three posts an hour into one slot).
+
+**Subscription exhaustion.** Health watches subscription routing's root document (`subscription-routing.state`, when
+that extension is loaded). When a pair's reading for a provider flips to `exhausted`, that opens a `usage` episode with
+the reading's `resetsAt`, the same episode a model error opens, so the two paths never post twice. `paced` alone
+posts nothing.
+
+**Reporting in.** Every real model response feeds the episodes. Extensions that call a provider outside the model
+catalogue report each outcome with `HealthApi.report({ provider, ok, status?, error?, resetsAt? })` (`want` it);
+`classify` reports TypeSafe this way. The error is only classified, never stored or shown.

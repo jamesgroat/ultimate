@@ -19,6 +19,8 @@ const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const NOW = 1_000 * HOUR
 
+const lifecycle = { onOpen: () => {}, onRelease: () => {}, onClose: () => {} }
+
 const message = (stopReason: AssistantMessage['stopReason'], errorMessage?: string) =>
   ({ provider: 'anthropic', stopReason, errorMessage }) as AssistantMessage
 
@@ -205,6 +207,7 @@ it('reads only providers with a login here, so a removed login leaves no stale f
       getProviderAuthStatus: (provider: string) => ({ configured: provider === 'openai-codex' }),
     },
     react: () => {},
+    ...lifecycle,
   } as unknown as ExtensionHost)
   const providers = await services.need(HealthApi).providers()
   expect(providers.map((entry) => [entry.provider, entry.state])).toEqual([['openai-codex', 'ok']])
@@ -232,6 +235,7 @@ it("Ultimate's logout resets the provider's health through models.login-changed"
       emit: events.emit,
       react: events.react,
       modelRuntime: { logout: async (provider: string) => void logouts.push(provider) },
+      ...lifecycle,
     } as unknown as ExtensionHost
     healthExtension(host)
     await events.start()
