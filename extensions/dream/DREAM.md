@@ -9,8 +9,9 @@ itself.
 
 A dream is ordinary work: one branch, its answer, the user's decisions, ordinary branches for what they approve. There
 is no session to track. Dream's actions, called with codemode `ultimate.action('dream', name, args)`: `prepare
-{chapter, learned, handoff}` and `stats` (tool numbers from the trace, no model). `stats` counts tool calls over the
-whole retained trace: about the last 7 days, or the newest 200,000 calls, whichever ends first. `debug trace` and
+{chapter, learned, handoff}` and `stats` (call numbers from the trace, no model). `stats` counts tool calls, and
+service and action calls per caller and per callee, over the whole retained trace: about the last 7 days, or the newest
+200,000 calls, whichever ends first; `{since, until}` (ISO times) narrow it, for example to one night. `debug trace` and
 `ultimate.trace` do not read that window whole: they return the newest rows only (the newest 100 by default for
 `ultimate.trace`, 50 for `debug trace`, at most 1000, and `debug trace` cuts its text at about 160 rows), so on a busy
 project a query can cover hours rather than days. For older failures and model errors, read conversation entries and
@@ -117,7 +118,9 @@ text into a report, proposal, handoff or memory.
   and evidence (the memory review in extensions/lineage/README.md). Never drop or weaken the memory about the user.
 - **failures** — what failed often: `watchdog.failure` cards, tool and action errors in the trace, retries, reactor
   failures, lander rejections, runs the user had to stop. Group by cause; for the top ones propose a fix.
-- **tools** — `stats` gives calls, failures, mean duration and enabled tools never called. Each frequent error has
+- **tools** — `stats` gives calls, failures, mean duration and enabled tools never called, and service and action
+  calls with failures per caller and per callee: background work no tool shows, such as a reactor calling a service
+  thousands of times or failing on credits. Each frequent tool error has
   `{conversation, entry}` pointers and a masked error line, never the call's args: read an entry with
   `ultimate.entries` only when the cause needs it. Explain the numbers: why a tool fails, which are slow, which
   unused ones should be taught or removed, what agents did by hand that a tool should do.
