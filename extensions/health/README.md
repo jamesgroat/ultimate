@@ -65,16 +65,17 @@ tokens-per-minute 429: `watchdog` owns those, and they never post.
 **One notice per episode.** An episode is one provider in one class, open from its first failure until that
 provider's next success, which closes all of the provider's episodes (`episodes.ts`, kept in
 `<project home>/health-notices.json`, so a restart does not post again). Failures while it is open post nothing,
-however many there are; a provider failing in two classes in turn has two episodes, never more. The episode is claimed
-in the write that opens it; a post that fails (or finds no notices service) releases the claim, and the next failure
-posts again under the same key. Writes go through one queue per project home that outlives facet reloads and is
-drained on release. The key is `health:<provider>:<class>:<epoch ms of the first failure>`; the notices channel never reposts a
+however many there are; a provider failing in two classes in turn has two episodes, never more. An episode is marked
+`delivered` on disk only after its notice was posted; until then each failure (or exhausted reading) of it delivers
+again under the same key, so a post that failed, found no notices service or was cut off by a restart is retried. One
+delivery per key runs at a time. Writes and deliveries go through one queue per project home that outlives facet
+reloads; release drains both. The key is `health:<provider>:<class>:<epoch ms of the first failure>`; the notices channel never reposts a
 key, also after Done. Every episode of a provider posts into the slot `health:<provider>`, so a new episode replaces
 the provider's notice while it still waits, and a flapping provider keeps a single Inbox item (Life's notices also
 coalesce more than three posts an hour into one slot).
 
 **Subscription exhaustion.** Health watches subscription routing's root document (`subscription-routing.state`, when
-that extension is loaded; when it is not yet, each provider report tries to attach again). When a pair's reading for a provider flips to `exhausted`, that opens a `usage` episode with
+that extension is loaded; when it is not yet, health tries to attach again every minute until it can). When a pair's reading for a provider flips to `exhausted`, that opens a `usage` episode with
 the reading's `resetsAt`, the same episode a model error opens, so the two paths never post twice. `paced` alone
 posts nothing.
 

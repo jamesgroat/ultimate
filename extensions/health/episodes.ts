@@ -4,13 +4,16 @@ import { settled } from '../../lib/errors.ts'
 import type { FailureClass } from './failure.ts'
 
 export type NoticeClass = Exclude<FailureClass, 'other'>
-type Episode = { since: number; posted?: boolean }
+type Episode = { since: number; delivered?: boolean }
 type ProviderEpisodes = Partial<Record<NoticeClass, Episode>>
 export type EpisodeFile = {
   open: Record<string, ProviderEpisodes>
   exhausted: Record<string, boolean>
 }
-export type EpisodeQueue = { writes: Promise<unknown> }
+export type EpisodeQueue = {
+  writes: Promise<unknown>
+  delivering: Map<string, Promise<void>>
+}
 
 export const episodesPath = (home: string) => join(home, 'health-notices.json')
 export const noticeKey = (provider: string, cls: NoticeClass, since: number) =>
@@ -35,13 +38,13 @@ export function updateEpisodes<T>(
   return operation
 }
 
-export type Unposted = { class: NoticeClass; since: number }
+export type Undelivered = { provider: string; class: NoticeClass; since: number }
 
 export function step(
   file: EpisodeFile,
   provider: string,
   outcome: { ok: true } | { ok: false; class: FailureClass; at: number },
-): Unposted | undefined {
+): Undelivered | undefined {
   if (outcome.ok) {
     delete file.open[provider]
     return undefined
@@ -49,12 +52,19 @@ export function step(
   if (outcome.class === 'other') return undefined
   const episodes = (file.open[provider] ??= {})
   const episode = (episodes[outcome.class] ??= { since: outcome.at })
-  if (episode.posted) return undefined
-  episode.posted = true
-  return { class: outcome.class, since: episode.since }
+  return episode.delivered ? undefined : { provider, class: outcome.class, since: episode.since }
 }
 
-export function releaseClaim(file: EpisodeFile, provider: string, claimed: Unposted) {
-  const episode = file.open[provider]?.[claimed.class]
-  if (episode?.since === claimed.since) delete episode.posted
+export function pending(
+  file: EpisodeFile,
+  provider: string,
+  cls: NoticeClass,
+): Undelivered | undefined {
+  const episode = file.open[provider]?.[cls]
+  return episode && !episode.delivered ? { provider, class: cls, since: episode.since } : undefined
+}
+
+export function markDelivered(file: EpisodeFile, notice: Undelivered) {
+  const episode = file.open[notice.provider]?.[notice.class]
+  if (episode?.since === notice.since) episode.delivered = true
 }

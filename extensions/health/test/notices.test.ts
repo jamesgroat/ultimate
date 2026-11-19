@@ -2,7 +2,7 @@ import { afterEach, expect, it } from 'vitest'
 import { classifyFailure } from '../failure.ts'
 import { notifier } from '../server.ts'
 import { noticeFor } from '../notice.ts'
-import { removeTemps, temp } from '../../../test/helpers.ts'
+import { removeTemps, temp, until } from '../../../test/helpers.ts'
 
 afterEach(removeTemps)
 
@@ -79,13 +79,18 @@ async function setup(home?: string) {
   const inbox = new Map<string, { key: string; title: string }>()
   const keys = new Set<string>()
   const delivery = { down: false }
-  const queue = { writes: Promise.resolve() as Promise<unknown> }
+  const queue = {
+    writes: Promise.resolve() as Promise<unknown>,
+    delivering: new Map<string, Promise<void>>(),
+  }
+  const gate = { wait: undefined as Promise<void> | undefined }
   const make = () =>
     notifier({
       home,
       queue,
       now: () => now,
       post: async (notice) => {
+        await gate.wait
         if (delivery.down) throw new Error('notices unavailable')
         posted.push(notice)
         if (keys.has(notice.key)) return true
@@ -103,7 +108,17 @@ async function setup(home?: string) {
           timeZone: 'America/Phoenix',
         }),
     })
-  return { health: make(), make, delivery, posted, inbox, tick: (ms: number) => (now += ms) }
+  return {
+    home,
+    queue,
+    gate,
+    health: make(),
+    make,
+    delivery,
+    posted,
+    inbox,
+    tick: (ms: number) => (now += ms),
+  }
 }
 
 const credits = {
@@ -153,23 +168,24 @@ it('transient and other failures never post', async () => {
   expect(t.posted).toEqual([])
 })
 
-it('subscription routing exhaustion posts once with its reset, and shares the episode with model errors', async () => {
-  const t = await setup()
-  const resetsAt = Date.parse('2026-11-18T22:40:00Z')
-  const plan = (exhausted: boolean, paced = true) => ({
-    plan: {
-      pairs: {
-        general: {
-          preferred: { provider: 'claude-code', modelId: 'claude-opus-5-5' },
-          alternative: { provider: 'openai-codex', modelId: 'gpt-6-astra' },
-          readings: {
-            preferred: { exhausted, paced, resetsAt },
-            alternative: { exhausted: false, paced, resetsAt: null },
-          },
+const resetsAt = Date.parse('2026-11-18T22:40:00Z')
+const plan = (exhausted: boolean, paced = true) => ({
+  plan: {
+    pairs: {
+      general: {
+        preferred: { provider: 'claude-code', modelId: 'claude-opus-5-5' },
+        alternative: { provider: 'openai-codex', modelId: 'gpt-6-astra' },
+        readings: {
+          preferred: { exhausted, paced, resetsAt },
+          alternative: { exhausted: false, paced, resetsAt: null },
         },
       },
     },
-  })
+  },
+})
+
+it('subscription routing exhaustion posts once with its reset, and shares the episode with model errors', async () => {
+  const t = await setup()
   await t.health.routing(plan(false))
   expect(t.posted).toEqual([])
   await t.health.routing(plan(true))
@@ -216,4 +232,37 @@ it('notifiers sharing a queue, as across a facet reload, open one episode for co
     t.health.report(credits),
   ])
   expect(t.posted).toHaveLength(1)
+})
+
+it('a routing exhaustion whose notice failed is delivered by a later reading once notices recover', async () => {
+  const t = await setup()
+  t.delivery.down = true
+  await t.health.routing(plan(true))
+  t.delivery.down = false
+  await t.health.routing(plan(true))
+  await t.health.routing(plan(true))
+  expect(t.posted).toHaveLength(1)
+})
+
+it('release drains a delivery in flight, and a delivery cut off by a restart is retried by a fresh notifier', async () => {
+  const t = await setup()
+  const hold = Promise.withResolvers<void>()
+  t.gate.wait = hold.promise
+  const reporting = t.health.report(credits)
+  await until(() => t.queue.delivering.size === 1)
+  hold.resolve()
+  await Promise.all(t.queue.delivering.values())
+  await reporting
+  expect(t.posted).toHaveLength(1)
+
+  const crashed = await setup()
+  crashed.gate.wait = new Promise(() => {})
+  const cutOff = crashed.health.report(credits)
+  await until(() => crashed.queue.delivering.size === 1)
+  const restarted = await setup(crashed.home)
+  await restarted.health.report(credits)
+  expect(restarted.posted.map((notice) => notice.key)).toEqual([`health:typesafe:billing:${NOW}`])
+  expect(await Promise.race([cutOff.then(() => 'settled'), Promise.resolve('pending')])).toBe(
+    'pending',
+  )
 })

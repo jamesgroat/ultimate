@@ -18,8 +18,10 @@ import { NoticesApi } from '../notices/api.ts'
 import type { Flip, HealthEntry } from './store.ts'
 import { Changed } from './refs.ts'
 import { classifyFailure } from './failure.ts'
-import { releaseClaim, noticeKey, noticeSlot, step, updateEpisodes } from './episodes.ts'
-import type { EpisodeQueue, NoticeClass } from './episodes.ts'
+import { markDelivered, noticeKey, noticeSlot, pending, step, updateEpisodes } from './episodes.ts'
+import type { EpisodeQueue, NoticeClass, Undelivered } from './episodes.ts'
+import { every } from '../../lib/timers.ts'
+import type { Cancel } from '../../lib/timers.ts'
 import { noticeFor } from './notice.ts'
 
 const ROUTING_STATE = 'subscription-routing.state'
@@ -71,35 +73,35 @@ export function notifier(options: {
     resetsAt?: number,
   ) => Promise<{ title: string; text: string }>
 }): Notifier {
+  const deliver = (notice: Undelivered | undefined, resetsAt?: number) => {
+    if (!notice) return Promise.resolve()
+    const key = noticeKey(notice.provider, notice.class, notice.since)
+    const inFlight = options.queue.delivering.get(key)
+    if (inFlight) return inFlight
+    const delivery = options
+      .describe(notice.provider, notice.class, resetsAt)
+      .then(({ title, text }) =>
+        options.post({ key, slot: noticeSlot(notice.provider), tag: 'Provider', title, text }),
+      )
+      .then(async (delivered) => {
+        if (delivered)
+          await updateEpisodes(options.home, options.queue, (file) => markDelivered(file, notice))
+      })
+      .catch((error: unknown) => console.error('health: posting a provider notice failed:', error))
+      .finally(() => options.queue.delivering.delete(key))
+    options.queue.delivering.set(key, delivery)
+    return delivery
+  }
   const open = async (
     provider: string,
     outcome: { ok: true } | { ok: false; class: ReturnType<typeof classifyFailure>['class'] },
     resetsAt?: number,
   ) => {
     const at = options.now()
-    const unposted = await updateEpisodes(options.home, options.queue, (file) =>
+    const notice = await updateEpisodes(options.home, options.queue, (file) =>
       step(file, provider, outcome.ok ? outcome : { ...outcome, at }),
     )
-    if (!unposted) return
-    const delivered = await options
-      .describe(provider, unposted.class, resetsAt)
-      .then(({ title, text }) =>
-        options.post({
-          key: noticeKey(provider, unposted.class, unposted.since),
-          slot: noticeSlot(provider),
-          tag: 'Provider',
-          title,
-          text,
-        }),
-      )
-      .catch((error: unknown) => {
-        console.error('health: posting a provider notice failed:', error)
-        return false
-      })
-    if (!delivered)
-      await updateEpisodes(options.home, options.queue, (file) =>
-        releaseClaim(file, provider, unposted),
-      )
+    await deliver(notice, resetsAt)
   }
   const logged = (work: Promise<unknown>) =>
     work.then(
@@ -124,13 +126,17 @@ export function notifier(options: {
   }
   async function readRouting(state: unknown) {
     const now = exhaustedProviders(state)
-    const flipped = await updateEpisodes(options.home, options.queue, (file) => {
-      const newly = [...now.keys()].filter((provider) => !file.exhausted[provider])
+    const at = options.now()
+    const notices = await updateEpisodes(options.home, options.queue, (file) => {
+      const due = [...now.keys()].map((provider) =>
+        file.exhausted[provider]
+          ? pending(file, provider, 'usage')
+          : step(file, provider, { ok: false, class: 'usage', at }),
+      )
       file.exhausted = Object.fromEntries([...now.keys()].map((provider) => [provider, true]))
-      return newly
+      return due
     })
-    for (const provider of flipped)
-      await open(provider, { ok: false, class: 'usage' }, now.get(provider))
+    for (const notice of notices) if (notice) await deliver(notice, now.get(notice.provider))
   }
 }
 
@@ -183,10 +189,13 @@ async function agentsOn(host: ExtensionHost, provider: string) {
     .map((definition) => definition.name)
 }
 
+const ROUTING_ATTACH_RETRY = 60_000
+
 export default function health(host: ExtensionHost) {
   const announceHealthFlip = (flips: Flip[]) => announce(host, flips)
   const queue = host.resource<EpisodeQueue>('health.episodes', () => ({
     writes: Promise.resolve(),
+    delivering: new Map(),
   }))
   const notices = notifier({
     home: host.home,
@@ -209,6 +218,7 @@ export default function health(host: ExtensionHost) {
   })
   let routing: DocumentWatch<JsonObject> | undefined
   let attaching: Promise<void> | undefined
+  let stopRetrying: Cancel | undefined
   let released = true
   const attach = async () => {
     const token = host.doc(ROUTING_STATE)
@@ -221,6 +231,8 @@ export default function health(host: ExtensionHost) {
       return
     }
     routing = watch
+    stopRetrying?.()
+    stopRetrying = undefined
     await notices.routing(watch.value)
     watch.start(async (call) => {
       if (call.kind === 'value') await notices.routing(call.value)
@@ -237,19 +249,18 @@ export default function health(host: ExtensionHost) {
   host.onOpen(async () => {
     released = false
     await watchRouting()
+    if (!routing && !released)
+      stopRetrying = every(ROUTING_ATTACH_RETRY, () => void watchRouting(), { unref: true })
   })
-  const report = (outcome: ProviderReport) => {
-    inProcess(
-      'subscription routing may load after health: the next report attaches again',
-      settled(watchRouting() ?? Promise.resolve()),
-    )
-    return notices.report(outcome)
-  }
+  const report = (outcome: ProviderReport) => notices.report(outcome)
   const release = async () => {
     released = true
+    stopRetrying?.()
+    stopRetrying = undefined
     await attaching
     await routing?.stop()
     routing = undefined
+    await Promise.all(queue.delivering.values())
     await settled(queue.writes)
   }
   host.onRelease(release)
