@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { git, isolatable, noCommit, noRepository } from '../lib/git.ts'
 import { readJson, updateJson, writeJson } from '../lib/json-file.ts'
-import { redactSecrets } from '../lib/redact.ts'
+import { errorLine, redactSecrets } from '../lib/redact.ts'
 import { readSettings, updateSettings } from '../lib/settings.ts'
 import { shortTitle } from '../lib/title.ts'
 import { temp } from './helpers.ts'
@@ -61,6 +61,14 @@ it('masks token-shaped text and keeps ordinary error text readable', () => {
   const plain =
     'TimeoutError: locator.waitFor: selector timed out after 60s at /Users/james/src/my-project-2026-backup-directory/file.ts:120 (2026-11-18T20:21:23.000Z) uuid 123e4567-e89b-12d3-a456-426614174000 fatal: bad object 20f9057a3c1e4b2d9f0a8e7b6c5d4e3f2a1b0c9d'
   expect(redactSecrets(plain)).toBe(plain)
+})
+
+it('carries only the first masked line of an error across a boundary', () => {
+  expect(errorLine('\n  Error: 401 for sk-test-FAKE0123456789abcdef\n    at call (x.ts:1)')).toBe(
+    'Error: 401 for [redacted]…',
+  )
+  expect(errorLine('boom')).toBe('boom')
+  expect(errorLine('x'.repeat(300))).toBe(`${'x'.repeat(200)}…`)
 })
 
 it('reads a missing JSON file as the fallback and rejects unreadable JSON', async () => {

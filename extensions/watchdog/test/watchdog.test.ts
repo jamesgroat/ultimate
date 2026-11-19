@@ -321,12 +321,29 @@ it('reports a branch failure once, with its title, error and last tool step; rep
   }, context)
   await (await f.submit(branch, 'fail')).wait(context)
   await until(async () => (await f.entries()).length === 1)
-  expect((await f.entries())[0].data).toEqual({
+  const [card] = await f.entries()
+  expect(card.data).toEqual({
     conversation: branch,
     title: 'Fix the build',
+    class: 'provider',
     error: 'invalid model configuration',
+    entry: expect.any(Number),
     step: 'read',
     retried: false,
+  })
+  const failedEntry = (card.data as { entry: number }).entry
+  expect(JSON.stringify(card.model)).toContain(`#${branch}/${failedEntry}`)
+  const failed = await f.harness.commit(
+    (tx) =>
+      tx.scanEntries(
+        { conversationId: branch, maxEntryId: failedEntry as never, order: 'descending' },
+        1,
+      ),
+    context,
+  )
+  expect(failed.items[0]?.model?.[0]).toMatchObject({
+    stopReason: 'error',
+    errorMessage: 'invalid model configuration',
   })
   await f.reopen()
   await f.open()
@@ -338,7 +355,9 @@ it('reports a branch failure once, with its title, error and last tool step; rep
     {
       conversation: branch,
       title: 'Fix the build',
+      class: 'provider',
       error: 'invalid model configuration',
+      entry: failedEntry,
       step: 'read',
       retried: false,
       at: 1_000_000,
@@ -385,6 +404,21 @@ it('keeps a secret in a failed run’s own entries, never in its parent’s repo
     error: 'Provider is not configured: [redacted]',
     hint: expect.stringContaining('[redacted] has no login here'),
   })
+})
+
+it('reports a task queued with a multi-line error by its first masked line only', async () => {
+  const f = await fixture((transcript) =>
+    inputText(transcript) === 'fail'
+      ? error('boom sk-test-FAKE0123456789abcdef\n  at call (x.ts:1)\n  at run (y.ts:2)')
+      : fauxAssistantMessage('ok'),
+  )
+  const parent = await f.conversation('Coordinator')
+  const child = await f.conversation('Scout', parent)
+  await (await f.submit(child, 'fail')).wait(context)
+  await until(async () => (await f.entries(parent)).length === 1)
+  const [card] = await f.entries(parent)
+  expect((card.data as { error: string }).error).toBe('boom [redacted]…')
+  expect(JSON.stringify(card.model)).not.toContain('at call')
 })
 
 it('routes a failure owned by a tally, such as a scheduled run, to @ultimate', async () => {
@@ -659,6 +693,7 @@ it('reports a faulted message delivery to its sender, once', async () => {
   expect((await f.entries())[0].data).toEqual({
     conversation: branch,
     title: 'Favourites',
+    class: 'delivery',
     error:
       'Message 5 to #' +
       branch +
@@ -824,6 +859,7 @@ it('recovers no-model failures separately from earlier reply-expecting inputs an
     {
       conversation: branch,
       title: 'Missing provider',
+      class: 'other',
       error: 'Model missing/missing is not available',
       step: 'model request',
       retried: true,
@@ -831,6 +867,7 @@ it('recovers no-model failures separately from earlier reply-expecting inputs an
     {
       conversation: branch,
       title: 'Missing provider',
+      class: 'other',
       error: 'Model missing/missing is not available',
       step: 'model request',
       retried: false,
@@ -937,5 +974,8 @@ it.each([
   ],
 ] as const)('diagnoses %s', (text, temporary, hint) => {
   const message = error(text)
-  expect(diagnose(text, message)).toEqual(hint ? { hint, temporary } : { temporary })
+  const failure = hint === rateHint ? 'rate-limit' : hint ? 'login' : 'provider'
+  expect(diagnose(text, message)).toEqual(
+    hint ? { class: failure, hint, temporary } : { class: failure, temporary },
+  )
 })

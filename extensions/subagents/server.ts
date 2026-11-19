@@ -51,7 +51,7 @@ import { createChild, reconfigure, started } from './children.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { exec } from '../../lib/exec.ts'
 import { shortTitle } from '../../lib/title.ts'
-import { redactSecrets } from '../../lib/redact.ts'
+import { errorLine } from '../../lib/redact.ts'
 import { WorkspacesApi } from '../workspaces/api.ts'
 import { MessageEntry, ReplyEntry } from '../entries/api.ts'
 import { ConversationsApi, Marks } from '../conversations/api.ts'
@@ -221,7 +221,7 @@ function createReporter() {
           }, context)
         } catch (error) {
           if (runtime.signal.aborted) throw error
-          const message = redactSecrets(error instanceof Error ? error.message : String(error))
+          const message = errorLine(error instanceof Error ? error.message : String(error))
           await runtime.commit(async (tx) => {
             const state = await tx.doc(Subagents, runtime.conversationId)
             const action = Object.values(state.actions).find(

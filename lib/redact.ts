@@ -44,3 +44,12 @@ export const redactSecrets = (text: string) =>
   maskAssignments(
     RULES.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), text),
   ).replace(RUN, (run) => (tokenShaped(run) ? MASK : run))
+
+const ERROR_LINE_LIMIT = 200
+
+export function errorLine(error: string) {
+  const lines = error.split(/\r?\n/).filter((line) => line.trim())
+  const line = redactSecrets(lines[0]?.trim() ?? '')
+  const more = lines.length > 1 || line.length > ERROR_LINE_LIMIT
+  return more ? `${line.slice(0, ERROR_LINE_LIMIT).trimEnd()}…` : line
+}

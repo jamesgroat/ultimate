@@ -41,6 +41,14 @@ owner, the extension its name starts with: consumers depend on it, and so does a
 carries `owner` and lists its provider; the owner wanting its own point depends on nothing, so the dependency keeps
 pointing down.
 
+## Error text across boundaries
+
+Raw error and tool-output text stays in the conversation where it happened. Anything that carries a failure further
+(into another conversation, a service argument, a document others read, a notice) passes a failure class, a pointer
+(`#conversation/entry`) and at most `errorLine(error)` from `lib/redact.ts`: the first line, secrets masked, cut short.
+Health's `classifyFailure` and Watchdog's `watchdog.failure` card are the patterns. The [call trace](introspection.md#tracing)
+masks secrets itself before it writes.
+
 ## Lint rules
 
 An extension's `api.ts` is its whole server-side surface for others, so lint (`lint/ultimate.ts`, rules prefixed

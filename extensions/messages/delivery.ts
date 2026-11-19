@@ -26,7 +26,7 @@ import { locate, postAction } from '../../lib/remote.ts'
 import { Messages, MessageSent } from './api.ts'
 import type { Message } from './api.ts'
 import { imagesOf } from '../../lib/entries.ts'
-import { redactSecrets } from '../../lib/redact.ts'
+import { errorLine } from '../../lib/redact.ts'
 import { append, terminal } from './log.ts'
 import { EarlyReplies, remoteLabel, sameOwner, Serving, servesLine } from './addresses.ts'
 import { MessageEntry, ReplyEntry } from '../entries/api.ts'
@@ -145,7 +145,7 @@ export function delivery(host: ExtensionHost) {
         }
         const receipt = await place().catch(async (cause: unknown) => {
           if (runtime.signal.aborted) throw cause
-          const error = `Not delivered to ${task.input.toLabel}: ${redactSecrets(cause instanceof Error ? cause.message : String(cause))}`
+          const error = `Not delivered to ${task.input.toLabel}: ${errorLine(cause instanceof Error ? cause.message : String(cause))}`
           await runtime.commit(async (tx) => {
             const stored = (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.find(
               (item) => item.id === m.id,
@@ -331,7 +331,7 @@ export function delivery(host: ExtensionHost) {
             )
           } catch (cause) {
             if (runtime.signal.aborted) throw cause
-            error = `The reply did not reach ${remoteLabel(m.remote!)}: ${redactSecrets(cause instanceof Error ? cause.message : String(cause))}`
+            error = `The reply did not reach ${remoteLabel(m.remote!)}: ${errorLine(cause instanceof Error ? cause.message : String(cause))}`
           }
           if (error && typeof m.from === 'number')
             await (
