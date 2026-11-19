@@ -520,7 +520,7 @@ it('holds the interval after a failed first classification', async () => {
   await until(async () => (await f.harness.inspect(context)).tasks.length === 0)
   expect((await f.snapshot())?.conversations).toEqual({})
 })
-it('skips rounds of the same tools after a confident answer, for at most a minute', async () => {
+it('skips rounds of the same tools after a confident answer, for at most two minutes', async () => {
   const ask = vi.fn<ClassifyService['ask']>().mockResolvedValue(answer(0.95))
   const f = await fixture({ ask })
   const tools = async (...names: string[]) => {
@@ -542,11 +542,11 @@ it('skips rounds of the same tools after a confident answer, for at most a minut
   expect((await f.row())?.tools).toEqual(['read', 'bash'])
   f.advance(MIN_INTERVAL_MS)
   await tools('read')
-  f.advance(MIN_INTERVAL_MS)
+  f.advance(SKIP_AT_MOST_MS - MIN_INTERVAL_MS - 1_000)
   await tools('bash', 'read')
   expect((await f.row())?.pending).toBeUndefined()
   expect(ask).toHaveBeenCalledTimes(1)
-  f.advance(SKIP_AT_MOST_MS - 2 * MIN_INTERVAL_MS)
+  f.advance(1_000)
   await tools('read')
   await until(() => ask.mock.calls.length === 2)
   await settled()

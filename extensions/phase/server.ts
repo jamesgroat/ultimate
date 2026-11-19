@@ -102,9 +102,9 @@ export function estimatesOf(
   }
   return estimates
 }
-export const MIN_INTERVAL_MS = 20_000
+export const MIN_INTERVAL_MS = 60_000
 export const SKIP_CONFIDENCE = 0.9
-export const SKIP_AT_MOST_MS = 60_000
+export const SKIP_AT_MOST_MS = 120_000
 const MAX_SKIP_TOOLS = 20
 const terminal = {
   status: 'terminal' as const,
