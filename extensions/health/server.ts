@@ -54,6 +54,7 @@ export function exhaustedProviders(state: unknown): Map<string, number | undefin
 export type Notifier = {
   report(report: ProviderReport): Promise<void>
   routing(state: unknown): Promise<void>
+  drain(): Promise<void>
 }
 
 export function notifier(options: {
@@ -103,14 +104,26 @@ export function notifier(options: {
     )
     await deliver(notice, resetsAt)
   }
-  const logged = (work: Promise<unknown>) =>
-    work.then(
-      () => undefined,
-      (error: unknown) => console.error('health: a provider notice failed:', error),
-    )
+  let draining = false
+  const operations = new Set<Promise<void>>()
+  const admitted = (work: () => Promise<unknown>) => {
+    if (draining) return Promise.resolve()
+    const operation: Promise<void> = work()
+      .then(
+        () => undefined,
+        (error: unknown) => console.error('health: a provider notice failed:', error),
+      )
+      .finally(() => operations.delete(operation))
+    operations.add(operation)
+    return operation
+  }
   return {
-    report: (report) => logged(reportOutcome(report)),
-    routing: (state) => logged(readRouting(state)),
+    report: (report) => admitted(() => reportOutcome(report)),
+    routing: (state) => admitted(() => readRouting(state)),
+    async drain() {
+      draining = true
+      while (operations.size) await Promise.all(operations)
+    },
   }
   async function reportOutcome(report: ProviderReport) {
     if (report.ok) return open(report.provider, { ok: true })
@@ -260,7 +273,7 @@ export default function health(host: ExtensionHost) {
     await attaching
     await routing?.stop()
     routing = undefined
-    await Promise.all(queue.delivering.values())
+    await notices.drain()
     await settled(queue.writes)
   }
   host.onRelease(release)

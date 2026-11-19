@@ -266,3 +266,19 @@ it('release drains a delivery in flight, and a delivery cut off by a restart is 
     'pending',
   )
 })
+
+it('drain waits for a report still blocked on its opening write, and admits nothing after it starts', async () => {
+  const t = await setup()
+  const blocked = Promise.withResolvers<void>()
+  t.queue.writes = blocked.promise
+  const reporting = t.health.report(credits)
+  let drained = false
+  const draining = t.health.drain().then(() => (drained = true))
+  await t.health.report({ ...credits, status: 401, error: 'invalid key' })
+  await new Promise((resolve) => setImmediate(resolve))
+  expect(drained).toBe(false)
+  blocked.resolve()
+  await draining
+  await reporting
+  expect(t.posted.map((notice) => notice.key)).toEqual([`health:typesafe:billing:${NOW}`])
+})
