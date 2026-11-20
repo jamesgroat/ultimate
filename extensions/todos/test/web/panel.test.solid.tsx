@@ -99,6 +99,7 @@ it('lets an agent tick the right one of two same-text to-dos, add one for @ultim
     </ExtensionName>
   ))
   await settle()
+  expect(container.querySelector('[data-todo-inbox]')?.textContent).toContain('Inbox · ?')
   harness.server!.of(1)!.send('doc', {
     kind: 'todos',
     value: {
