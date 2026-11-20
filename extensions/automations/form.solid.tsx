@@ -132,6 +132,7 @@ function Editor(props: {
   const [error, setError] = createSignal<string>()
   const conversation = useConversationId()
   const script = () => draft.trigger === 'script'
+  const check = () => script() && draft.check
   const domain = () => draft.trigger === 'ultimate'
   const wakeable = () => script() || domain()
   const promptText = () => draft.prompt.trim()
@@ -263,6 +264,26 @@ function Editor(props: {
               value={draft.ask}
             />
           </Field>
+          <fieldset class="flex flex-col gap-1.5">
+            <legend class={cn(label, 'mb-1.5')}>How to watch</legend>
+            <div class="flex gap-2">
+              <For each={[false, true]}>
+                {(scheduled) => (
+                  <Toggle
+                    pressed={draft.check === scheduled}
+                    disabled={!!props.automation && draft.check !== scheduled}
+                    onPressedChange={(pressed, details) =>
+                      pressed ? set({ check: scheduled }) : details.cancel()
+                    }
+                    size="sm"
+                    variant={draft.check === scheduled ? 'secondary' : 'outline'}
+                  >
+                    {scheduled ? 'On a schedule' : 'Streaming'}
+                  </Toggle>
+                )}
+              </For>
+            </div>
+          </fieldset>
           <label class="-mt-1.5 flex items-center gap-2 text-[12.5px] text-foreground/90">
             <Checkbox
               aria-label="Keep watching after it happens"
@@ -301,10 +322,24 @@ function Editor(props: {
             value={draft.prompt}
           />
         </Field>
-        <Show when={!wakeable()}>
+        <Show when={!wakeable() || check()}>
           <ScheduleFields draft={draft} set={set} />
         </Show>
-        <Show when={!wakeable() || !!promptText()}>
+        <Show when={check()}>
+          <Field label="Timeout (seconds)">
+            <Input
+              aria-label="Timeout (seconds)"
+              class={input}
+              min={1}
+              max={3600}
+              step={1}
+              type="number"
+              onValueChange={(timeout) => set({ timeout })}
+              value={draft.timeout}
+            />
+          </Field>
+        </Show>
+        <Show when={!check() && (!wakeable() || !!promptText())}>
           <Field label="Agent">
             <AgentPicker
               value={draft.agent}
@@ -468,7 +503,10 @@ function ScheduleFields(props: FieldsProps) {
           </Picker>
         </div>
       </Show>
-      <Preview schedule={scheduleOf(draft())} />
+      <Preview
+        schedule={scheduleOf(draft())}
+        check={draft().trigger === 'script' && draft().check}
+      />
     </fieldset>
   )
 }
