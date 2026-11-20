@@ -8,6 +8,7 @@ import { configure, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { afterEach, expect, it, vi } from 'vitest'
 import { writeJson } from '../../../lib/json-file.ts'
 import { prepareHarness } from '../../../server/harness.ts'
+import { callTrace } from '../../../server/trace.ts'
 import type { OpenHost } from '../../../server/harness.ts'
 import type { ExtensionHost } from '../../../server/extensions.ts'
 import type { ActionContext } from '../../../server/actions.ts'
@@ -18,7 +19,7 @@ import { Todos } from '../../todos/server.ts'
 import { Standing } from '../../subagents/api.ts'
 import { ContextUsageDoc } from '../../conversations/api.ts'
 import automations, { actions as automationActions, Automations } from '../../automations/server.ts'
-import dream, { actions, branched, Next, toolStats, userActions } from '../server.ts'
+import dream, { actions, branched, Next, statsWindow, toolStats, userActions } from '../server.ts'
 import { buildSeed } from '../seed.ts'
 import {
   AUTOMATION_NAME,
@@ -362,9 +363,11 @@ it('reads tool numbers from the trace, with unused tools and frequent errors', a
   const file = join(await temp(), 'trace.sqlite')
   const db = new DatabaseSync(file)
   db.exec(
-    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER)',
+    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER, caller TEXT, callee TEXT)',
   )
-  const insert = db.prepare('INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+  const insert = db.prepare(
+    'INSERT INTO calls (id, at, ms, kind, name, ok, error, args, conversation, entry) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  )
   insert.run('1', 100, 10, 'tool', 'edit', 1, null, null, null, null)
   insert.run(
     '2',
@@ -381,8 +384,9 @@ it('reads tool numbers from the trace, with unused tools and frequent errors', a
   insert.run('3', 300, 5, 'tool', 'read', 1, null, null, null, null)
   insert.run('4', 50, 5, 'action', 'dream/stats', 1, null, null, null, null)
   db.close()
-  expect(toolStats(file, ['edit', 'read', 'notify'])).toEqual({
+  expect(toolStats(file, ['edit', 'read', 'notify'])).toMatchObject({
     since: 100,
+    until: 300,
     calls: 3,
     tools: [
       { name: 'edit', calls: 2, failed: 1, avgMs: 20 },
@@ -394,21 +398,78 @@ it('reads tool numbers from the trace, with unused tools and frequent errors', a
         name: 'edit',
         error: 'Could not find the exact text',
         count: 1,
-        examples: [{ conversation: 7, entry: 42 }],
+        examples: [{ conversation: 7, entry: 42, error: 'Could not find the exact text' }],
       },
     ],
   })
   expect(toolStats(join(await temp(), 'none.sqlite'), ['read']).unused).toEqual(['read'])
 })
 
+it('counts service and action calls per caller and callee inside the asked window, never args', async () => {
+  const file = join(await temp(), 'trace.sqlite')
+  const db = new DatabaseSync(file)
+  db.exec(
+    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, caller TEXT, callee TEXT, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER)',
+  )
+  const insert = db.prepare(
+    'INSERT INTO calls (id, at, ms, caller, callee, kind, name, ok, error, args) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)',
+  )
+  insert.run('1', 100, 'model', 'bash', 'tool', 'bash', 1, null, '{"command":"secret-arg"}')
+  insert.run('2', 200, 'phase', 'classify', 'service', 'classify.ask', 0, 'credit', 'secret-arg')
+  insert.run('3', 210, 'phase', 'classify', 'service', 'classify.ask', 1, null, 'secret-arg')
+  insert.run('4', 220, 'phase', 'plan', 'service', 'plan.openCriteria', 1, null, null)
+  insert.run('5', 230, 'keep-warm', 'pause', 'service', 'pause.paused', 1, null, null)
+  insert.run('6', 240, 'ui', 'codemode', 'action', 'codemode/read', 0, 'nope', 'secret-arg')
+  insert.run('7', 241, 'phase', 'classify', 'service', 'classify.ask', 0, 'late', null)
+  db.close()
+  const bothEndsInclusive = { since: Date.parse('1970-01-01T00:00:00.200Z'), until: 240 }
+  const stats = toolStats(file, ['bash'], bothEndsInclusive)
+  expect(stats).toMatchObject({
+    calls: 0,
+    services: {
+      byCaller: [
+        { name: 'phase', calls: 3, failed: 1 },
+        { name: 'keep-warm', calls: 1, failed: 0 },
+      ],
+      byCallee: [
+        { name: 'classify', calls: 2, failed: 1 },
+        { name: 'pause', calls: 1, failed: 0 },
+        { name: 'plan', calls: 1, failed: 0 },
+      ],
+    },
+    actions: {
+      byCaller: [{ name: 'ui', calls: 1, failed: 1 }],
+      byCallee: [{ name: 'codemode', calls: 1, failed: 1 }],
+    },
+  })
+  expect(toolStats(file, ['bash']).services.byCallee[0]).toEqual({
+    name: 'classify',
+    calls: 3,
+    failed: 2,
+  })
+  expect(JSON.stringify(toolStats(file, ['bash']))).not.toMatch(/args|secret-arg/)
+})
+
+it('takes only real ISO times as the stats window', () => {
+  expect(statsWindow(null)).toEqual({})
+  expect(statsWindow({ since: '2026-11-19', until: '2026-11-19T06:30:00-07:00' })).toEqual({
+    since: Date.parse('2026-11-19'),
+    until: Date.parse('2026-11-19T13:30:00Z'),
+  })
+  const hostZoneDependent = '2026-11-19T03:00:00'
+  for (const since of ['10/11/2026', '2026-02-30T00:00:00Z', hostZoneDependent, '', 5])
+    expect(() => statsWindow({ since })).toThrow('since must be an ISO date or an ISO time with')
+})
+
 it('keeps failed calls out of dream stats: no args, and secrets in errors masked', async () => {
   const file = join(await temp(), 'trace.sqlite')
   const db = new DatabaseSync(file)
   db.exec(
-    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER)',
+    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER, caller TEXT, callee TEXT)',
   )
-  const insert = db.prepare('INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-  insert.run(
+  db.prepare(
+    'INSERT INTO calls (id, at, ms, kind, name, ok, error, args, conversation, entry) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(
     '1',
     100,
     5,
@@ -420,33 +481,88 @@ it('keeps failed calls out of dream stats: no args, and secrets in errors masked
     8,
     9,
   )
-  insert.run(
-    '2',
-    200,
+  db.close()
+  const masked = 'Error: 401 for Authorization: Bearer [redacted] with api_key=[redacted]'
+  const stats = toolStats(file, ['bash'])
+  expect(stats.errors).toEqual([
+    {
+      name: 'bash',
+      error: masked,
+      count: 1,
+      examples: [{ conversation: 8, entry: 9, error: masked }],
+    },
+  ])
+  expect(JSON.stringify(stats)).not.toMatch(/abc\.def|sk-test|curl/)
+})
+
+it('masks a secret that straddles the stats excerpt boundaries', async () => {
+  const file = join(await temp(), 'trace.sqlite')
+  const db = new DatabaseSync(file)
+  db.exec(
+    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER, caller TEXT, callee TEXT)',
+  )
+  const token = 'ghp_' + 'abcdefghij'.repeat(4)
+  const tail = 'x'.repeat(190)
+  db.prepare(
+    'INSERT INTO calls (id, at, ms, kind, name, ok, error, args, conversation, entry) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(
+    '1',
+    100,
     5,
     'tool',
-    'read',
+    'bash',
     0,
-    `${'.'.repeat(149)} ghp_${'abcdefghij'.repeat(4)}`,
+    `${'.'.repeat(150)} ${token}\nfailed with Authorization: Bearer abcdefghijklmnop ${tail}`,
     null,
     1,
     2,
   )
   db.close()
-  const stats = toolStats(file, ['bash', 'read'])
-  expect(stats.errors).toEqual([
-    {
-      name: 'bash',
-      error: 'Error: 401 for Authorization: Bearer [redacted] with api_key=[redacted]',
-      count: 1,
-      examples: [{ conversation: 8, entry: 9 }],
-    },
-    {
-      name: 'read',
-      error: `${'.'.repeat(149)} [redacted]`,
-      count: 1,
-      examples: [{ conversation: 1, entry: 2 }],
-    },
-  ])
-  expect(JSON.stringify(stats)).not.toMatch(/abc\.def|sk-test|curl|ghp_/)
+  const text = JSON.stringify(toolStats(file, ['bash']))
+  expect(text).not.toMatch(/ghp_|abcdefghij/)
+})
+
+it('retains the terminal selector error through tracing into dream failure examples', async () => {
+  const file = join(await temp(), 'trace.sqlite')
+  const trace = callTrace(file)
+  const warning =
+    "Console error: WebSocket connection to 'ws://127.0.0.1:1234/api/live/ws' failed: Error during WebSocket handshake: Unexpected response code: 400"
+  const timeout = 'TimeoutError: locator.waitFor: selector timed out after 60s'
+  const failure = {
+    isError: true,
+    output: [
+      {
+        type: 'text' as const,
+        text: `${`${warning}\n`.repeat(10)}Step 1: Error: earlier step failed\n${timeout}\nCall log:\n  - waiting for locator('button') to be visible\n`,
+      },
+    ],
+  }
+  trace.open()
+  try {
+    const [browser] = trace.tools({
+      name: 'browser',
+      tools: [{ name: 'browser', execute: async () => failure } as never],
+    }).tools!
+    expect(
+      await browser.execute(
+        {},
+        {
+          conversationId: 7,
+          taskId: 1,
+          callId: 'call',
+          getTask: async () => ({ input: { kind: 'model', assistant: 43, callId: 'call' } }),
+        } as never,
+        context,
+      ),
+    ).toBe(failure)
+    const [row] = trace.reader.query()
+    expect(row.error).toContain(warning)
+    expect(row.error).toContain(timeout)
+    expect(row.error!.length).toBeLessThanOrEqual(603)
+  } finally {
+    trace.close()
+  }
+  const [group] = toolStats(file, ['browser']).errors
+  expect(group.error).toContain(warning)
+  expect(group.examples).toEqual([{ conversation: 7, entry: 43, error: timeout }])
 })
