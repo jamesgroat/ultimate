@@ -4,6 +4,28 @@ Codemode is Pi Durable's code mode tool (`createCodemodeExtension` from `@earend
 
 **Journaled replay.** The tool is `replay: 'safe'`: Pi journals every nested call's and global's result, and a script a restart interrupts runs again from its start data, gets the recorded results in the same order and continues live, so finished calls (a bash command, a paid classify call) never run twice. A script that takes another path on the rerun fails instead. Tools that must never run twice are `replay: 'unsafe'`: an interrupted one fails rather than running again.
 
+For independent diagnostics, use `Promise.allSettled` and print each outcome so one rejection does not hide the others:
+
+```js
+const checks = {
+  config: tools.read({ path: 'package.json' }),
+  errors: tools.bash({
+    command: 'grep -c ERROR app.log; rc=$?; [ "$rc" -eq 1 ] && exit 0; exit "$rc"',
+  }),
+}
+const results = await Promise.allSettled(Object.values(checks))
+results.forEach((result, i) => {
+  text({
+    check: Object.keys(checks)[i],
+    ...(result.status === 'fulfilled' ? { value: result.value } : { error: String(result.reason) }),
+  })
+})
+```
+
+Here only grep's expected no-match status (1) becomes success; genuine errors remain visible. Keep dependent
+operations fail-fast with sequential `await` or `Promise.all`; do not collect failures and then continue work that
+requires those calls to succeed.
+
 **Script-only tools.** `action` and `tell` have `callers: ['tools']`, so only scripts call them, and `replay: 'unsafe'`. `restart` has `callers: ['model']`, so scripts never see it. `lib/agents.ts` `definitionAgent` keeps the parent's script-only tools in a definition's tool list when the definition has codemode, so subagents and standing agents get them. A conversation whose exact tool list was stored before this (an older subagent, or a fork of its history) has no script-only tools: its scripts get `tools.action does not exist` until the agent is started again.
 
 **Subagents in scripts.** A nested `subagent` start or message always runs in the background (subagents' `beforeTool` hook sets `background: true`), so its answer arrives as a normal report; a nested `wait` or `background: false` is refused with "wait at top level".
