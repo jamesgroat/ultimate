@@ -5,7 +5,11 @@ import { For } from 'solid-js'
 import { Skeleton } from '@/components/ui/skeleton.solid.tsx'
 import { Header, StatusLine } from '@/sdk/solid'
 
-export function Frame(props: { controls?: JSX.Element; children: JSX.Element }) {
+export function Frame(props: {
+  controls?: JSX.Element
+  extras?: JSX.Element
+  children: JSX.Element
+}) {
   return (
     <>
       <Header>
@@ -15,6 +19,7 @@ export function Frame(props: { controls?: JSX.Element; children: JSX.Element }) 
         </span>
         {props.controls}
       </Header>
+      {props.extras}
       <div class="flex min-h-0 flex-1">{props.children}</div>
       <StatusLine />
     </>

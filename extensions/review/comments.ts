@@ -47,7 +47,9 @@ export function excerptOf(lines: readonly string[]) {
   return kept.join('\n')
 }
 
-export function draftsKey(spec: string, conversation?: ConversationId) {
+export function draftsKey(spec: string, conversation?: ConversationId, source?: string) {
+  if (source !== undefined)
+    return `drafts:source:sha256-${sha256(JSON.stringify([source, spec, conversation ?? null]))}`
   const escapedSpecWithoutHyphens = spec.replace(
     /[^A-Za-z0-9.]/g,
     (char) => `_${char.codePointAt(0)!.toString(16)}_`,
@@ -64,9 +66,16 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const line = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 
+export function checkSource(source: unknown): string | undefined {
+  if (source !== undefined && (typeof source !== 'string' || !source.trim()))
+    throw new Error('source must be a non-empty string')
+  return source
+}
+
 export function checkReview(input: unknown): ReviewComments {
   if (!record(input)) throw new Error('Expected { spec, comments, note? }')
   const { spec, comments, note } = input
+  const source = checkSource(input.source)
   if (typeof spec !== 'string' || !spec.trim()) throw new Error('spec must be a non-empty string')
   if (!Array.isArray(comments) || comments.length === 0)
     throw new Error('comments must be a non-empty list')
@@ -92,7 +101,12 @@ export function checkReview(input: unknown): ReviewComments {
       throw new Error(`${at}.excerpt is larger than ${limits.excerptBytes / 1024} KB`)
     return { file, side, start, end, excerpt, text }
   })
-  return { spec, comments: checked, ...(note?.trim() ? { note: note.trim() } : {}) }
+  return {
+    spec,
+    comments: checked,
+    ...(source === undefined ? {} : { source }),
+    ...(note?.trim() ? { note: note.trim() } : {}),
+  }
 }
 
 const languages: Record<string, string> = {
@@ -154,8 +168,10 @@ const fenceLongerThanExcerptBackticks = (text: string) =>
 
 const plural = (count: number) => `${count} comment${count === 1 ? '' : 's'}`
 
-export function reviewText({ spec, comments, note }: ReviewComments) {
+export function reviewText({ spec, comments, note, source, sourceLabel, cwd }: ReviewComments) {
   const parts = [`Review of ${code(spec)} (${plural(comments.length)})`]
+  if (source !== undefined)
+    parts.push(`Source: ${code(sourceLabel ?? source)}${cwd ? `\nCheckout: ${code(cwd)}` : ''}`)
   if (note) parts.push(note)
   for (const comment of comments) {
     const quote = fenceLongerThanExcerptBackticks(comment.excerpt)

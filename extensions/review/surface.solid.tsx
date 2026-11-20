@@ -34,6 +34,7 @@ import {
   cn,
   errorMessage,
   keepLast,
+  Provided,
   showSurface,
   switchConversation,
   useAction,
@@ -54,7 +55,7 @@ import { CommentedDiff } from './file-diff.solid.tsx'
 import type { Writing } from './file-diff.solid.tsx'
 import { Footer } from './footer.solid.tsx'
 import { excerptFor } from './lines.ts'
-import { useSpec, useTarget } from './link.solid.tsx'
+import { useSource, useSpec, useTarget } from './link.solid.tsx'
 import { setTarget } from './link-state.ts'
 import type { ReviewTarget } from './link-state.ts'
 import { Frame, Loading, Notice } from './parts.solid.tsx'
@@ -62,6 +63,7 @@ import { Recipient } from './recipient.solid.tsx'
 import { DiffAction, RecipientAction, SendAction } from './refs.ts'
 import type { ReviewDiff, ReviewFile } from './refs.ts'
 import { Selector } from './selector.solid.tsx'
+import { SourcePicker } from './ui.solid.tsx'
 
 const themeCss = `
 :host {
@@ -398,12 +400,17 @@ const layouts = [
   { name: 'unified', icon: Rows3Icon, label: 'Unified diff' },
 ] as const
 
-type Scope = { spec: string; conversation?: ConversationId }
+type Scope = { spec: string; conversation?: ConversationId; source?: string }
 
 export default function ReviewSurface() {
   const [spec, setSpec] = useSpec()
+  const [source, setSource] = useSource()
   const id = useConversationId()
-  const scope = createMemo(() => ({ spec: spec(), conversation: id() }))
+  const scope = createMemo(() =>
+    source() === undefined
+      ? { spec: spec(), conversation: id() }
+      : { spec: spec(), source: source() },
+  )
   const [sent, setSent] = createSignal<SendOutcome>()
   const [sending, setSending] = createSignal(false)
   return (
@@ -416,6 +423,10 @@ export default function ReviewSurface() {
           setSending={setSending}
           setSent={setSent}
           setSpec={setSpec}
+          selectSource={(next) => {
+            setSource(next)
+            setSpec('uncommitted')
+          }}
         />
       )}
     </Show>
@@ -424,6 +435,7 @@ export default function ReviewSurface() {
 
 function ReviewScope(props: {
   scope: Scope
+  selectSource: (source: string | undefined) => void
   sending: boolean
   sent?: SendOutcome
   setSending: (sending: boolean) => void
@@ -441,16 +453,36 @@ function ReviewScope(props: {
     get conversation() {
       return props.scope.conversation
     },
+    get source() {
+      return props.scope.source
+    },
   }
   const diff = useAction(DiffAction, args, { onError: keepLast })
-  const github = useGithubRepo()
-  const [drafts, update] = useDrafts(() => draftsKey(props.scope.spec, props.scope.conversation))
+  const nativeGithub = useGithubRepo()
+  const github = () => (props.scope.source === undefined ? nativeGithub() : data()?.github)
+  const [drafts, update] = useDrafts(() =>
+    draftsKey(props.scope.spec, props.scope.conversation, props.scope.source),
+  )
   const suggested = useAction(RecipientAction, args, { onError: keepLast })
   const to = () => drafts().to ?? suggested.data()?.conversation
-  const data = createMemo(() => (diff.data()?.spec === props.scope.spec ? diff.data() : undefined))
+  const data = createMemo(() =>
+    diff.data()?.spec === props.scope.spec && diff.data()?.source === props.scope.source
+      ? diff.data()
+      : undefined,
+  )
+  const ready = () =>
+    !!data() &&
+    !diff.loading() &&
+    !diff.error() &&
+    !suggested.loading() &&
+    !suggested.error() &&
+    to() !== undefined
   const setSpec = (spec: string) => props.setSpec(spec)
   createEffect(
-    () => ({ next: diff.data()?.spec, requested: props.scope.spec }),
+    () => ({
+      next: diff.data()?.source === props.scope.source ? diff.data()?.spec : undefined,
+      requested: props.scope.spec,
+    }),
     ({ next, requested }) => {
       if (next && next !== requested) writingAs('app', () => setSpec(next))
     },
@@ -480,9 +512,10 @@ function ReviewScope(props: {
   }
   const send = async (source: Parameters<typeof writingAs>[0]) => {
     const conversation = to()
-    if (conversation === undefined) return
+    if (!ready() || props.sending || conversation === undefined) return
     const { comments, note } = drafts()
     const spec = props.scope.spec
+    const repository = props.scope.source
     const files = parsed()
     const setSent = props.setSent
     const setSending = props.setSending
@@ -493,6 +526,7 @@ function ReviewScope(props: {
       const result = await api.action(SendAction, {
         conversation,
         spec,
+        ...(repository !== undefined && { source: repository }),
         comments: comments.map(({ id: _id, ...comment }) => ({
           ...comment,
           excerpt: excerptFor(files.get(comment.file), comment),
@@ -516,9 +550,26 @@ function ReviewScope(props: {
   const sentError = () => (props.sent && 'error' in props.sent ? props.sent.error : undefined)
   return (
     <Frame
+      extras={
+        phone() && (
+          <div class="shrink-0 border-b border-border/70 px-2 py-1.5 empty:hidden">
+            <Provided
+              point={SourcePicker}
+              input={{ source: props.scope.source, select: props.selectSource }}
+            />
+          </div>
+        )
+      }
       controls={
         <>
+          {!phone() && (
+            <Provided
+              point={SourcePicker}
+              input={{ source: props.scope.source, select: props.selectSource }}
+            />
+          )}
           <Selector
+            source={props.scope.source}
             conversation={props.scope.conversation}
             spec={props.scope.spec}
             title={data()?.title}
@@ -606,6 +657,7 @@ function ReviewScope(props: {
                   >
                     <Footer
                       drafts={drafts()}
+                      disabled={!ready()}
                       error={sentError()}
                       onSend={send}
                       sending={props.sending}

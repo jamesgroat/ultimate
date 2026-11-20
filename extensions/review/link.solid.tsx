@@ -20,20 +20,31 @@ function fromAddress(): ReviewRequest | undefined {
   const side = params.get('side') === 'old' ? 'old' : undefined
   return {
     spec,
+    source: params.get('reviewSource') ?? undefined,
     at: file && Number.isSafeInteger(line) && line > 0 ? { file, line, side } : undefined,
   }
 }
 
 export const useSpec = () => useExtensionUiState(specKey, defaultSpec)
 
+export function useSource() {
+  const [source, setSource] = useExtensionUiState<string | null>('source', null)
+  return [
+    () => source() ?? undefined,
+    (next: string | undefined) => setSource(next ?? null),
+  ] as const
+}
+
 export const useTarget = () => useExternal(getTarget, subscribeTarget)
 
 export function ReviewLink() {
   const [selectedSpec, setSpec] = useSpec()
+  const [selectedSource, setSource] = useSource()
   const shownSurface = useStore((state) => state.ui.surface?.id)
   const open = (request: ReviewRequest) => {
     setTarget(request.at)
     setSpec(request.spec)
+    setSource(request.source)
     showSurface('review')
   }
   useEvent('review:open', (request) => open(request as ReviewRequest))
@@ -44,13 +55,20 @@ export function ReviewLink() {
     if (initial) writingAs('app', () => open(initial))
   })
   createEffect(
-    () => ({ surface: shownSurface(), spec: selectedSpec() }),
-    ({ surface, spec }) => {
+    () => ({ surface: shownSurface(), spec: selectedSpec(), source: selectedSource() }),
+    ({ surface, spec, source }) => {
       if (!surface || (openingFromAddress && surface !== 'review')) return
       openingFromAddress = false
       const url = new URL(location.href)
       const shown = surface === 'review' ? spec : null
-      if (url.searchParams.get('review') === shown) return
+      const shownSource = surface === 'review' ? (source ?? null) : null
+      if (
+        url.searchParams.get('review') === shown &&
+        url.searchParams.get('reviewSource') === shownSource
+      )
+        return
+      if (shownSource === null) url.searchParams.delete('reviewSource')
+      else url.searchParams.set('reviewSource', shownSource)
       if (shown === null) url.searchParams.delete('review')
       else url.searchParams.set('review', shown)
       for (const name of ['file', 'line', 'side']) url.searchParams.delete(name)
