@@ -3,12 +3,18 @@ import { CircleAlert } from '@lucide/solid'
 import { Show } from 'solid-js'
 import { Markdown } from '@/components/markdown/markdown.solid.tsx'
 import { Button } from '@/components/ui/button.solid.tsx'
-import { renderEntry, switchConversation } from '@/sdk/solid'
+import { events, renderEntry, showSurface, switchConversation } from '@/sdk/solid'
 import { ConversationRef } from '../conversations/ui.solid.tsx'
 import { FailureEntry } from './entries.ts'
 
 export const Failure = renderEntry(FailureEntry, (props) => {
   const failure = () => props.entry.data
+  const open = () => {
+    const { conversation, entry } = failure()
+    if (entry !== undefined) events.emit('messages:open', { conversation, entry })
+    showSurface('agent')
+    switchConversation(conversation)
+  }
   return (
     <section class="min-w-0 rounded-md border border-border border-l-2 border-l-destructive/60 bg-muted/20">
       <header class="flex flex-wrap items-center gap-2 border-b border-border/60 px-3 py-2 font-mono text-[11px] text-muted-foreground">
@@ -16,13 +22,28 @@ export const Failure = renderEntry(FailureEntry, (props) => {
         <Button
           aria-label={`Open failed conversation #${failure().conversation} from report #${props.entry.id}`}
           class="min-w-0 shrink text-[11px] font-normal text-foreground hover:underline"
-          onClick={() => switchConversation(failure().conversation)}
+          onClick={open}
           size={null}
           variant={null}
         >
           <ConversationRef id={failure().conversation} title={failure().title} />
         </Button>
         <span>run failed</span>
+        <Show when={failure().class && failure().class !== 'other'}>
+          <span class="rounded-sm bg-muted px-1.5 py-0.5">{failure().class}</span>
+        </Show>
+        <Show when={failure().entry !== undefined}>
+          <Button
+            aria-label={`Open full error for conversation #${failure().conversation} from report #${props.entry.id}`}
+            class="ml-auto text-[11px] font-normal hover:text-foreground hover:underline"
+            data-failure-entry={failure().entry}
+            onClick={open}
+            size={null}
+            variant={null}
+          >
+            full error
+          </Button>
+        </Show>
       </header>
       <div class="space-y-2 px-3 py-3 text-[13px] leading-relaxed">
         <p class="whitespace-pre-wrap text-destructive">{failure().error}</p>

@@ -33,7 +33,11 @@ copy of its context and need it as their parent. Marks are kept by call id, so s
 it cuts writes by ~89 %.
 
 Arguments and results are stored as JSON summaries of about 300 characters with values under keys matching
-`/secret|token|password|key|auth/i` replaced by `[redacted]`; tool calls keep none (the transcript has them). Calls
+`/secret|token|password|key|auth/i` replaced by `[redacted]`; tool calls keep none (the transcript has them). String
+values and error text also pass through `redactSecrets` (`lib/redact.ts`) before they are cut: it masks what looks
+like a credential (known token prefixes, JWTs, `Bearer` values, URL passwords, private keys, values after a
+secret-like label, long random runs) and is best effort, so it misses secrets of other shapes and masks some harmless
+text; a failing conversation's own entries keep the full text. Calls
 into the extensions that handle credentials, `secrets` (secret values) and `models` (API keys and OAuth codes
 answering a login), keep neither, nor an error message, only the error's class. A new extension whose actions or
 services take or return credentials joins `SEALED` in `server/trace.ts`. Rows go to `<home>/trace.sqlite` in batches outside Pi commits, while

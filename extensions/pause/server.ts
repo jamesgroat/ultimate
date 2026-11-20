@@ -9,6 +9,7 @@ import { rebuiltOnOpen, inProcess, settled } from '../../lib/errors.ts'
 import { deadline } from '../../lib/timers.ts'
 import type { Cancel } from '../../lib/timers.ts'
 import { rateLimited } from '../../lib/rate-limit.ts'
+import { redactSecrets } from '../../lib/redact.ts'
 import { Standing } from '../subagents/api.ts'
 import { PauseApi } from './api.ts'
 import { lasted } from './lasted.ts'
@@ -412,7 +413,7 @@ export default function pauseExtension(host: Host) {
         const limit: RateLimit = {
           provider: message.provider,
           model: message.model,
-          error: message.errorMessage!,
+          error: redactSecrets(message.errorMessage!),
           at: message.timestamp,
           conversationId: change.value.conversationId,
         }

@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { defineDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { onCommit } from '../lib/commits.ts'
 import { inProcess } from '../lib/errors.ts'
+import { redactSecrets } from '../lib/redact.ts'
 import { EVENT_FEED, EVENT_FEED_SIZE, NoticeEvent } from '../shared/events.ts'
 import type {
   ChangedEvent,
@@ -236,7 +237,7 @@ export function eventLog(
           if (!handled) return
         } catch (error) {
           state.failure = {
-            error: String(error),
+            error: redactSecrets(String(error)),
             at: new Date().toISOString(),
             entryId: attemptedUncommittedEventId,
           }
