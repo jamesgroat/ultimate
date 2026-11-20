@@ -360,7 +360,7 @@ export function Panels() {
   const content = (
     <>
       <PanelTabs active={active} panels={tabs} />
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="relative min-h-0 flex-1 overflow-y-auto">
         <ExtensionBoundary
           extension={active.extension}
           key={`${active.extension}:${active.id}`}
