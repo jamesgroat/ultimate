@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo } from 'solid-js'
 import { Button } from '@/components/ui/button.solid.tsx'
 import { Kbd } from '@/components/ui/kbd.solid.tsx'
 import {
+  Provided,
   cn,
   events,
   formatAgo,
@@ -11,14 +12,17 @@ import {
   useUiState,
 } from '@/sdk/solid'
 import { ConversationRef } from '../conversations/ui.solid.tsx'
-import { SELECTED, WAIT_WARNING_AFTER_MS, amber, shown } from './items.ts'
-import type { Anchor, Row, Selection } from './items.ts'
+import { SELECTED, WAIT_WARNING_AFTER_MS, amber, inboxCount, shown, toRow } from './items.ts'
+import { InboxSourceChip } from './points.ts'
+import type { InboxStatus } from './points.ts'
+import type { Anchor, Entry, Row, Selection } from './items.ts'
 
 function InboxRow(props: {
   row: Row
   now: number
   current: boolean
   select: (row: Anchor) => void
+  entry: Entry
 }) {
   return (
     <Button
@@ -37,6 +41,7 @@ function InboxRow(props: {
       variant={null}
     >
       <span class="flex min-w-0 items-center gap-2">
+        <Provided input={props.entry} point={InboxSourceChip} />
         <Show
           when={props.row.conversation}
           fallback={<span class="font-mono text-[10.5px]">{props.row.from}</span>}
@@ -76,10 +81,11 @@ function InboxRow(props: {
 
 const keyClass = 'h-4 min-w-4 rounded-[3px] px-1 font-mono text-[10px]'
 
-export function List(props: { rows: readonly Row[]; phone: boolean }) {
+export function List(props: { entries: readonly Entry[]; phone: boolean; status: InboxStatus }) {
   const now = useNow(60_000)
   const [selected, setSelected] = useUiState<Selection>(SELECTED, null)
-  const current = createMemo(() => shown(props.rows, selected()))
+  const rows = createMemo(() => props.entries.map(toRow))
+  const current = createMemo(() => shown(rows(), selected()))
   const select = ({ key, at }: Anchor) => setSelected({ key, at, open: true })
 
   const onKey = (event: KeyboardEvent) => {
@@ -102,10 +108,10 @@ export function List(props: { rows: readonly Row[]; phone: boolean }) {
     if (!row) return
     if (event.key === 'j' || event.key === 'k') {
       event.preventDefault()
-      const rows = props.rows
-      const at = rows.findIndex((candidate) => candidate.key === row.key)
+      const list = rows()
+      const at = list.findIndex((candidate) => candidate.key === row.key)
       const step = event.key === 'j' ? 1 : -1
-      select(rows[Math.max(0, Math.min(rows.length - 1, at + step))])
+      select(list[Math.max(0, Math.min(list.length - 1, at + step))])
     } else if (event.key === 'O') {
       event.preventDefault()
       const { conversation, message } = row
@@ -128,17 +134,19 @@ export function List(props: { rows: readonly Row[]; phone: boolean }) {
     <div class="flex min-h-0 flex-1 flex-col">
       <div class="flex items-center justify-between px-5 pt-4 pb-2">
         <span class="section-label">
-          Waiting on you · <span class={amber}>{props.rows.length}</span>
+          Waiting on you ·{' '}
+          <span class={amber}>{inboxCount(props.entries.length, props.status)}</span>
         </span>
         <span class="section-label">oldest first</span>
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-4" data-inbox-list>
-        <For each={props.rows} keyed={(row) => row.key}>
-          {(row) => (
+        <For each={props.entries} keyed={(entry) => entry.key}>
+          {(entry) => (
             <InboxRow
-              current={!props.phone && row().key === current()?.key}
+              current={!props.phone && entry().key === current()?.key}
+              entry={entry()}
               now={now()}
-              row={row()}
+              row={toRow(entry())}
               select={select}
             />
           )}

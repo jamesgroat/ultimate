@@ -20,6 +20,7 @@ export { ConversationTask } from './points.ts'
 export { ConversationEpic } from './points.ts'
 export { ConversationTaskChip, Unsummarized } from './points.ts'
 export { hiddenConversationIds } from './visible.ts'
+export { featureHue } from '../../lib/conversation-ref.ts'
 export {
   Compacted,
   ConcludeAction,

@@ -25,7 +25,7 @@ import {
   useNow,
   writingAs,
 } from '@/sdk/solid'
-import { Waiting } from '../inbox/ui.solid.tsx'
+import { Waiting, inboxCount } from '../inbox/ui.solid.tsx'
 import { StandingAction } from '../subagents/refs.ts'
 import { AddAction, DoneAction, ReopenAction, TodosDoc } from './refs.ts'
 import type { Todo } from './refs.ts'
@@ -35,13 +35,14 @@ const webOrObsidianLinkWithoutClosingPunctuation =
   /((?:https?|obsidian):\/\/[^\s<>()]*[^\s<>().,;:!?'"])/
 
 export function TodoList() {
-  const { entries, failures } = Waiting()
+  const { entries, failures, status } = Waiting()
   const inbox = () => entries().length
   const doc = useDocOf(() => ROOT, TodosDoc)
   const now = useNow(60_000)
   const [error, setError] = createSignal<string>()
   const items = () => doc()?.items ?? []
   const open = createMemo(() => items().filter((todo) => !todo.done))
+  const hasInbox = () => inbox() > 0 || status().state !== 'complete'
   const yours = () => open().filter((todo) => todo.owner === 'user')
   const ultimate = () => open().filter((todo) => todo.owner === 'ultimate')
   const done = createMemo(() =>
@@ -87,13 +88,13 @@ export function TodoList() {
       <div class="flex items-center gap-2 px-3 pb-2 section-label">
         To-dos
         <span class="ml-auto text-muted-foreground/70">
-          <Show when={inbox() > 0}>
+          <Show when={hasInbox()}>
             <span class={waits}>
-              {inbox()} in Inbox
+              {inboxCount(inbox(), status())} in Inbox
               {open().length > 0 && ' · '}
             </span>
           </Show>
-          {open().length ? `${open().length} open` : inbox() ? '' : 'none open'}
+          {open().length ? `${open().length} open` : hasInbox() ? '' : 'none open'}
         </span>
       </div>
       <AddTodo add={(text, owner) => run(api.action(AddAction, { text, owner }))} />
@@ -102,7 +103,7 @@ export function TodoList() {
       </Show>
       {failures}
       <Show
-        when={inbox() + open().length > 0}
+        when={hasInbox() || open().length > 0}
         fallback={
           <p class="flex items-center gap-2 px-3 py-6 text-xs text-muted-foreground">
             <Check class="size-3.5 text-success" />
@@ -110,8 +111,8 @@ export function TodoList() {
           </p>
         }
       >
-        <Section empty={!inbox() && !yours().length} owner="user" title="For you">
-          <Show when={inbox() > 0}>
+        <Section empty={!hasInbox() && !yours().length} owner="user" title="For you">
+          <Show when={hasInbox()}>
             <li data-todo-inbox>
               <Button
                 class="flex h-auto w-full items-center justify-start gap-2.5 rounded px-2 py-1.5 text-left font-normal hover:bg-muted/50"
@@ -120,7 +121,14 @@ export function TodoList() {
                 variant={null}
               >
                 <Inbox class={cn('size-4 shrink-0', waits)} />
-                <span class={cn('min-w-0 flex-1 text-[13px]', waits)}>Inbox · {inbox()}</span>
+                <span class="min-w-0 flex-1">
+                  <span class={cn('text-[13px]', waits)}>
+                    Inbox · {inboxCount(inbox(), status())}
+                  </span>
+                  <Show when={status().text}>
+                    <span class="block text-[11px] text-muted-foreground">{status().text}</span>
+                  </Show>
+                </span>
                 <ChevronRight class="size-3.5 shrink-0 text-muted-foreground/60" />
               </Button>
             </li>
