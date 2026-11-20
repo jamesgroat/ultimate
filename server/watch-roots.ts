@@ -2,21 +2,45 @@ import { existsSync, watch } from 'node:fs'
 import { dirname } from 'node:path'
 import { isMissing } from '../lib/errors.ts'
 
+const ancestors = new Map<
+  string,
+  { watcher: ReturnType<typeof watch>; listeners: Set<() => void> }
+>()
+
+function watchAncestor(path: string, changed: () => void) {
+  let shared = ancestors.get(path)
+  if (!shared) {
+    const listeners = new Set<() => void>()
+    const watcher = watch(path, () => {
+      ;[...listeners].forEach((listener) => listener())
+    })
+    shared = { watcher, listeners }
+    ancestors.set(path, shared)
+  }
+  const { watcher, listeners } = shared
+  listeners.add(changed)
+  return () => {
+    if (!listeners.delete(changed) || listeners.size) return
+    ancestors.delete(path)
+    watcher.close()
+  }
+}
+
 export function watchRoots(roots: string[], appeared: (root: string) => void) {
   const cleanups = roots.map((root) => {
     let closed = false
     let present = existsSync(root)
-    let watcher: ReturnType<typeof watch>
+    let stop: (() => void) | undefined
     let watchedAncestor: string | undefined
     const attach = () => {
       let ancestor = dirname(root)
       while (!existsSync(ancestor)) ancestor = dirname(ancestor)
       const nearestExistingAncestorChanged = ancestor !== watchedAncestor
       if (nearestExistingAncestorChanged) {
-        watcher?.close()
+        stop?.()
         for (;;) {
           try {
-            watcher = watch(ancestor, () => {
+            stop = watchAncestor(ancestor, () => {
               if (!closed) attach()
             })
             watchedAncestor = ancestor
@@ -34,7 +58,7 @@ export function watchRoots(roots: string[], appeared: (root: string) => void) {
     attach()
     return () => {
       closed = true
-      watcher.close()
+      stop?.()
     }
   })
   return () => cleanups.forEach((close) => close())
