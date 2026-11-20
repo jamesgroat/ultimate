@@ -118,7 +118,9 @@ tally, `ultimate.entries(<root>)`) are the cheap way in; open a conversation onl
   failures, lander rejections, runs the user had to stop. Group by cause; for the top ones propose a fix.
 - **tools** — `stats` gives calls, failures, mean duration and enabled tools never called, and service and action
   calls with failures per caller and per callee: background work no tool shows, such as an extension calling a
-  service thousands of times or failing on credits. Explain the numbers: why a tool fails, which are slow, which
+  service thousands of times or failing on credits. Each frequent tool error has `{conversation, entry}` pointers and
+  a terminal error excerpt, never the call's args: read an entry with `ultimate.entries` only when the cause needs it.
+  Explain the numbers: why a tool fails, which are slow, which
   unused ones should be taught or removed, what agents did by hand that a tool should do.
 - **corrections** — what the user had to say more than once, corrections of the agents' work, and the wishes: what
   Ultimate itself would like to have or be able to do, from friction seen in old conversations.
