@@ -1,4 +1,4 @@
-Warns you in the status line when a model provider stops working on this machine. It tracks whether each model provider works on this machine, from every real response, and reports a failing one to the `setup` status-line item.
+Warns you in the status line when a model provider stops working on this machine, and posts one Inbox notice when a provider runs out of credits, hits a usage limit or rejects its login. It tracks whether each model provider works on this machine, from every real response, and reports a failing one to the `setup` status-line item.
 
 ## What is stored
 
@@ -47,3 +47,41 @@ A `GenerationTask` `afterResponse` hook records every terminal provider message 
 ## Status line
 
 In every home the `setup` status-line item lists a failing provider with its error (`providers()`).
+
+## Inbox notices
+
+When a provider runs out of credits, hits a usage limit or rejects its login, health posts one Inbox notice (tag
+`Provider`) through the `NoticesApi` service of `notices/api.ts`, when a notices extension provides it (Life's does; the
+built-in only toasts). Its title says what happened ("TypeSafe: out of credits", "Claude Code: usage limit reached
+(resets 3:40 PM)", "OpenAI: key rejected"); its text names the agent definitions that run on that provider and the
+extensions known to call it, the reset time when known, and where to add credits or check usage.
+
+`classifyFailure` (`failure.ts`) sorts a failure from its HTTP status and message: `auth` and 402 (`billing`) come
+from `failureKind` in `store.ts` and win over any wording; `usage` is a used-up plan or quota that Pi does not retry
+(Codex "usage limit", `insufficient_quota`, Claude Code's usage-credit refusal), with `resetsAt` when the error names
+it; credit wording without a status is `billing`. Everything else is `other`, and so is a retryable throttle such as a
+tokens-per-minute 429: `watchdog` owns those, and they never post.
+
+**One notice per episode.** An episode is one provider in one class, open from its first failure until that
+provider's next success, which closes all of the provider's episodes (`episodes.ts`, kept in
+`<project home>/health-notices.json`, so a restart does not post again). Failures while it is open post nothing,
+however many there are; a provider failing in two classes in turn has two episodes, never more. An episode is marked
+`delivered` on disk only after its notice was posted; until then each failure (or exhausted reading) of it delivers
+again under the same key, so a post that failed, found no notices service or was cut off by a restart is retried. One
+delivery per key runs at a time. Writes and deliveries go through one queue per project home that outlives facet
+reloads. Release stops admitting reports and waits for every one it admitted, from its first write to its post.
+
+The key is `health:<provider>:<class>:<epoch ms of the first failure>`; the notices channel never reposts a key, also
+after Done. Every episode of a provider posts into the slot `health:<provider>`, so a flapping provider keeps a single
+Inbox item: Life's notices fold a post into the notice still waiting in its slot (×N).
+
+**Subscription exhaustion.** Health watches subscription routing's root document (`subscription-routing.state`, when
+that extension is loaded; when it is not yet, health tries to attach again every minute until it can). When a pair's reading for a provider flips to `exhausted`, that opens a `usage` episode with
+the reading's `resetsAt`, the same episode a model error opens, so the two paths never post twice. `paced` alone
+posts nothing.
+
+**Reporting in.** Every real model response feeds the episodes. Extensions that call a provider outside the model
+catalogue report each outcome with `HealthApi.report` (`want` it): `{ provider, ok: true }`, or
+`{ provider, ok: false, failure, resetsAt? }` with the failure's class (`billing`, `usage`, `auth` or `other`). A
+report never carries the error's text: service arguments are traced, so the caller classifies its own failure.
+`classify` reports TypeSafe this way, from the HTTP status (402 billing, 401 and 403 auth).
