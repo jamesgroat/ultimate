@@ -72,8 +72,8 @@ export const Runs = defineDoc<Record<string, Run>>({
 })
 
 /**
- * The definition a conversation was configured from: children (including automation runs) and standing agents. An agent
- * made on the fly has none: `adhoc`, so nothing looks a definition up by its label.
+ * The definition a conversation was configured from: branches, children (including automation runs) and standing agents.
+ * An agent made on the fly has none: `adhoc`, so nothing looks a definition up by its label.
  */
 export const Profile = defineDoc<{
   definition?: string
