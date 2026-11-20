@@ -20,8 +20,8 @@ vi.mock('../../web/src/sdk/client.ts', async () => {
   }
 })
 vi.mock('../../web/src/sdk/resume.ts', () => ({ covered: () => false, rendered: () => {} }))
-vi.stubGlobal('matchMedia', () => ({
-  matches: true,
+vi.stubGlobal('matchMedia', (query: string) => ({
+  matches: query !== '(pointer: coarse)',
   addEventListener() {},
   removeEventListener() {},
 }))
