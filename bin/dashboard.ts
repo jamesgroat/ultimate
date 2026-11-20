@@ -2,6 +2,7 @@ import { appendFileSync } from 'node:fs'
 import { stripVTControlCharacters } from 'node:util'
 import { createLogUpdate } from 'log-update'
 import type { CoreReport } from '../server/supervisor-protocol.ts'
+import { redactSecrets } from '../lib/redact.ts'
 
 const terminalSafeText = (text: string) =>
   stripVTControlCharacters(text).replace(/(?![\t\n\u0080-\u009f])\p{Cc}/gu, '')
@@ -39,7 +40,7 @@ export function dashboard(logPath: string, output: NodeJS.WriteStream = process.
   }
   const log = (level: 'info' | 'warn' | 'error', source: string, text: string) => {
     if (closed) return
-    text = terminalSafeText(text)
+    text = redactSecrets(terminalSafeText(text))
     try {
       appendFileSync(
         logPath,

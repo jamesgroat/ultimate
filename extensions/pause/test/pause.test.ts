@@ -376,8 +376,10 @@ it('leaves no note when the run handed over during the drain and its successor w
   expect(entries.filter((entry) => entry.kind === 'pause.note')).toEqual([])
 })
 
-const limit =
-  "Incomplete Claude Code upstream response (status 429, capture incomplete, upstream said: This request would exceed your account's rate limit. Please try again later.)"
+const rateLimit = (key: string) =>
+  `Incomplete Claude Code upstream response (status 429, capture incomplete, upstream said: This request would exceed your account's rate limit for ${key}. Please try again later.)`
+const limit = rateLimit('sk-test-FAKE0123456789abcdef')
+const masked = rateLimit('[redacted]')
 
 it('pauses on the first rate-limited answer: the run waits in its retry, fails nothing, and continues on play', async () => {
   const f = await fixture()
@@ -401,7 +403,7 @@ it('pauses on the first rate-limited answer: the run waits in its retry, fails n
   await until(async () => (await f.action('state')).limit !== undefined)
   expect(await f.action('state')).toMatchObject({
     paused: true,
-    limit: { error: limit, conversationId: root.id },
+    limit: { error: masked, conversationId: root.id },
   })
   expect(f.paused()).toBe(true)
   // Pi's retry was due after 1 ms; held, it never asks again, and the run neither fails nor ends.
@@ -413,7 +415,7 @@ it('pauses on the first rate-limited answer: the run waits in its retry, fails n
   const cards = async () =>
     (await ultimate.context(context)).entries.filter((entry) => entry.kind === 'pause.limit')
   await until(async () => (await cards()).length === 1)
-  expect((await cards())[0].data).toMatchObject({ error: limit, conversationId: root.id })
+  expect((await cards())[0].data).toMatchObject({ error: masked, conversationId: root.id })
 
   const played = await f.action('play')
   expect(played.limit).toBeUndefined()
