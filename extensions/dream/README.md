@@ -77,7 +77,8 @@ and marked `carried { chapter, id, from }` with its old message id and asker, si
 not exist here; the Inbox header says "asked by #id in <chapter>". The old chapter's copy stays open there: answering
 both copies runs the work twice, and an answer given in the old chapter is not passed to the new one. A seed prepared
 before cards were carried holds its questions as `{ text, ref }`; those still become user-owned to-dos naming the old
-chapter and message id. A
+chapter and message id. A question of neither shape is dropped, not kept as a to-do; the morning text says how many
+were dropped. A
 `dream.deliver` task wakes @ultimate with one `dream.chapter` input (the morning card). Its text names the old
 chapter's read APIs, the three learned lines, the carried counts and the handover, and tells @ultimate to continue
 that work. Reopening does not reapply those documents.
