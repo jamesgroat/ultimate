@@ -288,6 +288,27 @@ const forwardedUserLine = (input: { text: string }): VoiceLine => ({
   at: Date.now(),
 })
 
+export async function unspokenAnswer(tx: Tx, id: ConversationId) {
+  let cursor: Cursor | undefined
+  const spoken = new Set<number>()
+  do {
+    const page = await tx.scanEntries({ conversationId: id, order: 'descending' }, 100, cursor)
+    for (const entry of page.items) {
+      if (entry.kind === 'voice.line') {
+        const line = entry.data as VoiceLine
+        if (line.role === 'ultimate' && line.re !== undefined) spoken.add(line.re)
+      }
+      if (entry.kind === 'voice.heard') return undefined
+      if (entry.kind === 'voice.answer') {
+        const re = (entry.data as VoiceAnswer).re
+        return spoken.has(re) ? undefined : re
+      }
+    }
+    cursor = page.next
+  } while (cursor)
+  return undefined
+}
+
 async function submitAnswerOnce(
   host: ExtensionHost,
   voice: ConversationId,
@@ -612,8 +633,10 @@ export const actions = {
     return { sdp: answer.transport.sdp, conversation: id }
   }),
   heard: implementAction(HeardAction, async (args, { host }) => {
-    const text = args && typeof args === 'object' && !Array.isArray(args) ? args.text : undefined
+    const { text, raw } = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
     if (typeof text !== 'string' || !text.trim()) throw new Error('Expected text')
+    const misheard =
+      typeof raw === 'string' && raw.trim() && raw.trim() !== text.trim() ? raw.trim() : undefined
     const id = await voiceId(host)
 
     await pendingBriefs(host).get(id)
@@ -622,7 +645,13 @@ export const actions = {
       {
         type: 'input',
         whenBusy: 'steer',
-        entry: { kind: VoiceHeardEntry.kind, data: { text: text.trim() } },
+        entry: {
+          kind: VoiceHeardEntry.kind,
+          data: {
+            text: text.trim(),
+            ...(misheard ? { raw: misheard } : {}),
+          },
+        },
         content: `The user, by voice (live transcript, may contain mistakes):\n${text.trim()}`,
       },
       context,
@@ -776,6 +805,31 @@ export default async (host: ExtensionHost) => {
             return again
           }, ctx)
           return postCutoffBrief ? { messages: [...request.messages, postCutoffBrief] } : undefined
+        },
+        onYield: async (answer, api, ctx) => {
+          const text = answer.content
+            .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+            .join(' ')
+            .trim()
+          if (!text) return undefined
+          if (
+            (await api.snapshot(Standing, ROOT_CONVERSATION_ID, ctx))?.voice !== api.conversationId
+          )
+            return undefined
+          const re = await host
+            .harness()
+            .commit((tx) => unspokenAnswer(tx, api.conversationId), ctx)
+          if (re === undefined) return undefined
+          const conversation = (await host.harness().conversation(api.conversationId, ctx))!
+          await conversation.submit(
+            {
+              type: 'write',
+              requestId: `voice:yield:${api.taskId}`,
+              entry: { kind: 'voice.line', data: { role: 'ultimate', text, speech: true, re } },
+            },
+            ctx,
+          )
+          return undefined
         },
       }),
     ],
