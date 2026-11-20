@@ -9,6 +9,7 @@ import {
   MicOffIcon,
   Minimize2Icon,
   PhoneOffIcon,
+  SquareIcon,
   Volume2Icon,
   XIcon,
 } from '@lucide/solid'
@@ -148,10 +149,17 @@ function StartButton() {
     if (data) live.rememberStatus(data)
   })
   const missing = () => status.data()?.available === false
+  const local = () => status.data()?.engine === 'local'
+  const reason = () => {
+    const data = status.data()
+    return data?.available === false ? data.reason : ''
+  }
   const on = () => mode().phase !== 'off'
   const label = () =>
     missing()
-      ? 'Voice relay needs an OpenAI API key: tap to add it'
+      ? local()
+        ? `Local voice is not set up: ${reason()}`
+        : 'Voice relay needs an OpenAI API key: tap to add it'
       : on()
         ? mode().front
           ? 'Voice relay is on · send Voice back'
@@ -170,7 +178,8 @@ function StartButton() {
           data-voice-live={missing() ? 'unavailable' : mode().phase}
           onClick={() => {
             if (status.loading()) return
-            if (missing()) return events.emit('secrets:open', { name: 'OPENAI_API_KEY' })
+            if (missing() && !local())
+              return events.emit('secrets:open', { name: 'OPENAI_API_KEY' })
             if (on()) return toggleFront()
             void live.start()
           }}
@@ -667,11 +676,27 @@ function Collapsed(props: { phone: boolean }) {
           </Button>
         }
       >
-        <MuteButton
-          class="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
-          large
-          location="collapsed voice card"
-        />
+        <Show
+          when={step().step === 'speaking' && mode().engine === 'local'}
+          fallback={
+            <MuteButton
+              class="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+              large
+              location="collapsed voice card"
+            />
+          }
+        >
+          <Button
+            aria-label="Stop speaking from the collapsed voice card"
+            class="flex size-8 shrink-0 items-center justify-center rounded-lg text-brand outline-none hover:bg-brand/15 focus-visible:ring-1 focus-visible:ring-ring"
+            onClick={live.stopSpeaking}
+            size={null}
+            title="Stop speaking"
+            variant={null}
+          >
+            <SquareIcon class="size-3.5 fill-current" />
+          </Button>
+        </Show>
       </Show>
       <Button
         aria-label="End voice relay from the collapsed card"
@@ -820,7 +845,12 @@ function StepText(props: { step: Step }) {
   const session = () =>
     livePhase() && mode().billedSince !== undefined ? clock(now() - mode().billedSince!) : undefined
   const working = () => (props.step.step === 'working' ? props.step : undefined)
-  const text = () => (props.step.step === 'working' ? undefined : stepText[props.step.step])
+  const text = () =>
+    props.step.step === 'working'
+      ? undefined
+      : props.step.step === 'speaking' && mode().engine === 'local'
+        ? ['Speaking', 'Tap Stop to cut it short']
+        : stepText[props.step.step]
   return (
     <div class="min-w-0 flex-1" aria-live="polite" data-voice-step={props.step.step}>
       <div class="flex min-w-0 items-baseline gap-2 text-[17px] leading-tight font-semibold sm:text-[19px]">
@@ -942,12 +972,28 @@ function VoiceControls() {
           <Show
             when={off() || mode().phase === 'paused'}
             fallback={
-              <MuteButton
-                class="flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-[13px] font-normal hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
-                large
-                location="voice controls"
-                text
-              />
+              <Show
+                when={step().step === 'speaking' && mode().engine === 'local'}
+                fallback={
+                  <MuteButton
+                    class="flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-[13px] font-normal hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
+                    large
+                    location="voice controls"
+                    text
+                  />
+                }
+              >
+                <Button
+                  aria-label="Stop speaking from voice controls"
+                  class="flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-brand/50 px-3 text-[13px] font-normal text-brand hover:bg-brand/10 focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+                  onClick={live.stopSpeaking}
+                  size={null}
+                  variant={null}
+                >
+                  <SquareIcon class="size-3.5 fill-current" />
+                  Stop
+                </Button>
+              </Show>
             }
           >
             <Button
