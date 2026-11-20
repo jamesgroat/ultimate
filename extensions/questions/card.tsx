@@ -120,7 +120,13 @@ export function MessageQuestions({
   const questions = openQuestions(message)
   const card = identity ?? cardKey(message.id)
   const shown = useKeys(card)
+  const messages = useDocOf(ROOT, MessagesDoc)?.messages ?? []
   if (!waitsOnUser(message)) return null
+  const localCardThatCanAsk =
+    transport === localTransport && identity === undefined && answerWith === undefined
+  const lastAsked = messages
+    .findLast((m) => m.from === 'user' && m.re === message.id && m.clarifies)
+    ?.text.trim()
   const answer = (reply: Reply, keepalive?: boolean) =>
     answerWith
       ? answerWith(reply, keepalive)
@@ -128,7 +134,10 @@ export function MessageQuestions({
   return (
     <Card
       card={card}
-      thread={<Clarifications message={message} />}
+      {...(localCardThatCanAsk
+        ? { thread: <Clarifications message={message} />, asked: lastAsked }
+        : {})}
+      asks={localCardThatCanAsk}
       questions={questions}
       keys={questions.length > 0 && (keys ?? shown)}
       submit={(answers, note, keepalive) =>
@@ -409,10 +418,14 @@ function Card({
   actions,
   sendLabel,
   thread,
+  asks = false,
+  asked,
   className = 'border-t border-border/60',
 }: {
   card: string
   thread?: ReactNode
+  asks?: boolean
+  asked?: string
   questions: Question[]
   keys: boolean
   submit: (answers: Answer[], note?: string, keepalive?: boolean) => Promise<unknown>
@@ -443,6 +456,11 @@ function Card({
   const words = questions.map((question, index) => answerOf(question, drafts[index]))
   const ready = answered(questions, drafts)
   const locked = phase !== 'answering'
+
+  const sentBeforeThePageLeft = asked !== undefined && state.note.trim() === asked
+  useEffect(() => {
+    if (sentBeforeThePageLeft && !locked) setState((old) => ({ ...old, note: '' }))
+  }, [sentBeforeThePageLeft, locked, setState])
 
   useEffect(() => {
     const flushWithKeepaliveOnPagehide = () => flushUndoWindowSend(undoWindowSend, true)
@@ -518,18 +536,16 @@ function Card({
     committed.current = true
     cancelAdvanceAfterCheck.current?.()
     setLockedIn({ drafts, note })
-    const asksWithoutAnswering = !ready.length
+    const asksWithoutAnswering = asks && !ready.length
     const fire = (keepalive = false) => {
       undoWindowSend.current = undefined
       setPhase('sending')
       setError(undefined)
+      if (asksWithoutAnswering) setState((old) => ({ ...old, note: '' }))
       submit(ready, extra || undefined, keepalive).then(
-        () => {
-          if (!asksWithoutAnswering) return setPhase('sent')
-          setState((old) => ({ ...old, note: '' }))
-          unlock()
-        },
+        () => (asksWithoutAnswering ? unlock() : setPhase('sent')),
         (failure: unknown) => {
+          if (asksWithoutAnswering) setState((old) => ({ ...old, note: old.note || note }))
           unlock()
           setError(errorMessage(failure))
         },
@@ -721,7 +737,7 @@ function Card({
           onChange={(value) => setState((old) => ({ ...old, note: value }))}
           onSend={() => send()}
         />
-        {sendLabel === undefined && !ready.length && note.trim() && !locked && (
+        {asks && sendLabel === undefined && !ready.length && note.trim() && !locked && (
           <p className="pt-1 text-[11px] text-muted-foreground" data-asks-hint>
             Asks without answering; the card stays open. To discuss first, use{' '}
             <button
@@ -796,7 +812,9 @@ function Card({
           >
             {sendLabel ??
               (!ready.length && note.trim()
-                ? 'Ask'
+                ? asks
+                  ? 'Ask'
+                  : 'Send note'
                 : unanswered && ready.length
                   ? `Send ${ready.length} of ${questions.length}`
                   : 'Send')}
