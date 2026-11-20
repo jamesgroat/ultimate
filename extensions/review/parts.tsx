@@ -3,7 +3,15 @@ import type { ReactNode } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Header, StatusLine } from '@/sdk'
 
-export function Frame({ controls, children }: { controls?: ReactNode; children: ReactNode }) {
+export function Frame({
+  controls,
+  extras,
+  children,
+}: {
+  controls?: ReactNode
+  extras?: ReactNode
+  children: ReactNode
+}) {
   return (
     <>
       <Header>
@@ -13,6 +21,7 @@ export function Frame({ controls, children }: { controls?: ReactNode; children: 
         </span>
         {controls}
       </Header>
+      {extras}
       <div className="flex min-h-0 flex-1">{children}</div>
       <StatusLine />
     </>
