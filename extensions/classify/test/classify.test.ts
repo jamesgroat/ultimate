@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import classify, { cooldownMs } from '../server.ts'
 import { ClassifyApi } from '../api.ts'
 import type { ClassifyService } from '../api.ts'
-import type { NoticesService } from '../../notices/api.ts'
+import type { HealthService } from '../../health/api.ts'
 import { writeSecret } from '../../secrets/store.ts'
 import type { ExtensionHost } from '../../../server/extensions.ts'
 import { removeTemp, temp } from '../../../test/helpers.ts'
@@ -31,22 +31,17 @@ async function fixture(key = true, models?: unknown) {
   })
   const implement = vi.fn<(api: typeof ClassifyApi, service: ClassifyService) => void>()
   const notice = vi.fn<(message: string) => void>()
-  const post = vi.fn<NoticesService['post']>().mockResolvedValue({ id: 1, duplicate: false })
-  const resources = new Map<string, unknown>()
+  const report = vi.fn<HealthService['report']>().mockResolvedValue()
   const extension = classify({
     userHome: root,
     implement,
     modelRuntime,
     notice,
-    want: (api: { name: string }) => (api.name === 'notices' ? { post } : undefined),
-    resource: (name: string, create: () => unknown) => {
-      if (!resources.has(name)) resources.set(name, create())
-      return resources.get(name)
-    },
+    want: (api: { name: string }) => (api.name === 'health' ? { report } : undefined),
   } as unknown as ExtensionHost)
   expect(extension.name).toBe('classify')
   expect(implement.mock.calls[0][0]).toBe(ClassifyApi)
-  return { root, notice, post, service: implement.mock.calls[0][1] }
+  return { root, notice, report, service: implement.mock.calls[0][1] }
 }
 
 const request = {
@@ -159,39 +154,23 @@ it('stops sending after a 402 until the cooldown ends', async () => {
   expect(fetch).toHaveBeenCalledTimes(2)
 })
 
-it('posts one Inbox notice per outage: none again in the cooldown, a new one after a success', async () => {
-  vi.useFakeTimers({ toFake: ['Date'] })
-  const { service, post } = await fixture()
+it('reports each TypeSafe outcome to health, which owns the Inbox notice', async () => {
+  const { service, report } = await fixture()
   const fetch = vi
     .fn<typeof globalThis.fetch>()
     .mockResolvedValueOnce(new Response('no available TypeSafe API credits', { status: 402 }))
-    .mockResolvedValueOnce(new Response('no available TypeSafe API credits', { status: 402 }))
     .mockResolvedValueOnce(Response.json(body))
-    .mockResolvedValueOnce(new Response('no available TypeSafe API credits', { status: 402 }))
   vi.stubGlobal('fetch', fetch)
   const signal = new AbortController().signal
   await expect(service.ask(request, signal)).rejects.toThrow('TypeSafe 402')
-  await expect(service.ask(request, signal)).rejects.toThrow('TypeSafe 402')
-  await Promise.resolve()
-  expect(post).toHaveBeenCalledTimes(1)
-  expect(post.mock.calls[0][0]).toMatchObject({
-    key: expect.stringMatching(/^classify:billing:402:/),
-    tag: 'Classify',
-    title: 'TypeSafe (Jev) out of credits',
-    text: expect.stringMatching(
-      /phase, recall and the final-ask classifier.*console\.typesafe\.ai/s,
-    ),
-  })
-  vi.advanceTimersByTime(cooldownMs)
-  await expect(service.ask(request, signal)).rejects.toThrow('TypeSafe 402')
-  expect(post).toHaveBeenCalledTimes(1)
+  vi.useFakeTimers({ toFake: ['Date'] })
   vi.advanceTimersByTime(cooldownMs)
   expect((await service.ask(request, signal)).model).toBe('jev-1.14.0')
-  vi.advanceTimersByTime(1)
-  await expect(service.ask(request, signal)).rejects.toThrow('TypeSafe 402')
-  await Promise.resolve()
-  expect(post).toHaveBeenCalledTimes(2)
-  expect(post.mock.calls[1][0].key).not.toBe(post.mock.calls[0][0].key)
+  expect(report.mock.calls.map(([each]) => each)).toEqual([
+    { provider: 'typesafe', ok: false, failure: 'billing' },
+    { provider: 'typesafe', ok: true },
+  ])
+  expect(JSON.stringify(report.mock.calls)).not.toContain('available')
 })
 
 it.each([
