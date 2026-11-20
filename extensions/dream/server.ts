@@ -101,6 +101,11 @@ export function prepare(args: unknown, now: number): Prepared {
   }
 }
 
+const terminalError = (error: string) => {
+  const last = error.split(/\r?\n/).findLast((line) => line.includes('Error:'))
+  return last ? last.trim().slice(0, 200) : error.trim().slice(-200)
+}
+
 const ISO_TIME =
   /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))?$/
 
@@ -166,23 +171,29 @@ export function toolStats(
         .all(kind, ...bounds) as { name: string; calls: number; failed: number }[]
     const groups = db
       .prepare(
-        `SELECT name, substr(error, 1, 160) AS error, count(*) AS count FROM calls WHERE kind = 'tool' AND ok = 0 AND ${inRange} GROUP BY name, substr(error, 1, 160) ORDER BY count DESC LIMIT 20`,
+        `SELECT name, substr(error, 1, 160) AS prefix, count(*) AS count FROM calls WHERE kind = 'tool' AND ok = 0 AND ${inRange} GROUP BY name, substr(error, 1, 160) ORDER BY count DESC LIMIT 20`,
       )
-      .all(...bounds) as { name: string; error: string; count: number }[]
+      .all(...bounds) as { name: string; prefix: string; count: number }[]
     const sample = db.prepare(
-      `SELECT conversation, entry FROM calls WHERE kind = 'tool' AND ok = 0 AND name = ? AND substr(error, 1, 160) = ? AND ${inRange} ORDER BY at DESC LIMIT 2`,
+      `SELECT conversation, entry, error FROM calls WHERE kind = 'tool' AND ok = 0 AND name = ? AND substr(error, 1, 160) = ? AND ${inRange} ORDER BY at DESC LIMIT 2`,
     )
-    const errors = groups.map((group) => ({
-      ...group,
-      examples: (
-        sample.all(group.name, group.error, ...bounds) as {
-          conversation: ConversationId | null
-          entry: number | null
-        }[]
-      ).map((row) => ({
-        at: `#${row.conversation ?? '?'}${row.entry === null ? '' : `/${row.entry}`}`,
-      })),
-    }))
+    const errors = groups.map(({ name, prefix, count }) => {
+      const rows = sample.all(name, prefix, ...bounds) as {
+        conversation: ConversationId | null
+        entry: number | null
+        error: string
+      }[]
+      return {
+        name,
+        error: rows[0]?.error.slice(0, 160) ?? '',
+        count,
+        examples: rows.map((row) => ({
+          conversation: row.conversation,
+          entry: row.entry,
+          error: terminalError(row.error),
+        })),
+      }
+    })
     const used = new Set(tools.map((tool) => tool.name))
     return {
       ...(window.since === null ? {} : { since: window.since }),

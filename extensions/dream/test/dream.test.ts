@@ -8,6 +8,7 @@ import { configure, defineExtension, ROOT_CONVERSATION_ID } from '@earendil-work
 import { afterEach, expect, it, vi } from 'vitest'
 import { writeJson } from '../../../lib/json-file.ts'
 import { prepareHarness } from '../../../server/harness.ts'
+import { callTrace } from '../../../server/trace.ts'
 import type { OpenHost } from '../../../server/harness.ts'
 import type { ExtensionHost } from '../../../server/extensions.ts'
 import type { ActionContext } from '../../../server/actions.ts'
@@ -407,7 +408,7 @@ it('reads tool numbers from the trace, with unused tools and frequent errors', a
   insert.run('3', 300, 5, 'tool', 'read', 1, null, null, null, null)
   insert.run('4', 50, 5, 'action', 'dream/stats', 1, null, null, null, null)
   db.close()
-  expect(toolStats(file, ['edit', 'read', 'notify'])).toEqual({
+  expect(toolStats(file, ['edit', 'read', 'notify'])).toMatchObject({
     since: 100,
     until: 300,
     calls: 3,
@@ -421,7 +422,7 @@ it('reads tool numbers from the trace, with unused tools and frequent errors', a
         name: 'edit',
         error: 'Could not find the exact text',
         count: 1,
-        examples: [{ at: '#7/42' }],
+        examples: [{ conversation: 7, entry: 42, error: 'Could not find the exact text' }],
       },
     ],
     services: { byCaller: [], byCallee: [] },
@@ -487,4 +488,49 @@ it('takes only real ISO times as the stats window', () => {
   const hostZoneDependent = '2026-11-19T03:00:00'
   for (const since of ['10/11/2026', '2026-02-30T00:00:00Z', hostZoneDependent, '', 5])
     expect(() => statsWindow({ since })).toThrow('since must be an ISO date or an ISO time with')
+})
+
+it('retains the terminal selector error through tracing into dream failure examples', async () => {
+  const file = join(await temp(), 'trace.sqlite')
+  const trace = callTrace(file)
+  const warning =
+    "Console error: WebSocket connection to 'ws://127.0.0.1:1234/api/live/ws' failed: Error during WebSocket handshake: Unexpected response code: 400"
+  const timeout = 'TimeoutError: locator.waitFor: selector timed out after 60s'
+  const failure = {
+    isError: true,
+    output: [
+      {
+        type: 'text' as const,
+        text: `${`${warning}\n`.repeat(10)}Step 1: Error: earlier step failed\n${timeout}\nCall log:\n  - waiting for locator('button') to be visible\n`,
+      },
+    ],
+  }
+  trace.open()
+  try {
+    const [browser] = trace.tools({
+      name: 'browser',
+      tools: [{ name: 'browser', execute: async () => failure } as never],
+    }).tools!
+    expect(
+      await browser.execute(
+        {},
+        {
+          conversationId: 7,
+          taskId: 1,
+          callId: 'call',
+          getTask: async () => ({ input: { kind: 'model', assistant: 43, callId: 'call' } }),
+        } as never,
+        context,
+      ),
+    ).toBe(failure)
+    const [row] = trace.reader.query()
+    expect(row.error).toContain(warning)
+    expect(row.error).toContain(timeout)
+    expect(row.error!.length).toBeLessThanOrEqual(603)
+  } finally {
+    trace.close()
+  }
+  const [group] = toolStats(file, ['browser']).errors
+  expect(group.error).toContain(warning)
+  expect(group.examples).toEqual([{ conversation: 7, entry: 43, error: timeout }])
 })

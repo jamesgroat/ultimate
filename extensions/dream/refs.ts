@@ -94,12 +94,12 @@ export type ToolStats = {
   calls: number
   tools: { name: string; calls: number; failed: number; avgMs: number }[]
   unused: string[]
-  /** The most frequent errors, each with its two newest calls as `#<conversation>/<entry>`. */
+  /** The most frequent errors, each with its two newest calls: where it happened and its terminal error excerpt, never its args. */
   errors: {
     name: string
     error: string
     count: number
-    examples: { at: string }[]
+    examples: { conversation: number | null; entry: number | null; error: string }[]
   }[]
   services: CallCounts
   actions: CallCounts
