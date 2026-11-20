@@ -12,7 +12,7 @@ import {
   useViewport,
 } from '@/sdk/solid'
 import { Badge, LinkOverlay, SidebarRow, Zero } from './chrome.solid.tsx'
-import { SURFACE, answeredToday, toRow } from './items.ts'
+import { SURFACE, answeredToday } from './items.ts'
 import { List } from './list.solid.tsx'
 import { QuestionPane } from './points.ts'
 import { Reading } from './reading.solid.tsx'
@@ -20,12 +20,11 @@ import { useSelection } from './selection.solid.tsx'
 import { Waiting } from './ui.solid.tsx'
 
 export function Inbox() {
-  const { entries, messages, failures } = Waiting()
+  const { entries, messages, failures, status } = Waiting()
   const viewport = useViewport()
   const phone = () => viewport() === 'phone'
   const now = useNow(60_000)
   const { item, selected, setSelected } = useSelection(entries)
-  const rows = createMemo(() => entries().map(toRow))
   const paneFailures = (<span class="contents" />) as HTMLElement
   const takeover = useProvided(
     QuestionPane,
@@ -60,7 +59,7 @@ export function Inbox() {
           <Header>
             <span class="flex shrink-0 items-center gap-2 text-[13px] font-medium">
               <InboxIcon class="size-4 text-muted-foreground" />
-              Inbox <Badge count={entries().length} />
+              Inbox <Badge count={entries().length} status={status()} />
             </span>
           </Header>
         </Show>
@@ -68,21 +67,29 @@ export function Inbox() {
           {failures}
           {paneFailures}
         </div>
+        <Show when={entries().length > 0 && status().text && takeover() == null}>
+          <output class="border-b border-border/70 px-5 py-2 text-[12px] text-muted-foreground">
+            {status().text}
+          </output>
+        </Show>
         <Show
           when={entries().length > 0 || takeover() != null}
-          fallback={<Zero today={answeredToday(messages(), now())} />}
+          fallback={<Zero today={answeredToday(messages(), now())} status={status()} />}
         >
           <Show
             when={!phone()}
             fallback={
-              <Show when={reading()} fallback={<List phone rows={rows()} />}>
+              <Show
+                when={reading()}
+                fallback={<List entries={entries()} phone status={status()} />}
+              >
                 {pane()}
               </Show>
             }
           >
             <div class="flex min-h-0 flex-1">
               <div class="flex w-[24rem] shrink-0 flex-col border-r border-border/70">
-                <List phone={false} rows={rows()} />
+                <List entries={entries()} phone={false} status={status()} />
               </div>
               {pane()}
             </div>
@@ -95,13 +102,14 @@ export function Inbox() {
 
 export function InboxSidebar() {
   const active = useSurface()
-  const { entries, failures } = Waiting()
+  const { entries, failures, status } = Waiting()
   return (
     <>
       <SidebarRow
         active={active() === SURFACE}
         count={entries().length}
         oldest={entries()[0]?.at}
+        status={status()}
       />
       {failures}
     </>
@@ -109,10 +117,10 @@ export function InboxSidebar() {
 }
 
 export function WaitingBadge() {
-  const { entries, failures } = Waiting()
+  const { entries, failures, status } = Waiting()
   return (
     <>
-      <Badge count={entries().length} />
+      <Badge count={entries().length} status={status()} />
       {failures}
     </>
   )
