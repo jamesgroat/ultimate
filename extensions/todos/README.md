@@ -14,7 +14,8 @@ Ticking keeps the newest 50 done items and drops older ones; open items are neve
 
 `todo {action: 'add', text, owner} | {action: 'done', id} | {action: 'list'}` belongs to @ultimate: it is deferred
 and named in `agents/ultimate.md`, and any other caller is refused. A coordinator that wants something on the list
-asks @ultimate.
+asks @ultimate. The tool schema limits the supplied text to 300 characters before trimming; the shared
+add implementation trims first and then checks the same limit. Neither path truncates text.
 
 Whenever the open list changed since @ultimate last heard it, the input that starts its next run goes in after a
 `todos.note` entry listing its open to-dos and the user's, by id (`No to-dos are open.` once the last one is ticked).
