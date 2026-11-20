@@ -327,6 +327,21 @@ function Stage() {
     }
   }, [inFront, width, phone])
 
+  useEffect(() => {
+    const parent = ref.current?.parentElement
+    if (!inFront || !parent) return undefined
+    const hide = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || ref.current?.contains(event.target)) return
+      event.preventDefault()
+      event.stopPropagation()
+      setFront(null)
+      if (event.target.closest('[data-side-mode]'))
+        requestAnimationFrame(() => document.getElementById('composer-input')?.focus())
+    }
+    parent.addEventListener('click', hide, true)
+    return () => parent.removeEventListener('click', hide, true)
+  }, [inFront, setFront])
+
   if (!isMain) return null
   const still = reduced()
   const away = phone ? 'translateY(105%)' : 'translateX(14%) scale(0.96)'
