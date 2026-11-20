@@ -1,3 +1,4 @@
+import type { ConversationId } from '@earendil-works/pi-durable'
 import { settle } from '@ui-sdk/core/testing'
 import { createAgent } from '@ui-sdk/solid/agent'
 import { flush } from 'solid-js'
@@ -8,7 +9,7 @@ import type { UiUpdateRequest } from '../../../../shared/protocol.ts'
 import { expectDistinctAgentNames } from '../../../../test/web/agent-names.ts'
 import type { FakeSource } from '../../../../test/web/fake-source.ts'
 import { renderSolid } from '../../../../test/web/solid-dom-setup.ts'
-import type { Row } from '../../items.ts'
+import type { Entry } from '../../items.ts'
 import { List } from '../../list.solid.tsx'
 
 const harness = vi.hoisted(() => ({
@@ -17,6 +18,7 @@ const harness = vi.hoisted(() => ({
 }))
 vi.mock('../../../../web/src/sdk/client.ts', async () => {
   const { createStore } = await import('../../../../web/src/sdk/store.ts')
+  const { createRegistry } = await import('../../../../web/src/sdk/registry.ts')
   const { createApi } = await import('../../../../web/src/sdk/api.ts')
   const { createUiState } = await import('../../../../web/src/sdk/ui-state.ts')
   const { FakeSource, fakeSubscriptions } = await import('../../../../test/web/fake-source.ts')
@@ -38,7 +40,7 @@ vi.mock('../../../../web/src/sdk/client.ts', async () => {
     fetch,
   })
   const api = createApi(store, { fetch })
-  return { store, api, uiState: createUiState(api.updateUi) }
+  return { store, api, registry: createRegistry(), uiState: createUiState(api.updateUi) }
 })
 
 import { store, uiState } from '../../../../web/src/sdk/client.ts'
@@ -51,16 +53,22 @@ it('records the agent selecting the right one of two same-title questions', asyn
   store.start()
   onTestFinished(() => store.stop())
   harness.sources[0].open()
-  const rows: Row[] = [12, 13].map((id) => ({
+  const entries: Entry[] = [12, 13].map((id) => ({
     key: `message:${id}`,
     at: 100 * id,
-    message: id,
-    tag: 'question',
-    title: 'Renew the cert',
+    message: {
+      id,
+      at: 100 * id,
+      from: 69 as ConversationId,
+      to: 'user',
+      reply: true,
+      state: 'delivered',
+      text: 'Renew the cert',
+    },
   }))
   const container = renderSolid(() => (
     <ExtensionName value="sidebar">
-      <List phone={false} rows={rows} />
+      <List entries={entries} phone={false} status={{ state: 'complete' }} />
     </ExtensionName>
   ))
   await settle()
