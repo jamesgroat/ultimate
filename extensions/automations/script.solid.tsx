@@ -8,6 +8,8 @@ import {
   api,
   cn,
   errorMessage,
+  formatDuration,
+  formatTime,
   keepLast,
   shortenPath,
   useAction,
@@ -15,7 +17,7 @@ import {
   useSystem,
 } from '@/sdk/solid'
 import { AnsiOutput } from './ansi.solid.tsx'
-import { looks, since } from './looks.ts'
+import { clock, lookOf, looks, since, until } from './looks.ts'
 import { Dot, Tag } from './parts.solid.tsx'
 import { ErrorLine, Toggle, useAct } from './row.solid.tsx'
 import { LogAction, RunAction, ScriptAction } from './refs.ts'
@@ -98,10 +100,28 @@ function Script(props: Detail & { act: ReturnType<typeof useAct>['act'] }) {
   )
   const output = () => log.data()?.text ?? ''
   const path = () => source.data()?.path
-  const running = () => script().state === 'running'
-  const look = () => scriptLooks[script().state]
+  const check = () => !!props.automation.schedule
+  const running = () =>
+    check() ? script().check?.result === 'running' : script().state === 'running'
+  const look = () => (check() ? lookOf(props.automation, props.now) : scriptLooks[script().state])
   const facts = () => {
     const state = script()
+    if (check())
+      return [
+        props.automation.enabled &&
+          props.automation.nextAt !== undefined &&
+          `next ${until(props.automation.nextAt, props.now)}`,
+        state.check
+          ? state.check.result === 'running'
+            ? `started ${clock(state.check.at, props.now, formatTime)}`
+            : `last ${state.check.result} · ${clock(state.check.at, props.now, formatTime)}`
+          : 'not checked yet',
+        state.check?.ms !== undefined && `took ${formatDuration(state.check.ms)}`,
+        `timeout ${state.timeout ?? 300}s`,
+        `fired ${props.automation.fires}`,
+      ]
+        .filter(Boolean)
+        .join(' · ')
     return [
       state.pid !== undefined && `pid ${state.pid}`,
       running() && state.startedAt && `up ${since(state.startedAt, props.now)}`,
@@ -122,7 +142,9 @@ function Script(props: Detail & { act: ReturnType<typeof useAct>['act'] }) {
       data-automation-script={props.automation.id}
     >
       <div class="flex h-9 shrink-0 items-center gap-2 pr-1.5 pl-3">
-        <span class="section-label">Script</span>
+        <Show when={!check()}>
+          <span class="section-label">Script</span>
+        </Show>
         <span class={cn('flex shrink-0 items-center gap-1.5 text-[11px]', looks[look()].text)}>
           <Dot look={look()} />
           {looks[look()].word}
@@ -138,25 +160,27 @@ function Script(props: Detail & { act: ReturnType<typeof useAct>['act'] }) {
           </SegmentedControl>
           <span class="mx-0.5 h-4 w-px bg-border/70" />
           <Button
-            aria-label={`Relaunch ${automationLabel(props.automation)}`}
+            aria-label={`${check() ? 'Check now for' : 'Relaunch'} ${automationLabel(props.automation)}`}
             class="h-6 gap-1 px-2 font-mono text-[11px]"
-            disabled={script().state === 'writing'}
+            disabled={script().state === 'writing' || (check() && look() === 'checking')}
             onClick={restart}
             size="xs"
             title={
               script().state === 'writing'
                 ? 'The watcher starts it once the script is written'
-                : 'Start the script again from the top'
+                : check()
+                  ? 'Run one bounded check now'
+                  : 'Start the script again from the top'
             }
             variant="outline"
           >
             <RotateCw class="size-2.5" />
-            {running() ? 'Restart' : 'Start'}
+            {check() ? 'Check now' : running() ? 'Restart' : 'Start'}
           </Button>
         </div>
       </div>
       <div class="flex shrink-0 flex-col gap-0.5 border-b border-border/70 px-3 pb-2 text-[11px] text-muted-foreground">
-        <span class="truncate tabular-nums">{facts()}</span>
+        <span class={cn('tabular-nums', !check() && 'truncate')}>{facts()}</span>
         <span class="flex min-w-0 items-center gap-2">
           <span class="shrink-0 text-muted-foreground/50">$</span>
           <span class="min-w-0 truncate text-foreground/90" title={path()}>
