@@ -13,6 +13,7 @@ import { DatabaseSync } from 'node:sqlite'
 import type { EventContext } from '../shared/events.ts'
 import { batch, every } from '../lib/timers.ts'
 import { meansNone } from '../lib/errors.ts'
+import { redactSecrets } from '../lib/redact.ts'
 import type { Cancel } from '../lib/timers.ts'
 
 export type TraceContext = EventContext & { traceId: string; parentCall: string }
@@ -77,7 +78,7 @@ const EXTENSIONS_WITH_CREDENTIALS = new Set(['secrets', 'models'])
 
 function failure(error: unknown, credentials: boolean) {
   if (credentials) return error instanceof Error ? error.name : typeof error
-  return error instanceof Error ? error.message : String(error)
+  return redactSecrets(error instanceof Error ? error.message : String(error))
 }
 
 function toolError(result: ToolExecutionResult) {
@@ -86,7 +87,9 @@ function toolError(result: ToolExecutionResult) {
       item.severity === 'error' ? [item.message] : [],
     ),
     ...(result.output ?? []).flatMap((part) => (part.type === 'text' ? [part.text] : [])),
-  ].join('\n')
+  ]
+    .map(redactSecrets)
+    .join('\n')
   if (text.length <= SUMMARY_CHARACTER_LIMIT * 2) return text
   const last = text.split(/\r?\n/).findLast((line) => line.includes('Error:'))
   const terminal = last
@@ -95,6 +98,9 @@ function toolError(result: ToolExecutionResult) {
   return `${text.slice(0, SUMMARY_CHARACTER_LIMIT)}\n…\n${terminal}`
 }
 
+const cutBeforeSplitWord = (text: string, length: number) =>
+  text.length <= length ? text : `${text.slice(0, length).replace(/[^\s"'`,;()[\]{}<>]*$/, '')}…`
+
 export function summary(value: unknown) {
   if (value === undefined) return undefined
   let budget = SUMMARY_CHARACTER_LIMIT
@@ -102,6 +108,8 @@ export function summary(value: unknown) {
     const text = JSON.stringify(value, (key, item: unknown) => {
       if (budget <= 0) return undefined
       if (key && SECRET.test(key)) item = '[redacted]'
+      else if (typeof item === 'string')
+        item = redactSecrets(cutBeforeSplitWord(item, budget + 200))
       if (typeof item === 'string' && item.length > budget) item = item.slice(0, budget)
       budget -= key.length + (item && typeof item === 'object' ? 2 : String(item).length)
       return item

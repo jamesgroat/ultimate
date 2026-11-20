@@ -1,5 +1,5 @@
 import { AlertCircleIcon } from 'lucide-react'
-import { defineWebExtension, renderEntry, useUltimate } from '@/sdk'
+import { defineWebExtension, events, renderEntry, useUltimate } from '@/sdk'
 import { MessageResponse } from '@/components/ai/message'
 import { ConversationRef } from '../conversations/ui.tsx'
 import { FailureEntry, IdleEntry } from './entries.ts'
@@ -8,7 +8,13 @@ export default defineWebExtension({
   entries: {
     'watchdog.failure': renderEntry(FailureEntry, function FailureCard({ entry }) {
       const failure = entry.data
-      const { switchConversation } = useUltimate()
+      const { switchConversation, showSurface } = useUltimate()
+      const open = () => {
+        if (failure.entry !== undefined)
+          events.emit('messages:open', { conversation: failure.conversation, entry: failure.entry })
+        showSurface('agent')
+        switchConversation(failure.conversation)
+      }
       return (
         <section className="min-w-0 rounded-md border border-border border-l-2 border-l-destructive/60 bg-muted/20">
           <header className="flex flex-wrap items-center gap-2 border-b border-border/60 px-3 py-2 font-mono text-[11px] text-muted-foreground">
@@ -16,11 +22,24 @@ export default defineWebExtension({
             <button
               type="button"
               className="min-w-0 cursor-pointer text-foreground hover:underline"
-              onClick={() => switchConversation(failure.conversation)}
+              onClick={open}
             >
               <ConversationRef id={failure.conversation} title={failure.title} />
             </button>
             <span>run failed</span>
+            {failure.class && failure.class !== 'other' && (
+              <span className="rounded-sm bg-muted px-1.5 py-0.5">{failure.class}</span>
+            )}
+            {failure.entry !== undefined && (
+              <button
+                type="button"
+                className="ml-auto cursor-pointer hover:text-foreground hover:underline"
+                data-failure-entry={failure.entry}
+                onClick={open}
+              >
+                full error
+              </button>
+            )}
           </header>
           <div className="space-y-2 px-3 py-3 text-[13px] leading-relaxed">
             <p className="whitespace-pre-wrap text-destructive">{failure.error}</p>

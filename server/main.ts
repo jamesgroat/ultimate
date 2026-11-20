@@ -16,6 +16,7 @@ import type { ChildMessage, SupervisorMessage } from './supervisor-protocol.ts'
 
 import { alive } from '../lib/lock.ts'
 import { inProcess } from '../lib/errors.ts'
+import { redactSecrets } from '../lib/redact.ts'
 import { every } from '../lib/timers.ts'
 import { realpath } from 'node:fs/promises'
 import { extensionModules } from './vite-extensions.ts'
@@ -42,7 +43,8 @@ export async function prepareServer(options: Partial<ServerOptions> = {}) {
     options.projectRoot ?? process.env.ULTIMATE_PROJECT ?? options.ultimateRoot ?? process.cwd(),
   )
   const events = new Events()
-  const notice = (entry: Notice) => {
+  const notice = (unmasked: Notice) => {
+    const entry = { ...unmasked, message: redactSecrets(unmasked.message) }
     events.emit('notice', entry)
     reportCore({
       type: 'log',
