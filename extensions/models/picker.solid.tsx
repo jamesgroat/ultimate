@@ -32,7 +32,7 @@ import type { ConversationId } from '@earendil-works/pi-durable'
 import { familyTitle } from '../../lib/families.ts'
 import { agentsPanel, familyOf, modelIdOf, runsOn, thinkingOf } from './family-state.ts'
 import { FamilyDot, useCurrentModel, useFamilies } from './readers.solid.tsx'
-import { SetFamilyAction } from './refs.ts'
+import { SelectAction } from './refs.ts'
 import type { FamilyView } from './refs.ts'
 import {
   authLabel,
@@ -71,9 +71,16 @@ async function selectModel(
   family: FamilyView | null = null,
 ) {
   const level = family && thinkingOf(family)
-  await api.configure({ model, ...(level ? { thinkingLevel: level } : {}) }, id)
   await writingAs(source, () =>
-    api.action(SetFamilyAction, { family: family?.name ?? null }, { conversationId: id }),
+    api.action(
+      SelectAction,
+      {
+        model,
+        ...(level ? { thinkingLevel: level } : {}),
+        ...(family ? { family: family.name } : {}),
+      },
+      { conversationId: id },
+    ),
   )
   notePick()
 }
@@ -116,7 +123,14 @@ function Picker(props: { close: () => void }) {
   const [highlight, setHighlight] = createSignal<string | null>()
   const terms = createMemo(() => termsOf(query()))
   const found = createMemo(() => rankModels(models()?.models ?? [], terms()))
-  const groups = createMemo(() => [...Map.groupBy(found(), (model) => model.provider)])
+  const groups = createMemo(() => {
+    const grouped = [...Map.groupBy(found(), (model) => model.provider)]
+    const anthropic = grouped.findIndex(([provider]) => provider === 'anthropic')
+    const code = grouped.findIndex(([provider]) => provider === 'claude-code')
+    if (anthropic !== -1 && code > anthropic)
+      grouped.splice(anthropic, 0, ...grouped.splice(code, 1))
+    return grouped
+  })
   const providers = createMemo(
     () => new Map(models()?.providers.map((provider) => [provider.id, provider])),
   )
@@ -297,6 +311,9 @@ function Picker(props: { close: () => void }) {
   )
 }
 
+const billingLabel = (billing: ProviderInfo['billing'] | undefined) =>
+  billing === 'subscription' ? 'Subscription' : billing === 'paid-api' ? 'Paid API' : 'Unknown'
+
 function ProviderHeading(props: { id: string; provider: ProviderInfo | undefined }) {
   return (
     <span class="flex items-center gap-2">
@@ -321,7 +338,10 @@ function ProviderHeading(props: { id: string; provider: ProviderInfo | undefined
         {(label) => (
           <span class="ml-auto text-success/80">
             ✓ {label()}
-            {props.provider?.isUsingSubscription ? ' · subscription' : ''}
+            {' · '}
+            <span class={cn(props.provider?.billing === 'paid-api' && 'text-warning/80')}>
+              {billingLabel(props.provider?.billing)}
+            </span>
           </span>
         )}
       </Show>
