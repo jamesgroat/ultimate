@@ -76,8 +76,14 @@ export const StartLocalAction = actionRef<null, { conversation: ConversationId }
   'voice-live',
   'startLocal',
 )
-/** A finished user transcript → input to the Voice agent, steering while busy. */
-export const HeardAction = actionRef<{ text: string }, Record<string, never>>('voice-live', 'heard')
+/**
+ * A finished user transcript → input to the Voice agent, steering while busy. `raw`: what the transcriber heard before
+ * the lexicon put the user's terms right.
+ */
+export const HeardAction = actionRef<{ text: string; raw?: string }, Record<string, never>>(
+  'voice-live',
+  'heard',
+)
 /** GPT-Live's own line or a notice. The user's lines use heard instead. */
 export const LogAction = actionRef<{ role: 'live' | 'notice'; text: string }, { line: number }>(
   'voice-live',

@@ -19,8 +19,10 @@ export type LiveSession = {
   send: (event: Record<string, unknown>) => void
   mute: () => void
   unmute: () => void
-  speak: (text: string) => void
+  speak: (text: string, options?: { forEar?: boolean }) => void
   stopSpeaking?: () => void
+  audioBlocked?: () => boolean
+  resumeAudio?: () => Promise<void>
   close: () => Promise<void>
 }
 
