@@ -2,6 +2,28 @@ Run an async JavaScript function body in a fresh QuickJS/WASM sandbox. Only inje
 
 `await tools.<name>(args)` calls the conversation's currently resolved tools, except codemode, through Pi Durable's `api.executeTool()`: each nested call is its own `pi.tool` task owned by the script's call, runs the `beforeTool`/`afterTool` hooks (a block rejects the call), streams into `pi.live.nestedTools`, and keeps its result out of the transcript. A tool declaring `structuredOutputSchema` resolves to its `structuredOutput`, also on an error result that carries one: `tools.bash` resolves to `{ output, truncated, exitCode, fullOutputPath? }` and a nonzero exit does not reject, so check `exitCode`; `tools.read` resolves to the text or an image block. Other tools resolve to their text output. Any other failure rejects with the tool's error text.
 
+For independent diagnostics, use `Promise.allSettled` and print each outcome so one rejection does not hide the others:
+
+```js
+const checks = {
+  config: tools.read({ path: 'package.json' }),
+  errors: tools.bash({
+    command: 'grep -c ERROR app.log; rc=$?; [ "$rc" -eq 1 ] && exit 0; exit "$rc"',
+  }),
+}
+const results = await Promise.allSettled(Object.values(checks))
+results.forEach((result, i) => {
+  text({
+    check: Object.keys(checks)[i],
+    ...(result.status === 'fulfilled' ? { value: result.value } : { error: String(result.reason) }),
+  })
+})
+```
+
+Here only grep's expected no-match status (1) becomes success; genuine errors remain visible. Keep dependent
+operations fail-fast with sequential `await` or `Promise.all`; do not collect failures and then continue work that
+requires those calls to succeed.
+
 `tools.screenshot` and `tools.browser` resolve to `{ title, image?, file?, outcomes }`. `image` is missing when the PNG cannot be resized under the inline image limit; only the saved `file` path comes back, and `image(undefined)` throws. Check it first: `if (shot.image) image(shot.image)`.
 
 `text(value)`, console methods, `image(data)`, and the return value produce model-visible output. Nested-call completion lines stream to `pi.live`; final details contain `{ calls: [{ name, args, status, ms, conversationId?, background? }], value?, error?, subagentAnswers? }`. Script failures preserve output and QuickJS's `codemode.js:<line>` stack. Interrupted scripts are not replayed: Durable returns an interrupted result with the committed partial log. Ordinary nested side effects are never rolled back.
