@@ -390,7 +390,7 @@ export function Panels() {
       <For each={tabs()} keyed={key}>
         {(shown) => (
           <TabsPanel
-            class="min-h-0 flex-1 overflow-y-auto not-data-selected:hidden"
+            class="relative min-h-0 flex-1 overflow-y-auto not-data-selected:hidden"
             value={shown().id}
           >
             <Contribution fallback={reportedFailure} item={shown()} props={{}} />
