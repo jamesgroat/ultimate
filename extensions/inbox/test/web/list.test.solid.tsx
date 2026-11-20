@@ -61,7 +61,7 @@ it('records the agent selecting the right one of two same-title questions', asyn
   }))
   const container = renderSolid(() => (
     <ExtensionName value="sidebar">
-      <List phone={false} rows={rows} />
+      <List phone={false} rows={rows} sourceSlot={() => () => {}} status={{ state: 'complete' }} />
     </ExtensionName>
   ))
   await settle()

@@ -97,7 +97,7 @@ it('lets an agent tick the right one of two same-text to-dos, add one for @ultim
   const [inbox, setInbox] = createSignal(0)
   const container = renderSolid(() => (
     <ExtensionName value="todos">
-      <TodoList inbox={inbox()} />
+      <TodoList inbox={inbox()} status={{ state: 'complete' }} />
     </ExtensionName>
   ))
   await settle()

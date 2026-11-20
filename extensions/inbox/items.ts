@@ -1,7 +1,28 @@
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { openQuestion } from '../../lib/message-state.ts'
 import type { Message } from '../messages/refs.ts'
-import type { InboxItem } from './ui.tsx'
+import type { InboxItem, InboxStatus } from './ui.tsx'
+
+export const inboxCount = (count: number, status: InboxStatus) =>
+  status.state === 'complete' ? String(count) : count ? `${count}+` : '?'
+
+export function inboxStatus(loaded: boolean, statuses: readonly InboxStatus[]): InboxStatus {
+  const all: InboxStatus[] = [...(loaded ? [] : [{ state: 'loading' as const }]), ...statuses]
+  const state =
+    (['error', 'partial', 'loading'] as const).find((candidate) =>
+      all.some((s) => s.state === candidate),
+    ) ?? 'complete'
+  const text = all
+    .flatMap((s) =>
+      s.text
+        ? [s.text]
+        : s.state === 'complete'
+          ? []
+          : ['Some sources are not yet known. There may be more waiting on you.'],
+    )
+    .join(' · ')
+  return { state, ...(text ? { text } : {}) }
+}
 
 export const SURFACE = 'inbox'
 export const SELECTED = 'ext.inbox.selected'

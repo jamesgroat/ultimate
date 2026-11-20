@@ -12,15 +12,25 @@ import {
   useUiState,
 } from '@/sdk/solid'
 import { ConversationRef } from '../conversations/ui.solid.tsx'
-import { SELECTED, WAIT_WARNING_AFTER_MS, amber, shown } from './items.ts'
+import { SELECTED, WAIT_WARNING_AFTER_MS, amber, inboxCount, shown } from './items.ts'
+import type { InboxStatus } from './ui.tsx'
 import type { Anchor, Row, Selection } from './items.ts'
+
+type SourceSlot = (key: string, host: HTMLElement) => () => void
 
 function InboxRow(props: {
   row: Row
   now: number
   current: boolean
   select: (row: Anchor) => void
+  sourceSlot: SourceSlot
 }) {
+  let slot!: HTMLSpanElement
+  const rowKey = createMemo(() => props.row.key)
+  createEffect(
+    () => ({ key: rowKey(), mount: props.sourceSlot }),
+    ({ key, mount }) => mount(key, slot),
+  )
   return (
     <Button
       aria-current={props.current ? 'true' : undefined}
@@ -38,6 +48,7 @@ function InboxRow(props: {
       variant={null}
     >
       <span class="flex min-w-0 items-center gap-2">
+        <span class="contents" ref={slot} />
         <Show
           when={props.row.conversation}
           fallback={<span class="font-mono text-[10.5px]">{props.row.from}</span>}
@@ -77,7 +88,12 @@ function InboxRow(props: {
 
 const keyClass = 'h-4 min-w-4 rounded-[3px] px-1 font-mono text-[10px]'
 
-export function List(props: { rows: readonly Row[]; phone: boolean }) {
+export function List(props: {
+  rows: readonly Row[]
+  phone: boolean
+  status: InboxStatus
+  sourceSlot: SourceSlot
+}) {
   const now = useNow(60_000)
   const [selected, setSelected] = useUiState<Selection>(SELECTED, null)
   const current = createMemo(() => shown(props.rows, selected()))
@@ -129,7 +145,7 @@ export function List(props: { rows: readonly Row[]; phone: boolean }) {
     <div class="flex min-h-0 flex-1 flex-col">
       <div class="flex items-center justify-between px-5 pt-4 pb-2">
         <span class="section-label">
-          Waiting on you · <span class={amber}>{props.rows.length}</span>
+          Waiting on you · <span class={amber}>{inboxCount(props.rows.length, props.status)}</span>
         </span>
         <span class="section-label">oldest first</span>
       </div>
@@ -141,6 +157,7 @@ export function List(props: { rows: readonly Row[]; phone: boolean }) {
               now={now()}
               row={row()}
               select={select}
+              sourceSlot={props.sourceSlot}
             />
           )}
         </For>
