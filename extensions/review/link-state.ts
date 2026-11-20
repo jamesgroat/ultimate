@@ -4,7 +4,7 @@ export const specKey = 'spec'
 export const defaultSpec = 'uncommitted'
 
 export type ReviewTarget = { file: string; line: number; side?: 'old' | 'new' }
-export type ReviewRequest = { spec: string; at?: ReviewTarget }
+export type ReviewRequest = { spec: string; source?: string; at?: ReviewTarget }
 
 export const {
   get: getTarget,

@@ -32,6 +32,11 @@ export type ReviewFile = {
 export type ReviewDiff = {
   /** The spec shown: as asked, or where a gone `branch:<name>` moved (its landing's range, else `uncommitted`). */
   spec: string
+  /** Opaque source id and trusted display metadata, present only for an external source. */
+  source?: string
+  sourceLabel?: string
+  /** Provider-supplied GitHub repository URL; absent means no external compare link. */
+  github?: string
   kind: ReviewKind
   /** One line naming what is shown: `Uncommitted changes`, a commit's subject, `main...feature`. */
   title: string
@@ -58,36 +63,43 @@ export type ReviewRange = {
 }
 
 /**
- * `{ spec, conversation? }` → the diff of `spec` in conversation `conversation`'s checkout (its ready worktree, its
- * repository, its cwd), or in the project's checkout with no conversation. A `branch:<name>` whose ref is gone shows its
- * latest landing, else `uncommitted`, and says so in `spec`. Throws on a spec or ref Git does not know as a commit, and
- * on any part starting with `-`.
+ * `{ spec, conversation?, source? }` → the diff of `spec` in the selected trusted source, or in conversation
+ * `conversation`'s checkout (its ready worktree, its repository, its cwd), else the project's checkout. Natively, a
+ * `branch:<name>` whose ref is gone shows its latest landing, else `uncommitted`, and says so in `spec`. Throws on a
+ * spec or ref Git does not know as a commit, and on any part starting with `-`.
  */
-export const DiffAction = actionRef<{ spec: string; conversation?: ConversationId }, ReviewDiff>(
-  'review',
-  'diff',
-)
+export const DiffAction = actionRef<
+  { spec: string; conversation?: ConversationId; source?: string },
+  ReviewDiff
+>('review', 'diff')
 /**
- * `{ conversation? }` → recent specs to choose from, read in conversation `conversation`'s checkout (the project's with
- * none): uncommitted, open `ultimate/*` branches, landings and commits.
+ * `null` or `{ conversation?, source? }` → the trusted source provider's choices, or recent specs in conversation
+ * `conversation`'s checkout (the project's with none): uncommitted, open `ultimate/*` branches, landings and commits.
  */
-export const RangesAction = actionRef<{ conversation?: ConversationId } | null, ReviewRange[]>(
-  'review',
-  'ranges',
-)
+export const RangesAction = actionRef<
+  null | { conversation?: ConversationId; source?: string },
+  ReviewRange[]
+>('review', 'ranges')
 /**
- * `{ spec, conversation? }` → the conversation a review of `spec` goes to by default: a branch's owner, a landing's
- * submitter, the conversation a commit's `Ultimate-Conversation` trailer names, else the primary agent's.
+ * `{ spec, conversation?, source? }` → the default recipient: the source provider's known recipient, else primary.
+ * Without a source: a branch's owner, a landing's submitter, the commit or range head's `Ultimate-Conversation`
+ * trailer (read in conversation `conversation`'s checkout, else the project's), else the primary agent.
  */
 export const RecipientAction = actionRef<
-  { spec: string; conversation?: ConversationId },
+  { spec: string; conversation?: ConversationId; source?: string },
   { conversation: ConversationId }
 >('review', 'recipient')
 /**
- * User only: `{ conversation, spec, comments, note? }` → one `review.comments` input into `conversation`, which wakes
+ * User only: `{ conversation, spec, comments, note?, source? }` → one `review.comments` input into `conversation`, which wakes
  * or steers it like a typed message. Throws on an unknown conversation or a review over the limits in comments.ts.
  */
 export const SendAction = actionRef<
-  { conversation: ConversationId; spec: string; comments: ReviewComment[]; note?: string },
+  {
+    conversation: ConversationId
+    spec: string
+    comments: ReviewComment[]
+    note?: string
+    source?: string
+  },
   { conversation: ConversationId }
 >('review', 'send')

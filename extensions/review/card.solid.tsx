@@ -20,6 +20,7 @@ function SentReview(props: { id: number; review: ReviewComments }) {
     <>
       Review · {commentCount(props.review.comments.length)} on{' '}
       <span class="text-foreground/85">{shortSpec(props.review.spec)}</span>
+      {props.review.sourceLabel && <> · {props.review.sourceLabel}</>}
     </>
   )
   return (
@@ -39,7 +40,10 @@ function SentReview(props: { id: number; review: ReviewComments }) {
           class="w-full max-w-2xl min-w-0 overflow-hidden rounded-lg border border-border/70 border-l-2 border-l-brand/50 bg-secondary/40"
           data-review-card={props.id}
         >
-          <header class="flex items-center gap-2 border-b border-border/60 px-3 py-2 font-mono text-[11px] text-muted-foreground">
+          <header
+            class="flex items-center gap-2 border-b border-border/60 px-3 py-2 font-mono text-[11px] text-muted-foreground"
+            title={props.review.cwd}
+          >
             <FileDiff class="size-3.5 shrink-0 text-brand" />
             <span class="min-w-0 truncate">{title()}</span>
           </header>
@@ -56,6 +60,7 @@ function SentReview(props: { id: number; review: ReviewComments }) {
                   index={index() + 1}
                   review={props.id}
                   spec={props.review.spec}
+                  source={props.review.source}
                 />
               )}
             </For>
@@ -66,7 +71,13 @@ function SentReview(props: { id: number; review: ReviewComments }) {
   )
 }
 
-function Comment(props: { comment: ReviewComment; index: number; review: number; spec: string }) {
+function Comment(props: {
+  comment: ReviewComment
+  index: number
+  review: number
+  spec: string
+  source?: string
+}) {
   const path = () => location(props.comment)
   return (
     <li class="space-y-1.5 px-3 py-2.5">
@@ -77,6 +88,7 @@ function Comment(props: { comment: ReviewComment; index: number; review: number;
         onClick={() =>
           events.emit('review:open', {
             spec: props.spec,
+            source: props.source,
             at: { file: props.comment.file, line: props.comment.start, side: props.comment.side },
           })
         }

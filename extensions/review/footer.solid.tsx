@@ -10,6 +10,7 @@ export function Footer(props: {
   drafts: Drafts
   update: (change: (drafts: Drafts) => Drafts) => boolean
   sending: boolean
+  disabled?: boolean
   error?: string
   onSend: (source: Parameters<typeof writingAs>[0]) => Promise<void>
 }) {
@@ -89,7 +90,7 @@ export function Footer(props: {
             Discard
           </Button>
           <Button
-            disabled={props.sending || over()}
+            disabled={props.sending || over() || props.disabled}
             onClick={(_, details) => props.onSend(details.source)}
             size="xs"
           >
