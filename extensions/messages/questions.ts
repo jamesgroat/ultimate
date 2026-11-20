@@ -119,7 +119,8 @@ export async function openQuestionsNote(tx: Tx, conversationId: ConversationId, 
     (m) => openQuestion(m) && (canSettleEveryOpenQuestion || m.from === conversationId),
   )
   if (!open.length) return undefined
-  const asker = (m: Message) => (m.from === conversationId ? '' : ` from #${m.from}`)
+  const asker = (m: Message) =>
+    `${m.from === conversationId ? '' : ` from #${m.from}`}${m.carried ? ` (carried from ${m.carried.chapter}#${m.carried.id}, asked by ${typeof m.carried.from === 'number' ? `#${m.carried.from}` : m.carried.from})` : ''}`
   const text = `Open questions to the user, unanswered until they answer or dismiss them:\n${open
     .map(
       (m) =>

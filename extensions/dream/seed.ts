@@ -14,7 +14,7 @@ import type { Automation } from '../automations/types.ts'
 import { BuiltInDoc, PauseDoc } from './built-ins.ts'
 import { deliver } from './delivery.ts'
 import type { Prepared } from './refs.ts'
-import type { Seed } from './types.ts'
+import type { CarriedQuestion, Seed } from './types.ts'
 
 export const SeedState = defineDoc<{ applied?: number; automations: string[] }>({
   kind: 'dream.seed',
@@ -80,14 +80,15 @@ export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promis
         if (!memories[slug] || memory.updated > memories[slug].updated) memories[slug] = memory
       }
     }
-    const questions: Seed['questions'] = []
-    for (const message of (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages) {
-      if (!openQuestion(message)) continue
-      const ref = `#${message.id}`
-      if (message.questions?.length)
-        for (const { text } of message.questions) questions.push({ text, ref })
-      else questions.push({ text: message.text, ref })
-    }
+    const questions = (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages
+      .filter(openQuestion)
+      .map((m) => ({
+        id: m.id,
+        from: m.from,
+        text: m.text,
+        at: m.at,
+        ...(m.questions ? { questions: m.questions } : {}),
+      }))
     for (const slug of about)
       if (!memories[slug]) throw new Error(`Chapter seed lost user memory ${slug}`)
     const todos = (await exportedDocument<{ items: Todo[] }>(host, tx, 'todos')).items
@@ -182,6 +183,11 @@ function chapterText(host: ExtensionHost, seed: Seed) {
     `Carried: ${Object.entries(seed.counts)
       .map(([kind, count]) => `${count} ${kind}`)
       .join(', ')}.`,
+    ...(seed.questions.some(carriedCard)
+      ? [
+          `The user's open cards from ${from.name} are open again in their Inbox, asked in your name with their questions and picks: their answers come to you. Each one's \`carried\` field names the chapter, message and conversation that asked it there.`,
+        ]
+      : []),
     '',
     `Before falling asleep, you wrote this handover to yourself (#${seed.continues.conversation} in ${from.name}):`,
     '<handoff>',
@@ -191,6 +197,12 @@ function chapterText(host: ExtensionHost, seed: Seed) {
     'Greet the user in one or two lines, say you are ready, then continue that work: check what is still open (branches, questions, to-dos) and pick it up. The user may check you in a side chat: what this project is, what is open, what the rules are and who you work with.',
   ].join('\n')
 }
+
+const carriedCard = (question: Seed['questions'][number]): question is CarriedQuestion =>
+  'id' in question &&
+  typeof question.id === 'number' &&
+  typeof question.at === 'number' &&
+  (typeof question.from === 'number' || question.from === 'user' || question.from === 'remote')
 
 export async function applySeed(host: ExtensionHost) {
   const seed = await readJson<Seed | undefined>(join(host.chapter.dir, 'seed.json'), undefined)
@@ -214,12 +226,15 @@ export async function applySeed(host: ExtensionHost) {
       }>(host, tx, 'lineage.memory')
       Object.assign(memory.memories, seed.memories)
       const todos = await exportedDocument<{ next: number; items: Todo[] }>(host, tx, 'todos')
+      const cards = seed.questions.filter(carriedCard)
       const carried: Seed['todos'] = [
         ...seed.todos,
-        ...seed.questions.map(({ ref, text }) => ({
-          owner: 'user' as const,
-          text: `Open question (${seed.from.name}${ref}): ${text}`,
-        })),
+        ...seed.questions
+          .filter((question) => !carriedCard(question))
+          .map((question) => ({
+            owner: 'user' as const,
+            text: `Open question (${seed.from.name}${'ref' in question ? question.ref : `#${question.id}`}): ${question.text}`,
+          })),
         ...seed.scripts.map(({ id, scope, name, ask, schedule, timeout, prompt, agent }) => ({
           owner: 'ultimate' as const,
           text:
@@ -235,6 +250,19 @@ export async function applySeed(host: ExtensionHost) {
           })),
       ]
       for (const item of carried) todos.items.push({ ...item, id: todos.next++, at: Date.now() })
+      const log = await tx.doc(Messages, ROOT_CONVERSATION_ID)
+      for (const { id, from, text, at, questions } of cards)
+        log.messages.push({
+          id: log.next++,
+          from: ultimate,
+          to: 'user',
+          text,
+          at,
+          reply: true,
+          state: 'delivered',
+          ...(questions ? { questions } : {}),
+          carried: { chapter: seed.from.name, id, from },
+        })
       await deliver(host, tx, ultimate, {
         type: 'input',
         requestId: `dream.chapter:${host.chapter.name}`,
