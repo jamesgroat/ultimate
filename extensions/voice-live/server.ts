@@ -347,7 +347,10 @@ export function answerTask(host: ExtensionHost) {
             ? undefined
             : log?.messages.find(
                 (m) =>
-                  m.from === 'user' && m.re === explicitlyNamedQuestion && m.text === input.text,
+                  m.from === 'user' &&
+                  m.re === explicitlyNamedQuestion &&
+                  m.text === input.text &&
+                  !m.clarifies,
               )
         const reply =
           explicitlyNamedQuestion === false

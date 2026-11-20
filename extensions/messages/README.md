@@ -66,7 +66,10 @@ another.
 A reply-expected message to the user stays open, and its sender shows as awaiting reply, until the user answers that
 message: a Reply with `re` (the answer card or a typed Reply). The delivered input reads `Answer to message N:` before
 the reply, so an asker with several cards open never guesses which one it answers; a spoken (voice) reply answers no
-card while several are open. Dismissing it closes it with a one-way note to the sender. A branch's question also puts an attention pointer (`board.asked`) in @ultimate's conversation, and the user's
+card while several are open. A note sent from a card with questions and none of them answered asks rather than
+answers: the reply carries `clarifies`, reads `Clarification on message N (still open …):`, records a `clarify` input,
+posts no `board.answered`, and the card stays open. When the asker answers that clarification with a new message with
+`questions`, the new card replaces the old one: the old one is `dismissed` with `replacedBy` and no note goes back. Dismissing it closes it with a one-way note to the sender. A branch's question also puts an attention pointer (`board.asked`) in @ultimate's conversation, and the user's
 answer a `board.answered` note there; neither starts a run. A branch with an open question shows as `waits on you`.
 
 `questions` (checked in `questions.ts`) render under the message as the questions extension's answer card; see

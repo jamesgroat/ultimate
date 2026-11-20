@@ -162,9 +162,11 @@ function UserTurn(props: { entry: EntryRecord; id: number; text: string }) {
           variant={null}
         >
           <CornerLeftUp class="size-3" />
-          {message()?.via
-            ? `@ultimate ${settled()} a question for you`
-            : `you ${settled()} a question`}
+          {message()?.clarifies
+            ? 'you asked about a question'
+            : message()?.via
+              ? `@ultimate ${settled()} a question for you`
+              : `you ${settled()} a question`}
         </Button>
       )}
     </Show>

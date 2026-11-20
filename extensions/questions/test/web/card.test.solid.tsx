@@ -10,6 +10,7 @@ import { CARDS_KEY } from '../../state.ts'
 
 const harness = vi.hoisted(() => ({
   sources: [] as FakeSource[],
+  servers: [] as ReturnType<typeof fakeSubscriptions>[],
   actions: [] as { name: string; args: unknown; source: string | null }[],
   writers: [] as string[],
 }))
@@ -23,6 +24,7 @@ vi.mock('../../../../web/src/sdk/client.ts', async () => {
     ],
   )
   const subscriptions = fakeSubscriptions(harness.sources)
+  harness.servers.push(subscriptions)
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = input as string
     const name = /^\/api\/extensions\/questions\/actions\/(\w+)$/.exec(path)?.[1]
@@ -131,6 +133,76 @@ it('shows the saved picks, note and open question on a fresh mount', () => {
   expect(card.querySelector('fieldset[data-current] button[data-selected]')?.textContent).toContain(
     'Yes',
   )
+})
+
+it('asks with a note alone, keeps the card open and shows the clarification thread', async () => {
+  uiState.receive({
+    [CARDS_KEY]: {
+      'message:5': { drafts: {}, note: 'Why now?', current: 0, text: '' },
+    },
+  })
+  const card = renderSolid(() => (
+    <MessageQuestions message={message} keys={false} withActions={false} />
+  ))
+  expect(card.querySelector('[data-asks-hint]')?.textContent).toContain('Talk it through')
+  await press('Ask: answer to message 5')
+  await vi.advanceTimersByTimeAsync(3000)
+  flush()
+  expect(harness.actions).toEqual([
+    {
+      name: 'answer',
+      args: { messageId: 5, answers: [], note: 'Why now?' },
+      source: 'agent',
+    },
+  ])
+  expect(card.querySelector('[data-send]')?.getAttribute('data-send')).toBe('answering')
+  expect(card.querySelector<HTMLTextAreaElement>('[data-note]')?.value).toBe('')
+  harness.servers
+    .at(-1)!
+    .of(1)!
+    .send('doc', {
+      kind: 'board',
+      value: {
+        messages: [
+          message,
+          { id: 6, from: 'user', to: 2, re: 5, clarifies: true, text: 'Why now?' },
+          { id: 7, from: 2, to: 'user', re: 6, text: 'The login expires Friday.' },
+        ],
+      },
+    })
+  await vi.advanceTimersByTimeAsync(0)
+  flush()
+  expect(card.querySelector('[data-clarifications]')?.textContent).toContain('Why now?')
+  expect(card.querySelector('[data-clarifications]')?.textContent).toContain(
+    'The login expires Friday.',
+  )
+  expect(card.textContent).toContain('0/2')
+})
+
+it('clears a sent clarification draft on a fresh mount', async () => {
+  uiState.receive({
+    [CARDS_KEY]: {
+      'message:5': { drafts: {}, note: 'Why now?', current: 0, text: '' },
+    },
+  })
+  const card = renderSolid(() => (
+    <MessageQuestions message={message} keys={false} withActions={false} />
+  ))
+  await vi.advanceTimersByTimeAsync(10)
+  harness.servers
+    .at(-1)!
+    .of(1)!
+    .send('doc', {
+      kind: 'board',
+      value: {
+        messages: [
+          message,
+          { id: 6, from: 'user', to: 2, re: 5, clarifies: true, text: 'Why now?' },
+        ],
+      },
+    })
+  flush()
+  expect(card.querySelector<HTMLTextAreaElement>('[data-note]')?.value).toBe('')
 })
 
 it('announces the current choice and rating, and clears picks without advancing', async () => {
