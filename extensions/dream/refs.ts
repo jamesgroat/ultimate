@@ -94,7 +94,7 @@ export type ToolStats = {
   calls: number
   tools: { name: string; calls: number; failed: number; avgMs: number }[]
   unused: string[]
-  /** The most frequent errors, secret-shaped text masked, each with its two newest calls: where it happened and its terminal error excerpt, never its args. */
+  /** The most frequent error causes per tool: the error with URLs, paths, ids and numbers of four or more digits replaced by `<url>`, `<path>`, `<id>` and `<n>` and secret-shaped text masked, each with its count and its two newest calls: where it happened and its terminal error excerpt, never its args. */
   errors: {
     name: string
     error: string

@@ -405,6 +405,84 @@ it('reads tool numbers from the trace, with unused tools and frequent errors', a
   expect(toolStats(join(await temp(), 'none.sqlite'), ['read']).unused).toEqual(['read'])
 })
 
+// The prod-merge-wait dream: 97 reads of not-yet-created cache files showed as 97 causes, crowding out the rest.
+it('groups tool errors by their cause, with paths, ids and numbers masked', async () => {
+  const file = join(await temp(), 'trace.sqlite')
+  const db = new DatabaseSync(file)
+  db.exec(
+    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER, caller TEXT, callee TEXT)',
+  )
+  const insert = db.prepare(
+    'INSERT INTO calls (id, at, ms, kind, name, ok, error, conversation, entry) VALUES (?, ?, 1, ?, ?, 0, ?, ?, ?)',
+  )
+  for (const [n, path] of ['/tmp/cache/a1.json', '/tmp/cache/b22.json', '~/x/c.json'].entries())
+    insert.run(
+      String(n),
+      100 + n,
+      'tool',
+      'read',
+      `ENOENT: no such file, open '${path}'`,
+      7,
+      40 + n,
+    )
+  insert.run('5', 150, 'tool', 'read', 'Error: 429 after 1795212229734', 8, 47)
+  insert.run('6', 151, 'tool', 'read', 'Error: 401 after 1795212229735', 8, 48)
+  insert.run('9', 200, 'tool', 'read', 'EACCES: permission denied', 8, 50)
+  db.close()
+  const { errors } = toolStats(file, ['read'])
+  expect(errors.map(({ error, count }) => `${count} ${error}`)).toEqual([
+    "3 ENOENT: no such file, open '<path>'",
+    '1 EACCES: permission denied',
+    '1 Error: 401 after <n>',
+    '1 Error: 429 after <n>',
+  ])
+  expect(errors.slice(0, 2)).toEqual([
+    {
+      name: 'read',
+      error: "ENOENT: no such file, open '<path>'",
+      count: 3,
+      examples: [
+        { conversation: 7, entry: 42, error: "ENOENT: no such file, open '~/x/c.json'" },
+        { conversation: 7, entry: 41, error: "ENOENT: no such file, open '/tmp/cache/b22.json'" },
+      ],
+    },
+    {
+      name: 'read',
+      error: 'EACCES: permission denied',
+      count: 1,
+      examples: [{ conversation: 8, entry: 50, error: 'EACCES: permission denied' }],
+    },
+  ])
+})
+
+// Life's lander: masking digit runs before redaction broke token shapes, so the rest of a secret survived.
+it('redacts the whole error before masking its cause, so no part of a secret survives', async () => {
+  const file = join(await temp(), 'trace.sqlite')
+  const db = new DatabaseSync(file)
+  db.exec(
+    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER, caller TEXT, callee TEXT)',
+  )
+  const insert = db.prepare(
+    "INSERT INTO calls (id, at, ms, kind, name, ok, error) VALUES (?, ?, 1, 'tool', 'bash', 0, ?)",
+  )
+  const secrets = [
+    'QwErTyUiOp1234AsDfGhJkLzXcVbNm',
+    'ghp_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78',
+    'Zq8Wm3Kt9Rv2Xp7Ln4Hs6Jd1Fg5Bc0Ty8Ua',
+  ]
+  const padding = 'x'.repeat(290)
+  insert.run('1', 1, `Error: Authorization: Bearer ${secrets[0]} failed`)
+  insert.run('2', 2, `Error: token ${secrets[1]} rejected`)
+  insert.run('3', 3, `Error: ${secrets[2]} leaked`)
+  insert.run('4', 4, `Error: ${padding} ${secrets[2]} at the cut`)
+  db.close()
+  const shown = JSON.stringify(toolStats(file, ['bash']).errors)
+  for (const secret of secrets)
+    for (let at = 4; at + 6 <= secret.length; at += 3)
+      expect(shown).not.toContain(secret.slice(at, at + 6))
+  expect(shown).toContain('Bearer [redacted] failed')
+})
+
 it('counts service and action calls per caller and callee inside the asked window, never args', async () => {
   const file = join(await temp(), 'trace.sqlite')
   const db = new DatabaseSync(file)
@@ -563,6 +641,8 @@ it('retains the terminal selector error through tracing into dream failure examp
     trace.close()
   }
   const [group] = toolStats(file, ['browser']).errors
-  expect(group.error).toContain(warning)
+  expect(group.error).toContain(
+    "Console error: WebSocket connection to '<url>' failed: Error during WebSocket handshake: Unexpected response code: 400",
+  )
   expect(group.examples).toEqual([{ conversation: 7, entry: 43, error: timeout }])
 })
