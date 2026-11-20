@@ -141,7 +141,9 @@ export function MessageQuestions({
       questions={questions}
       keys={questions.length > 0 && (keys ?? shown)}
       submit={(answers, note, keepalive) =>
-        answer({ answers, ...(note ? { note } : {}) }, keepalive)
+        !localCardThatCanAsk && !answers.length && note
+          ? answer({ text: note }, keepalive)
+          : answer({ answers, ...(note ? { note } : {}) }, keepalive)
       }
       reply={(text) => answer({ text })}
       actions={
@@ -457,10 +459,13 @@ function Card({
   const ready = answered(questions, drafts)
   const locked = phase !== 'answering'
 
-  const sentBeforeThePageLeft = asked !== undefined && state.note.trim() === asked
+  const reconciledDraftWithThread = useRef(false)
   useEffect(() => {
-    if (sentBeforeThePageLeft && !locked) setState((old) => ({ ...old, note: '' }))
-  }, [sentBeforeThePageLeft, locked, setState])
+    if (reconciledDraftWithThread.current || asked === undefined) return
+    reconciledDraftWithThread.current = true
+    const draftLeftWhenTheFormerPageSentIt = state.note.trim() === asked
+    if (draftLeftWhenTheFormerPageSentIt) setState((old) => ({ ...old, note: '' }))
+  }, [asked, state.note, setState])
 
   useEffect(() => {
     const flushWithKeepaliveOnPagehide = () => flushUndoWindowSend(undoWindowSend, true)

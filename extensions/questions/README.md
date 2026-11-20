@@ -123,8 +123,8 @@ Both are user-only.
   answer in the message's own numbering: `1a. Topic: option` for an option, `2a,c. Topic: a, c` for several, `3: text` for typed text or a rating (`Topic: answer` when the message numbered
   nothing), then `Note: …`; with no answers the note alone is the reply. On a message with questions that reply is a
   clarification that leaves the message open (see [Messages](../messages/README.md)). Remote cards (an injected
-  `transport` or `identity`) and side chat's pinned card keep “Send note” and no thread: a peer on older code would
-  close the card, and the local log holds no remote thread. Returns `{ id }`. `answer { messageId, text }`
+  `transport` or `identity`) and side chat's pinned card keep “Send note” and no thread, and send a note alone as
+  `text`, which closes the card on old and new peers alike; the local log holds no remote thread. Returns `{ id }`. `answer { messageId, text }`
   posts `text` instead, for a message with or without questions. Messages admission atomically verifies that the
   original remains open, so concurrent answers produce exactly one reply; normal Messages delivery wakes the sender.
 - `dismiss { messageId }` marks the message `dismissed` and posts a one-way user note to the sender with `re`, in one
