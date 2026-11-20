@@ -18,6 +18,7 @@ import { guardToolArguments, modelTrace } from './tool-arguments.ts'
 import { readFamilies } from '../lib/families-settings.ts'
 import { callTrace } from './trace.ts'
 import { projectSkills } from './skills.ts'
+import { writeProject } from './project.ts'
 import { requestSwap } from './supervisor-protocol.ts'
 import { activeChapter, finishChapterSwitch } from '../lib/chapters.ts'
 import { defaultAgent } from '../lib/agents.ts'
@@ -215,6 +216,7 @@ export async function prepareHarness(options: HostOptions) {
       let harness: Harness | undefined
       let storage: Awaited<ReturnType<typeof openNodeSqliteStorage>> | undefined
       try {
+        await writeProject(home, projectRoot)
         const resetOrRestoreIncomplete = existsSync(join(home, 'reset.json'))
         if (resetOrRestoreIncomplete)
           throw new Error(
