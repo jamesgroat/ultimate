@@ -5,12 +5,13 @@ import {
   LiveDoc,
   ROOT_CONVERSATION_ID,
 } from '@earendil-works/pi-durable'
-import type { SubmissionId, TaskId } from '@earendil-works/pi-durable'
+import type { ConversationId, SubmissionId, TaskId } from '@earendil-works/pi-durable'
 import { meansNone } from '../../lib/errors.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
-import { Messages } from '../messages/api.ts'
+import { Messages, Started } from '../messages/api.ts'
 import type { Message } from '../messages/api.ts'
 import { Standing } from '../subagents/api.ts'
+import { Branch } from '../lineage/api.ts'
 import { openQuestion } from '../../lib/message-state.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
 import { ClassifyApi } from '../classify/api.ts'
@@ -65,6 +66,21 @@ export function finalAsk(text: string) {
         .source,
     'i',
   ).test(prose.trimEnd())
+}
+
+const DECISIONS_BLOCK = /(?:^|\n)\s*(?:\*\*)?Decisions:|\bMy picks?:/i
+const VERDICT = /^\s*(?:\*\*)?(?:ask the user|decided:|hold\b)/i
+const POINTS_AT_CARD = /\bcard\b|\bInbox\b|\bmessage \d+/i
+const PROSE_DECISION =
+  /decision needed|\bneeds?\b[^.\n]{0,40}\b(?:a|your|his|her|their|the user's|separate|explicit)\s+go\b|\bneeds?\b[^.\n]{0,40}\b\w+'s go\b|\b(?:wait|waits|waiting) (?:on|for) (?:the user|you|him|her|\w+'s)\b[^.\n]{0,20}\b(?:go|answer|decision)\b|^\s*(?:do|shall|can) I\b[^?\n]*\?/im
+
+const pointsAtCard = (text: string) => POINTS_AT_CARD.test(finalAskState(text)?.tail ?? '')
+
+export function reportAsk(text: string) {
+  const tail = finalAskState(text)?.tail ?? ''
+  const prose = unquotedProse(text)
+  if (DECISIONS_BLOCK.test(prose) || VERDICT.test(prose) || pointsAtCard(text)) return false
+  return finalAsk(text) || PROSE_DECISION.test(stripQuotes(tail))
 }
 
 export function finalAskState(
@@ -203,16 +219,27 @@ async function classifiedAsk(host: ExtensionHost, text: string, signal: AbortSig
 const NUDGE =
   'Your final prose appears to ask the user for a decision, but it has no answer card. If a response is needed, send the actual question with message { to: "user", text, questions } using the appropriate question kinds and options. Otherwise state your conclusion without asking. Do not invent or answer a decision. This is the only corrective nudge for this run.'
 
+const REPORT_NUDGE =
+  'Your final prose appears to leave a decision for the user, but it has no answer card. If a branch asks for one, answer it with your verdict (ask the user with your picks, decided, or hold), or send the actual question with message { to: "user", text, questions }. Otherwise state your conclusion without asking. Do not invent or answer a decision. This is the only corrective nudge for this run.'
+
+const BRANCH_NUDGE =
+  'Your final answer appears to leave a decision for the user in prose. If one is needed, end with a Decisions: block for @ultimate (one numbered line per decision with lettered options, then My picks), or, if @ultimate already said to ask the user, send the card with message { to: "user", text, questions }. Otherwise state your conclusion without asking. Do not invent or answer a decision. This is the only corrective nudge for this run.'
+
+type Scope = 'user' | 'report' | 'branch'
+
 export function finalAskNudge(host: ExtensionHost) {
   return hook(GenerationTask, {
     onYield: async (answer, api, ctx) => {
       const text = answer.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('')
       const matched = finalAsk(text)
-      if (!matched && !host.want(ClassifyApi)) return undefined
-      if (
-        (await api.snapshot(Standing, ROOT_CONVERSATION_ID, ctx))?.ultimate !== api.conversationId
-      )
-        return undefined
+      const reported = reportAsk(text)
+      if (!matched && !reported && !host.want(ClassifyApi)) return undefined
+      const primary =
+        (await api.snapshot(Standing, ROOT_CONVERSATION_ID, ctx))?.ultimate === api.conversationId
+      const branch = async (id: unknown) =>
+        typeof id === 'number' &&
+        (await api.snapshot(Branch, id as ConversationId, ctx))?.branch !== undefined
+      if (!primary && !(await branch(api.conversationId))) return undefined
       const user = (await readSettings(userSettingsPath(host.userHome)).catch(meansNone)) ?? {}
       const project = await host.projectSettings()
       type Config = { questions?: { nudgeFinalAsk?: boolean } }
@@ -224,22 +251,32 @@ export function finalAskNudge(host: ExtensionHost) {
         return undefined
       const run = (await api.snapshot(LiveDoc, api.conversationId, ctx))?.run
       if (!run?.inputs.length) return undefined
+      let scope: Scope = primary ? 'user' : 'branch'
+      const starter = primary
+        ? undefined
+        : (await api.snapshot(Started, api.conversationId, ctx))?.by
       for (const id of run.inputs) {
         const input = await (await host.harness().submission(id, ctx))?.status(ctx)
         if (input?.type !== 'input' || input.status !== 'placed') return undefined
         if (input.requestId?.startsWith('watchdog-retry:')) return undefined
         const entry = await api.entry(input.entry, ctx)
-        if (
-          entry?.kind !== 'pi.user' &&
-          entry?.kind !== 'voice.utterance' &&
-          !(
-            entry?.kind === 'board.message' &&
-            (entry.data as { from?: unknown } | undefined)?.from === 'user'
-          )
-        )
-          return undefined
+        const from = (entry?.data as { from?: unknown } | undefined)?.from
+        const delivered = entry?.kind === 'board.message' || entry?.kind === 'board.reply'
+        const fromUser =
+          entry?.kind === 'pi.user' ||
+          entry?.kind === 'voice.utterance' ||
+          (entry?.kind === 'board.message' && from === 'user')
+        if (!primary) {
+          if (!fromUser && !(delivered && starter !== undefined && from === starter))
+            return undefined
+          continue
+        }
+        if (delivered && (await branch(from))) scope = 'report'
+        else if (!fromUser) return undefined
       }
-      if (!matched && !(await classifiedAsk(host, text, ctx.abortSignal))) return undefined
+      if (scope === 'user') {
+        if (!matched && !(await classifiedAsk(host, text, ctx.abortSignal))) return undefined
+      } else if (!reported) return undefined
       const open = (
         (await api.snapshot(Messages, ROOT_CONVERSATION_ID, ctx))?.messages ?? []
       ).filter((m) => m.from === api.conversationId && openQuestion(m))
@@ -266,7 +303,10 @@ export function finalAskNudge(host: ExtensionHost) {
         attempt.generation = api.taskId
         return true
       }, ctx)
-      return claimed ? { continue: NUDGE } : undefined
+      if (!claimed) return undefined
+      return {
+        continue: scope === 'branch' ? BRANCH_NUDGE : scope === 'report' ? REPORT_NUDGE : NUDGE,
+      }
     },
   })
 }

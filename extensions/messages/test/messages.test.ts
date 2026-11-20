@@ -37,6 +37,7 @@ import type { ActionContext } from '../../../server/actions.ts'
 import { Metadata } from '../../../server/metadata.ts'
 import { emit } from '../../../server/events.ts'
 import messagesExtension, { actions } from '../server.ts'
+import questionsExtension from '../../questions/server.ts'
 import { sendResult } from '../delivery.ts'
 import { Serving } from '../addresses.ts'
 import pauseExtension, { actions as pauseActions } from '../../pause/server.ts'
@@ -115,6 +116,7 @@ async function fixture(
     /** Only this conversation's calls wait at the gate. */
     conversation?: () => number
   },
+  options: { nudge?: boolean } = {},
 ) {
   /** Services other extensions implement here, by API name, such as pause's `messages.gate`. */
   const provided = new Map<string, unknown>()
@@ -235,6 +237,8 @@ async function fixture(
         }
       : backend,
   )
+  if (options.nudge)
+    prepared.registry.install(questionsExtension({ ...host, projectSettings: async () => ({}) }))
   prepared.registry.install(
     defineExtension({
       name: 'test-hold',
@@ -318,6 +322,8 @@ async function fixture(
       return fauxAssistantMessage([])
     if (last.role === 'user' && text.startsWith('Message from') && text.includes('\nASK'))
       return fauxAssistantMessage([fauxText('Scope changed. Proceed?\n1. Yes\n2. No')])
+    if (last.role === 'user' && text.includes('PROSE_DECISION'))
+      return fauxAssistantMessage([fauxText('Built it.\n\nDecision needed: do I deploy it now?')])
     return fauxAssistantMessage([fauxText(last.role === 'toolResult' ? 'Done' : `Answer: ${text}`)])
   }
   prepared.faux!.setResponses([route])
@@ -1489,10 +1495,19 @@ async function enableBranch(f: Awaited<ReturnType<typeof fixture>>) {
     if (tool) await configure(tx, f.opened.root.id, { modelTools: { add: [tool] } })
   }, context)
 }
-async function branched(f: Awaited<ReturnType<typeof fixture>>, prompt = 'Explore') {
-  await enableBranch(f)
+async function branched(f: Awaited<ReturnType<typeof fixture>>, prompt = 'Explore', root?: number) {
+  if (root === undefined) await enableBranch(f)
   await f.opened.root.submit(
-    { type: 'input', content: 'BRANCH ' + JSON.stringify({ prompt, isolated: false }) },
+    {
+      type: 'input',
+      content:
+        'BRANCH ' +
+        JSON.stringify({
+          prompt,
+          isolated: false,
+          ...(root === undefined ? {} : { root }),
+        }),
+    },
     context,
   )
   const before = (await replies(f)).length
@@ -1558,6 +1573,46 @@ it.each([undefined, 'default', 'review'])(
     ).toEqual({ provider: 'faux', modelId: 'faux-1' })
   },
 )
+
+// Lander review: the branch nudge compared a branch's inputs with the conversation it forked from (the root), not its
+// starter, so it never fired on the task or a follow-up from the agent that started the branch.
+it('nudges a branch that leaves a prose decision on its starter\u2019s task or follow-up, never on an automation input', async () => {
+  const f = await fixture(undefined, undefined, { nudge: true })
+  const root = await f.opened.harness.createConversation(
+    { ownership: { kind: 'ownerless' } },
+    context,
+  )
+  await enableBranch(f)
+  const agent = await f.opened.root.agent(context)
+  await f.opened.harness.commit(async (tx) => {
+    await configure(tx, root.id, { model: agent.model, tools: agent.tools })
+    ;(await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots = [root.id]
+  }, context)
+  const nudged = () =>
+    f.observed.filter((t) => t.startsWith('Your final answer appears to leave a decision')).length
+  const { id, branch, settled } = await branched(f, `PROSE_DECISION task`, root.id)
+  expect(
+    (await f.opened.harness.snapshot(Branch, id as ConversationId, context))!.branch!.from,
+  ).toBe(root.id)
+  expect(nudged()).toBe(1)
+  await f.send(`#${id}`, 'PROSE_DECISION follow-up', { reply: false })
+  await until(async () => (await f.log())!.messages.at(-1)?.state === 'delivered')
+  await branch.waitForIdle(context)
+  await settled()
+  expect(nudged()).toBe(2)
+  await (
+    await branch.submit(
+      {
+        type: 'input',
+        content: 'PROSE_DECISION automation',
+        entry: { kind: 'automations.fired', data: {} },
+      },
+      context,
+    )
+  ).wait(context)
+  await settled()
+  expect(nudged()).toBe(2)
+})
 
 it('lets a branch ask the user directly and leaves passive question and answer notes for @ultimate', async () => {
   const f = await fixture()

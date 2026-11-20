@@ -5,7 +5,6 @@ import type {
   EntryRecord,
   SubmissionId,
   Tx,
-  TaskId,
 } from '@earendil-works/pi-durable'
 import type { Context } from '@earendil-works/chord/context'
 import { defineDoc, LiveDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
@@ -15,7 +14,7 @@ import type { DeliveredMessage } from './refs.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { Standing, Subagents, SubagentsApi } from '../subagents/api.ts'
 import type { Remote, Serves } from './refs.ts'
-import { Messages } from './api.ts'
+import { Messages, Started } from './api.ts'
 import { isOpen } from '../../lib/message-state.ts'
 
 export type { Serves }
@@ -184,18 +183,7 @@ export async function owed(host: ExtensionHost, tx: Tx, to: ConversationId, auto
   return branches.length ? { branches } : {}
 }
 
-export const Started = defineDoc<{
-  by?: ConversationId
-  yielded?: TaskId
-}>({
-  kind: 'board.started',
-  checkpointWhen: () => false,
-  version: 1,
-  scope: 'conversation',
-  history: 'latest',
-  fork: 'initial',
-  initial: () => ({}),
-})
+export { Started }
 
 export async function starterOf(host: ExtensionHost, id: ConversationId | 'user', ctx: Context) {
   if (typeof id !== 'number') return undefined

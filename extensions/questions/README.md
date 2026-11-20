@@ -43,8 +43,24 @@ to opt out; disabling this optional extension also removes the nudge. This is a 
 repository's prompt-only behavioural policy, not a guarantee that every question will be caught.
 
 Only current runs whose placed inputs all come from the user qualify (typed input, a voice utterance, or a Messages
-input attributed to the user). Peer, branch, subagent, automation and unknown or mixed origins are excluded, regardless
-of their model role. Watchdog's automatic retry submissions are excluded by their `watchdog-retry:` request provenance,
+input attributed to the user). Peer, subagent, automation and unknown origins are excluded, regardless of their model
+role.
+
+The same setting covers two more runs, judged without classify: a branch's final answer (a conversation with a
+lineage `Branch` document) to a run whose inputs come from the user or from the conversation that started it (its
+`Started.by`, which sent its task), and the
+primary Ultimate's answer to a run whose inputs come from the user or from branches, at least one of them a branch (a
+report or reply). Automation, peer and remote inputs never qualify. `reportAsk` leaves alone an answer that carries a
+`Decisions:` block or `My picks:` anywhere in its prose, one that opens with Ultimate's verdict ("Ask the user",
+"Decided:", "Hold"), and one whose closing paragraphs name a card, the Inbox or a message number. Otherwise the
+regex above, "Decision needed", a closing "needs (a, your, someone's) go", "waits on (the user, you, someone's)
+answer or go", or a line that asks "Do I / Shall I …?" counts as an ask. A branch is told to end with a `Decisions:`
+block for Ultimate (or the card, if Ultimate already said to ask the user); Ultimate is told to give the branch its
+verdict or send the card. A replay over one day's 125 coordinator run-ending answers, 108 of them to runs from the
+user or the starter, nudged the three known prose decisions and 3 others (6 of 108).
+
+On the user path, a status answer that only says an open card waits ("the card … is still open", "until you approve
+on a card") may still be nudged: that depends on the live classifier and on card coverage, and no test pins it. Watchdog's automatic retry submissions are excluded by their `watchdog-retry:` request provenance,
 even though they use the same `pi.user` entry kind as typed input. The message tool must be available and no open native
 answer card of the conversation may already cover the ask: classify judges each open card against the closing text
 (0.8 counts as covered), and without it, on failure or after 3 seconds, a card covers the ask when its text and

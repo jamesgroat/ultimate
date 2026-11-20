@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { finalAsk } from '../nudge.ts'
+import { finalAsk, reportAsk } from '../nudge.ts'
 
 it.each([
   'The build is ready. Say go when you want it.',
@@ -49,4 +49,21 @@ it.each([
   'Tell me which file broke and I will look, but nothing is pending now. Landed.',
 ])('leaves a statement, quote or rhetorical question alone: %s', (text) => {
   expect(finalAsk(text)).toBe(false)
+})
+
+it.each([
+  "It's a plan only, with each step's side effects listed. Nothing gets deployed or run until you approve each step.",
+  'Nothing merges or publishes until you approve that list on a card. The card asking whether to delete the old stack is still open.',
+  'Nothing goes to the site until you approve merging the release PR.\n\nThe card for the rollout steps (message 463) is still waiting on your answer.',
+  '#117998 is building the repo fix. It stops at a PR, and merging it needs your go.',
+])('leaves a status report of a later approval alone: %s', (text) => {
+  expect(finalAsk(text)).toBe(false)
+})
+
+it('sees a Decisions block anywhere in a report, spaced or not', () => {
+  expect(reportAsk('Decisions:\n\n1. Build it.\n\n2. Should I run the focused check next?')).toBe(
+    false,
+  )
+  expect(reportAsk('Decisions:\n1. Build it.\n2. Should I run the focused check next?')).toBe(false)
+  expect(reportAsk('Built it.\n\nShould I run the focused check next?')).toBe(true)
 })

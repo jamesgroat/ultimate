@@ -27,6 +27,8 @@ import { idleNeed, removeTemp, temp, until } from '../../../test/helpers.ts'
 import messages from '../../messages/server.ts'
 import { Messages } from '../../messages/api.ts'
 import { Standing } from '../../subagents/api.ts'
+import { Branch } from '../../lineage/api.ts'
+import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import questions from '../server.ts'
 import watchdog from '../../watchdog/server.ts'
 import { ClassifyApi } from '../../classify/api.ts'
@@ -253,6 +255,118 @@ it('excludes peer/branch origins, injected user-role notes and non-primary agent
   expect((await f.log())?.messages ?? []).toHaveLength(0)
 })
 
+// The prod-merge-wait chapter: branch reports and the answers to them ended in prose decisions (#454939, #456404).
+const PROSE_DECISION =
+  'Decision needed: do I build the I0-1934 listing tool now? Its dry-run against production would read about 200 RU, with no writes.'
+const DECISIONS_BLOCK =
+  'Assessment above.\n\nDecisions:\n1. **Tool:** (a) build it now; (b) wait.\n\nMy picks: 1a.'
+
+it('nudges a branch report and the answer to it that leave a decision in prose, never a Decisions block', async () => {
+  const f = await fixture()
+  const branch = await f.opened.harness.createConversation(
+    { ownership: { kind: 'ownerless' } },
+    context,
+  )
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Branch, branch.id)).branch = {
+      from: 1 as ConversationId,
+      at: 1 as EntryId,
+      intent: 'x',
+    }
+  }, context)
+  const nudged = async (text: string, entry?: { kind: string; data: { from: number } }) => {
+    const seen: string[] = []
+    await f.run(
+      [
+        () => fauxAssistantMessage([fauxText(text)]),
+        (transcript) => {
+          seen.push(JSON.stringify(transcript.messages))
+          return fauxAssistantMessage([fauxText('Concluded.')])
+        },
+      ],
+      entry,
+    )
+    return seen.join('')
+  }
+  const report = { kind: 'board.message', data: { from: branch.id } }
+  expect(await nudged(PROSE_DECISION, report)).toContain('your verdict')
+  expect(await nudged(DECISIONS_BLOCK, report)).toBe('')
+  expect(await nudged('Ask the user. My picks: 1a, because the read is small.', report)).toBe('')
+  expect(await nudged('The rules are on and nothing fired.', report)).toBe('')
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Branch, f.opened.root.id)).branch = {
+      from: 1 as ConversationId,
+      at: 1 as EntryId,
+      intent: 'x',
+    }
+    ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = branch.id
+  }, context)
+  expect(await nudged(PROSE_DECISION)).toContain('Decisions: block for @ultimate')
+  expect(await nudged(DECISIONS_BLOCK)).toBe('')
+  expect(
+    await nudged("Nothing changed: it waits on James's answer on the card in his Inbox."),
+  ).toBe('')
+})
+
+// Lander review: a branch's run qualified whatever its inputs were, and a spaced Decisions block was only seen in its last two paragraphs.
+it('leaves a branch run alone unless the user or its starter gave it its inputs, and sees a spaced Decisions block', async () => {
+  const f = await fixture()
+  const peer = await f.opened.harness.createConversation(
+    { ownership: { kind: 'ownerless' } },
+    context,
+  )
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Branch, f.opened.root.id)).branch = {
+      from: 1 as ConversationId,
+      at: 1 as EntryId,
+      intent: 'x',
+    }
+    ;(await tx.doc(Branch, peer.id)).branch = {
+      from: 1 as ConversationId,
+      at: 1 as EntryId,
+      intent: 'y',
+    }
+    ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = peer.id
+  }, context)
+  for (const entry of [
+    { kind: 'automations.fired', data: {} },
+    { kind: 'board.message', data: { from: peer.id } },
+    { kind: 'board.reply', data: { from: peer.id } },
+    { kind: 'board.message', data: { from: 'remote' } },
+  ]) {
+    let turns = 0
+    const count = () => {
+      turns++
+      return fauxAssistantMessage([fauxText('Concluded.')])
+    }
+    await f.run(
+      [
+        () => {
+          turns++
+          return fauxAssistantMessage([fauxText(PROSE_DECISION)])
+        },
+        count,
+      ],
+      entry,
+    )
+    expect(turns).toBe(1)
+  }
+  let turns = 0
+  await f.run([
+    () => {
+      turns++
+      return fauxAssistantMessage([
+        fauxText('Decisions:\n\n1. Build the feature.\n\n2. Should I run the focused check next?'),
+      ])
+    },
+    () => {
+      turns++
+      return fauxAssistantMessage([fauxText('Concluded.')])
+    },
+  ])
+  expect(turns).toBe(1)
+})
+
 it('does not nudge a watchdog retry of a failed automation-origin run admitted as pi.user', async () => {
   const f = await fixture({ retry: true })
   f.prepared.settings.applyOverrides({ retry: { enabled: false } })
@@ -412,6 +526,37 @@ it('nudges an ask only the classifier catches, and leaves one it scores low alon
     expect(turns).toBe(expected)
     expect(states).toHaveLength(1)
     expect(states[0]).toEqual({ tail: SK_MISS.replaceAll('**', '') })
+  }
+})
+
+// Lander review: a skip on any closing that mentioned a waiting card kept real asks beside it from the classifier.
+it('sends a closing that mentions a waiting card to the classifier, so an ask beside it is judged', async () => {
+  for (const closing of [
+    'One card is still open in your Inbox. Deploying the API needs your go.',
+    'The card is still open in your Inbox; which option do you prefer?',
+    'The card is still open. Is a host restart acceptable?',
+    'The card is still open. Is it OK if I restart the host as well?',
+    'The card is still waiting on you. Your call on the restart.',
+  ]) {
+    let asked = 0
+    const f = await fixture({
+      classify: async () => {
+        asked++
+        return noul(0.95)()
+      },
+    })
+    let turns = 0
+    await f.run([
+      () => {
+        turns++
+        return fauxAssistantMessage([fauxText(`The release branch is ready.\n\n${closing}`)])
+      },
+      () => {
+        turns++
+        return card
+      },
+    ])
+    expect([asked, turns]).toEqual([1, 2])
   }
 })
 

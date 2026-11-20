@@ -70,6 +70,20 @@ export const Messages = defineDoc<{ messages: Message[]; next: number }>({
   initial: () => ({ messages: [], next: 1 }),
 })
 
+/** Who started a conversation with a message (`by`), such as the agent that started a branch, on that conversation. */
+export const Started = defineDoc<{
+  by?: ConversationId
+  yielded?: TaskId
+}>({
+  kind: 'board.started',
+  checkpointWhen: () => false,
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({}),
+})
+
 export type MessagesService = {
   /**
    * Reply `text` from the user to open message `messageId`, from browser `device`; returns the reply's message
