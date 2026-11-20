@@ -9,6 +9,7 @@ export function Footer(props: {
   drafts: Drafts
   update: (change: (drafts: Drafts) => Drafts) => boolean
   sending: boolean
+  disabled?: boolean
   error?: string
   onSend: (source: Parameters<typeof writingAs>[0]) => Promise<void>
 }) {
@@ -33,12 +34,16 @@ export function Footer(props: {
           <PromptBox
             accepts={{ images: false }}
             autofocus={!props.drafts.note}
-            disabled={props.sending}
+            disabled={props.sending || props.disabled}
             draft={undefined}
             label="Overall note"
             minimal
             name="the overall review note"
-            onSubmit={() => (over() || uploading() ? Promise.resolve() : props.onSend(writerNow()))}
+            onSubmit={() =>
+              props.sending || props.disabled || over() || uploading()
+                ? Promise.resolve()
+                : props.onSend(writerNow())
+            }
             onUploading={setUploading}
             onValue={keepNote}
             placeholder="An overall note for the review (optional)"
@@ -101,7 +106,7 @@ export function Footer(props: {
             Discard
           </Button>
           <Button
-            disabled={props.sending || over() || uploading()}
+            disabled={props.sending || over() || uploading() || props.disabled}
             onClick={(_, details) => props.onSend(details.source)}
             size="xs"
           >

@@ -10,13 +10,14 @@ import {
   CommandList,
 } from '@/components/ui/command.solid.tsx'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover.solid.tsx'
-import { ROOT, cn, useAction } from '@/sdk/solid'
+import { ROOT, cn, errorMessage, keepLast, useAction } from '@/sdk/solid'
 import { shortSpec } from './comments.ts'
 import { RangesAction } from './refs.ts'
 import type { ReviewRange } from './refs.ts'
 
 type SelectorProps = {
   spec: string
+  source?: string
   title?: string
   conversation?: ConversationId
   onChange: (spec: string) => void
@@ -32,7 +33,7 @@ export function Selector(props: SelectorProps) {
         class="flex h-7 min-w-0 items-center gap-1.5 rounded-md border border-border/70 px-2 font-mono text-[12px] hover:bg-accent/60"
         title="Choose what to review"
       >
-        <span class="shrink-0 text-foreground/90">{shortSpec(props.spec)}</span>
+        <span class="min-w-0 truncate text-foreground/90">{shortSpec(props.spec)}</span>
         {props.title && props.title !== props.spec && (
           <span class="min-w-0 truncate font-sans text-[12.5px] text-muted-foreground max-md:hidden">
             {props.title}
@@ -44,6 +45,7 @@ export function Selector(props: SelectorProps) {
         <Show when={open()}>
           <Ranges
             conversation={props.conversation}
+            source={props.source}
             onChange={(next) => {
               setOpen(false)
               setQuery('')
@@ -66,10 +68,13 @@ function Ranges(
     RangesAction,
     {
       get conversation() {
-        return props.conversation
+        return props.source === undefined ? props.conversation : undefined
+      },
+      get source() {
+        return props.source
       },
     },
-    { conversation: ROOT },
+    { conversation: ROOT, onError: keepLast },
   )
   const [highlight, setHighlight] = createSignal<string>()
   const custom = () => props.query.trim()
@@ -117,6 +122,9 @@ function Ranges(
         )}
         {ranges.loading() && !ranges.data() && (
           <p class="px-3 py-3 font-mono text-[11.5px] text-muted-foreground">loading…</p>
+        )}
+        {ranges.error() && (
+          <p class="px-3 py-3 font-mono text-[11.5px] text-error">{errorMessage(ranges.error())}</p>
         )}
         {!custom() && ranges.data() && !shown().length && (
           <CommandEmpty class="py-6 text-center text-[12px] text-muted-foreground">
