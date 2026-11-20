@@ -59,7 +59,9 @@ vi.mock('../../../../web/src/sdk/client.ts', async () => {
 })
 
 import { store, uiState } from '../../../../web/src/sdk/client.ts'
-import { MessageQuestions } from '../../card.solid.tsx'
+import { MessageQuestions, useForgetQuestionCards } from '../../ui.solid.tsx'
+import type { MessageQuestionsTransport } from '../../ui.solid.tsx'
+import { forgetSettled } from '../../open.ts'
 
 const agent = createAgent()
 const message: Message = {
@@ -90,6 +92,8 @@ beforeEach(async () => {
   }))
   harness.sources.length = 0
   harness.actions.length = 0
+  await uiState.flush()
+  uiState.restarted()
   harness.writers.length = 0
   uiState.receive({})
   store.start()
@@ -132,6 +136,39 @@ it('shows the saved picks, note and open question on a fresh mount', () => {
   expect(card.querySelector('fieldset[data-current] button[data-selected]')?.textContent).toContain(
     'Yes',
   )
+})
+
+it('scopes option preview links to the origin it is given', () => {
+  const remote: Message = {
+    ...message,
+    id: 6,
+    questions: [
+      {
+        text: 'Which page?',
+        kind: 'choice',
+        options: [
+          {
+            label: 'Docs',
+            key: 'a',
+            preview: '[guide](/docs/guide) and [local](http://127.0.0.1:4747/x)',
+          },
+        ],
+      },
+    ],
+  }
+  const card = renderSolid(() => (
+    <MessageQuestions
+      message={remote}
+      keys={false}
+      withActions={false}
+      origin={{ url: 'https://peer.example.ts.net/' }}
+    />
+  ))
+  const links = [...card.querySelectorAll<HTMLElement>('[data-href]')].map(
+    (link) => link.dataset.href,
+  )
+  expect(links).toContain('https://peer.example.ts.net/docs/guide')
+  expect(links.some((href) => href?.startsWith('http://127.0.0.1'))).toBe(false)
 })
 
 it('asks with a note alone, keeps the card open and shows the clarification thread', async () => {
@@ -202,6 +239,87 @@ it('clears a sent clarification draft on a fresh mount', async () => {
     })
   flush()
   expect(card.querySelector<HTMLTextAreaElement>('[data-note]')?.value).toBe('')
+})
+
+it('routes peer answers and dismissal through its transport and only forgets confirmed identities', async () => {
+  const peer: MessageQuestionsTransport = {
+    answer: vi.fn<MessageQuestionsTransport['answer']>(async () => ({ id: 100 })),
+    dismiss: vi.fn<MessageQuestionsTransport['dismiss']>(async () => ({ id: 101 })),
+  }
+  const identity = 'inbox:["machine/project",5]'
+  const picks = { drafts: { 0: { chosen: [0] } }, note: 'Ship it', current: 0, text: '' }
+  uiState.receive({ [CARDS_KEY]: { [identity]: picks, 'message:5': picks } })
+  let forget!: ReturnType<typeof useForgetQuestionCards>
+  const card = renderSolid(() => {
+    forget = useForgetQuestionCards()
+    return (
+      <>
+        <MessageQuestions
+          message={message}
+          identity={identity}
+          transport={peer}
+          keys={false}
+          withActions={false}
+        />
+        <MessageQuestions
+          message={{ ...message, id: 6 }}
+          identity={`${identity}:other`}
+          transport={peer}
+          keys={false}
+          withActions={false}
+        />
+      </>
+    )
+  })
+  expect(card.querySelector('[data-questions-card]')?.getAttribute('data-questions-card')).toBe(
+    identity,
+  )
+  await press('Send 1 of 2: answer to message 5')
+  window.dispatchEvent(new Event('pagehide'))
+  await vi.advanceTimersByTimeAsync(0)
+  expect(peer.answer).toHaveBeenCalledWith(
+    {
+      messageId: 5,
+      answers: [{ question: 'Where should it sit?', answer: 'Sidebar' }],
+      note: 'Ship it',
+    },
+    { keepalive: true },
+  )
+  await press('Dismiss message 6')
+  expect(peer.dismiss).toHaveBeenCalledWith({ messageId: 6 })
+  expect(harness.actions).toEqual([])
+  expect(forgetSettled({ [identity]: picks, 'message:5': picks }, [])).toEqual({
+    [identity]: picks,
+  })
+  forget((key) => key === identity)
+  flush()
+  expect(uiState.get(CARDS_KEY)).toEqual({ 'message:5': picks })
+})
+
+it('sends a peer note alone as text without borrowing a local clarification thread', async () => {
+  const peer: MessageQuestionsTransport = {
+    answer: vi.fn<MessageQuestionsTransport['answer']>(async () => ({ id: 100 })),
+    dismiss: vi.fn<MessageQuestionsTransport['dismiss']>(async () => ({ id: 101 })),
+  }
+  const identity = 'inbox:["machine/project",5]'
+  uiState.receive({
+    [CARDS_KEY]: { [identity]: { drafts: {}, note: 'Why now?', current: 0, text: '' } },
+  })
+  const card = renderSolid(() => (
+    <MessageQuestions
+      message={message}
+      identity={identity}
+      transport={peer}
+      keys={false}
+      withActions={false}
+    />
+  ))
+  expect(card.querySelector('[data-asks-hint]')).toBeNull()
+  await press('Send note: answer to message 5')
+  await vi.advanceTimersByTimeAsync(3000)
+  expect(peer.answer).toHaveBeenCalledWith({ messageId: 5, text: 'Why now?' }, { keepalive: true })
+  expect(card.querySelector('[data-clarifications]')).toBeNull()
+  expect(harness.actions).toEqual([])
 })
 
 it('announces the current choice and rating, and clears picks without advancing', async () => {
