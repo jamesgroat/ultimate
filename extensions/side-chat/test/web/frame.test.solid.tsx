@@ -156,7 +156,12 @@ it('opens the side chat in a scoped sheet and restores the main transcript when 
       <div data-main-transcript>
         <div data-ui="transcript" />
       </div>
-      <Stage />
+      <div data-ui="composer" data-side-mode="normal">
+        <textarea id="composer-input" />
+      </div>
+      <div>
+        <Stage />
+      </div>
     </div>
   ))
   await settle()
@@ -184,6 +189,30 @@ it('opens the side chat in a scoped sheet and restores the main transcript when 
   flush()
   expect(section.hasAttribute('inert')).toBe(true)
   expect(transcript.inert).toBe(false)
+
+  uiState.set('ext.side-chat.front', side)
+  flush()
+  const bubble = vi.fn<() => void>()
+  transcript.addEventListener('click', bubble)
+  transcript.click()
+  flush()
+  expect(bubble).not.toHaveBeenCalled()
+  expect(uiState.snapshot()['ext.side-chat.front']).toBeNull()
+  expect(transcript.inert).toBe(false)
+  expect(container.textContent).toContain('Side chat')
+
+  let focus: FrameRequestCallback | undefined
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    focus = callback
+    return 0
+  })
+  uiState.set('ext.side-chat.front', side)
+  flush()
+  container.querySelector<HTMLElement>('[data-side-mode]')!.click()
+  flush()
+  focus!(0)
+  expect(uiState.snapshot()['ext.side-chat.front']).toBeNull()
+  expect(document.activeElement?.id).toBe('composer-input')
 })
 
 it('switches to side chat mode on Tab or the switch, opens a side chat on send, then returns to normal', async () => {
