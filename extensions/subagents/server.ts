@@ -1155,6 +1155,8 @@ export default function subagents(
                       }),
                   cwd: parent.cwd ?? host.projectRoot,
                 })
+                if (args.model !== undefined || args.family !== undefined)
+                  (await tx.doc(Profile, child.id)).explicitModel = true
                 conversationId = child.id
                 await started(host, tx, child, label!, 'child')
                 const runs = await tx.doc(Runs, ROOT_CONVERSATION_ID)

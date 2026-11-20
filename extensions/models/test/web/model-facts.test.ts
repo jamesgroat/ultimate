@@ -14,9 +14,8 @@ const model: ModelInfo = {
   available: true,
 }
 
-it('describes the strongest supported thinking level, context, token prices and paid API warning', () => {
+it('describes the strongest supported thinking level, context and token prices, never billing by provider name', () => {
   expect(modelFacts(model)).toEqual({
-    paid: 'paid API',
     thinking: 'high',
     thinkingTitle: 'thinking: off low high',
     context: '1M',
@@ -25,7 +24,6 @@ it('describes the strongest supported thinking level, context, token prices and 
   expect(
     modelFacts({ ...model, provider: 'claude-code', reasoning: false, contextWindow: 200_000 }),
   ).toMatchObject({
-    paid: undefined,
     thinking: 'no thinking',
     thinkingTitle: undefined,
     context: '200k',
