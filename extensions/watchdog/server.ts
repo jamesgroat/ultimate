@@ -21,13 +21,14 @@ import {
 } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { rateLimited } from '../../lib/rate-limit.ts'
+import { errorLine, redactSecrets } from '../../lib/redact.ts'
 import { Messages } from '../messages/api.ts'
 import type { Message } from '../messages/api.ts'
 import { Standing, Subagents } from '../subagents/api.ts'
 import { Roots, Tally } from '../lineage/api.ts'
 import { WatchdogApi } from './api.ts'
 import type { ReportedFailure } from './api.ts'
-import type { Failure } from './refs.ts'
+import type { Failure, FailureClass } from './refs.ts'
 import { FailureEntry } from './entries.ts'
 
 async function isTally(tx: Tx, id: ConversationId) {
@@ -111,29 +112,36 @@ async function lastErrorBeforeNextGeneration(tx: Tx, task: Generation, next?: Ge
   return { upper, assistant }
 }
 
-export function diagnose(error: string, assistant?: AssistantMessage) {
+export function diagnose(
+  error: string,
+  assistant?: AssistantMessage,
+): { class: FailureClass; hint?: string; temporary: boolean } {
   if (rateLimited(error))
     return {
+      class: 'rate-limit',
       hint: 'Still rate limited after Pi’s retries; once the limit resets (or the agent has another model), resume this conversation with a message',
       temporary: false,
     }
   if (/not logged in/i.test(error))
-    return { hint: 'Run `claude auth login` in a terminal', temporary: false }
+    return { class: 'login', hint: 'Run `claude auth login` in a terminal', temporary: false }
   const missing = /Provider is not configured: ([\w-]+)|No API key (?:found )?for "?([\w-]+)/i.exec(
     error,
   )
   if (missing)
     return {
+      class: 'login',
       hint: `${missing[1] ?? missing[2]} has no login here. Log in again (⌘K → Log in to a provider), or message the conversation: its next run switches to a model that has one`,
       temporary: false,
     }
   const provider = /OAuth refresh failed for ([\w-]+)/i.exec(error)?.[1] ?? assistant?.provider
   if (/OAuth refresh failed|invalid_grant/i.test(error))
     return {
+      class: 'login',
       hint: `Log in to ${provider ?? 'the provider'} again: ⌘K → Log in to a provider`,
       temporary: false,
     }
   return {
+    class: assistant ? 'provider' : 'other',
     temporary:
       /^Incomplete Claude Code upstream response \(status (200|unknown),/.test(error) ||
       /^claude auth status gave no status \(exit 0\):\s*$/.test(error) ||
@@ -239,17 +247,22 @@ export default function watchdog(host: ExtensionHost) {
         await runtime.commit(() => terminal, ctx)
       },
       report: async (task, runtime, ctx) => {
-        const { conversation, title, error, step, hint, retried, failedTask, recipient } =
-          task.input
+        const { conversation, title, step, retried, failedTask, recipient, entry } = task.input
+        const error = errorLine(task.input.error)
+        const hint = task.input.hint && redactSecrets(task.input.hint)
+        const failure = task.input.class ?? 'other'
         const data: Failure = {
           conversation,
           title,
+          class: failure,
           error,
+          ...(entry === undefined ? {} : { entry }),
           step,
           retried,
           ...(hint ? { hint } : {}),
         }
-        const content = `[run failed] #${conversation} "${title}": ${error}. Last step: ${step}.${retried ? ' After one automatic retry.' : ''}${hint ? ` ${hint}.` : ''}`
+        const where = entry === undefined ? `#${conversation}` : `#${conversation}/${entry}`
+        const content = `[run failed] #${conversation} "${title}" (${failure}): ${error}. Full error: ${where}. Last step: ${step}.${retried ? ' After one automatic retry.' : ''}${hint ? ` ${hint}.` : ''}`
         if (recipient === conversation && !task.input.delivery) {
           host.notice(content)
         } else {
@@ -315,7 +328,8 @@ export default function watchdog(host: ExtensionHost) {
           conversation,
           recipient,
           title,
-          error: `Message ${message.id} to ${typeof message.to === 'number' ? `#${message.to}` : message.to} was not delivered: ${task.state.outcome.error.message}`,
+          class: 'delivery',
+          error: `Message ${message.id} to ${typeof message.to === 'number' ? `#${message.to}` : message.to} was not delivered: ${errorLine(task.state.outcome.error.message)}`,
           step: 'message delivery',
           retried: false,
           temporary: false,
@@ -377,7 +391,7 @@ export default function watchdog(host: ExtensionHost) {
         throw new Error('Watchdog needs @ultimate to report a failed run')
       if (task.state.status !== 'terminal' || task.state.outcome.status !== 'failed') return
       const error = task.state.outcome.error.message
-      const { hint, temporary } = diagnose(error, info.assistant)
+      const { class: failure, hint, temporary } = diagnose(error, info.assistant)
       await tx.createTask(
         Watchdog,
         {
@@ -385,9 +399,11 @@ export default function watchdog(host: ExtensionHost) {
           conversation: child.id,
           recipient,
           title: info.title,
-          error,
+          class: failure,
+          error: errorLine(error),
+          ...(info.assistant ? { entry: info.upper } : {}),
           step: info.step,
-          ...(hint ? { hint } : {}),
+          ...(hint ? { hint: redactSecrets(hint) } : {}),
           retried: runInputs.some((input) => input.requestId?.startsWith('watchdog-retry:')),
           temporary,
           until: (task.endedAt ?? Date.now()) + TEMPORARY_FAILURE_RETRY_DELAY_MS,
