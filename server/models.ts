@@ -21,6 +21,15 @@ export async function listModels(runtime: ModelRuntime): Promise<ModelsResponse>
       ],
       status: runtime.getProviderAuthStatus(provider.id),
       isUsingSubscription: runtime.isUsingSubscription(provider.id),
+      billing:
+        !runtime.hasConfiguredAuth(provider.id) ||
+        !runtime.getAvailableSnapshot().some((model) => model.provider === provider.id)
+          ? 'unknown'
+          : runtime.isUsingSubscription(provider.id)
+            ? 'subscription'
+            : runtime.isUsingOAuth(provider.id)
+              ? 'unknown'
+              : 'paid-api',
     })),
     models: runtime
       .getAllModels()

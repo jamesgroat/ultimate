@@ -28,7 +28,7 @@ import {
   thinkingOf,
   useFamilies,
 } from './families.tsx'
-import { SetFamilyAction } from './refs.ts'
+import { SelectAction } from './refs.ts'
 import type { FamilyView } from './refs.ts'
 import {
   authLabel,
@@ -76,7 +76,6 @@ export function ModelRow({
         </span>
       )}
       <span className="ml-auto flex shrink-0 items-center gap-3 pl-3 text-[11px] text-muted-foreground tabular-nums">
-        {model.provider === 'anthropic' && <span className="text-warning/80">paid API</span>}
         {model.reasoning ? (
           <span
             className="flex items-center gap-1"
@@ -136,7 +135,12 @@ export function ModelPicker() {
     )
       .toSorted((a, b) => runnableSubscriptionFirstRank(a) - runnableSubscriptionFirstRank(b))
       .slice(0, LIMIT)
-    return [...Map.groupBy(found, (model) => model.provider)]
+    const grouped = [...Map.groupBy(found, (model) => model.provider)]
+    const anthropic = grouped.findIndex(([provider]) => provider === 'anthropic')
+    const code = grouped.findIndex(([provider]) => provider === 'claude-code')
+    if (anthropic !== -1 && code > anthropic)
+      grouped.splice(anthropic, 0, ...grouped.splice(code, 1))
+    return grouped
   }, [models, query])
   const current = familyOf(families, ref, thinking, recorded)
   const shownFamilies = (families?.families ?? []).filter((family) => {
@@ -173,8 +177,15 @@ export function ModelPicker() {
     setError(undefined)
     const level = thinkingOf(family)
     api
-      .configure({ model: { provider, modelId }, ...(level ? { thinkingLevel: level } : {}) }, id)
-      .then(() => api.action(SetFamilyAction, { family: family.name }, { conversationId: id }))
+      .action(
+        SelectAction,
+        {
+          model: { provider, modelId },
+          ...(level ? { thinkingLevel: level } : {}),
+          family: family.name,
+        },
+        { conversationId: id },
+      )
       .then(
         () => {
           notePick()
@@ -320,16 +331,24 @@ export function ModelPicker() {
 
 function ProviderHeading({ id, provider }: { id: string; provider: ProviderInfo | undefined }) {
   const label = authLabel(provider)
+  const name = provider?.name
+  const billing =
+    provider?.billing === 'subscription'
+      ? 'Subscription'
+      : provider?.billing === 'paid-api'
+        ? 'Paid API'
+        : 'Unknown'
   return (
     <span className="flex items-center gap-2">
       {id}
-      {provider && provider.name !== id && (
-        <span className="truncate text-muted-foreground/60">{provider.name}</span>
-      )}
+      {name && name !== id && <span className="truncate text-muted-foreground/60">{name}</span>}
       {label ? (
         <span className="ml-auto text-success/80">
           ✓ {label}
-          {provider?.isUsingSubscription ? ' · subscription' : ''}
+          {' · '}
+          <span className={provider?.billing === 'paid-api' ? 'text-warning/80' : undefined}>
+            {billing}
+          </span>
         </span>
       ) : id === 'claude-code' ? (
         <span className="ml-auto flex items-center gap-1 text-warning/80">

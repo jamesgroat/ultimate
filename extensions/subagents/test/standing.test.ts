@@ -22,6 +22,7 @@ import { Profile, Standing, Started } from '../api.ts'
 import type { SubagentsService } from '../api.ts'
 import { Metadata } from '../../../server/metadata.ts'
 import { Marks } from '../../conversations/api.ts'
+import { Family, Selection } from '../../models/api.ts'
 import { discoverAgents, parseDefinition, saveDefinition } from '../../../lib/agents.ts'
 
 it('keeps an edit a turn applied while a standing call was waiting to commit', async () => {
@@ -421,4 +422,30 @@ it('reconfigures a child from its current definition, keeping its chosen model',
   const agent = await conversation.agent(ctx)
   expect(agent.tools.map((tool) => tool.name)).toEqual(['read', 't'])
   expect(agent.model).toEqual({ provider: 'faux', modelId: 'faux-pinned' })
+
+  const profile = await host.harness.snapshot(Profile, child.id, ctx)
+  expect(profile).toEqual({ definition: 'x', createdAt: expect.any(Number) })
+  await writeFile(
+    file,
+    ordinary('[read]').replace(
+      'description: Test',
+      'description: Test\nmodel: faux/faux-1\nthinking: minimal',
+    ),
+  )
+  const pinned = await read()
+  for (const mode of ['manual', 'auto'] as const) {
+    const selection = { mode, model: agent.model, selectedAt: 1 }
+    await host.harness.commit(async (tx) => {
+      await configure(tx, child.id, { thinkingLevel: 'high' })
+      Object.assign(await tx.doc(Selection, child.id), selection)
+      ;(await tx.doc(Family, child.id)).name = 'review'
+      await service.reconfigure(tx, child.id, { ...options, definition: pinned })
+    }, ctx)
+    const refreshed = await conversation.agent(ctx)
+    expect(refreshed.tools.map((tool) => tool.name)).toEqual(['read'])
+    expect(refreshed).toMatchObject({ model: agent.model, thinkingLevel: 'high' })
+    expect(await host.harness.snapshot(Selection, child.id, ctx)).toEqual(selection)
+    expect(await host.harness.snapshot(Family, child.id, ctx)).toEqual({ name: 'review' })
+    expect(await host.harness.snapshot(Profile, child.id, ctx)).toEqual(profile)
+  }
 })
