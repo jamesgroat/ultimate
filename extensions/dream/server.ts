@@ -103,6 +103,18 @@ export function prepare(args: unknown, now: number): Prepared {
   }
 }
 
+export const errorCause = (error: string) =>
+  redactSecrets(error)
+    .slice(0, CAUSE_CHARS)
+    .replace(/\b[a-z][\w+.-]*:\/\/[^\s'"`]+/gi, '<url>')
+    .replace(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/gi, '<id>')
+    .replace(/(?<![\w<>])(?:~|\.{1,2})?\/[^\s'"`,;:()[\]]+/g, '<path>')
+    .replace(/\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,}\b/gi, '<id>')
+    .replace(/\d{4,}/g, '<n>')
+
+const CAUSE_CHARS = 300
+const ERROR_CHARS = 160
+
 const terminalError = (error: string) => {
   const last = error.split(/\r?\n/).findLast((line) => line.includes('Error:'))
   return last ? last.trim().slice(0, 200) : error.trim().slice(-200)
@@ -147,6 +159,7 @@ export function toolStats(
       actions: none,
     }
   const db = new DatabaseSync(database, { readOnly: true })
+  db.function('cause', { deterministic: true }, (error) => errorCause(String(error)))
   const wholeTraceScansWithoutTheTimeIndex = range.since === undefined && range.until === undefined
   const inRange = wholeTraceScansWithoutTheTimeIndex ? 'true' : 'at >= ? AND at <= ?'
   const bounds = wholeTraceScansWithoutTheTimeIndex
@@ -173,15 +186,15 @@ export function toolStats(
         .all(kind, ...bounds) as { name: string; calls: number; failed: number }[]
     const groups = db
       .prepare(
-        `SELECT name, substr(error, 1, 160) AS prefix, count(*) AS count FROM calls WHERE kind = 'tool' AND ok = 0 AND ${inRange} GROUP BY name, substr(error, 1, 160) ORDER BY count DESC LIMIT 20`,
+        `SELECT name, cause(error) AS cause, count(*) AS count FROM calls WHERE kind = 'tool' AND ok = 0 AND ${inRange} GROUP BY name, cause ORDER BY count DESC, name, cause LIMIT 20`,
       )
-      .all(...bounds) as { name: string; prefix: string; count: number }[]
+      .all(...bounds) as { name: string; cause: string; count: number }[]
     const sample = db.prepare(
-      `SELECT conversation, entry, error FROM calls WHERE kind = 'tool' AND ok = 0 AND name = ? AND substr(error, 1, 160) = ? AND ${inRange} ORDER BY at DESC LIMIT 2`,
+      `SELECT conversation, entry, error FROM calls WHERE kind = 'tool' AND ok = 0 AND name = ? AND cause(error) = ? AND ${inRange} ORDER BY at DESC LIMIT 2`,
     )
-    const errors = groups.map(({ name, prefix, count }) => {
+    const errors = groups.map(({ name, cause, count }) => {
       const rows = (
-        sample.all(name, prefix, ...bounds) as {
+        sample.all(name, cause, ...bounds) as {
           conversation: ConversationId | null
           entry: number | null
           error: string
@@ -189,7 +202,7 @@ export function toolStats(
       ).map((row) => ({ ...row, error: redactSecrets(row.error) }))
       return {
         name,
-        error: rows[0]?.error.slice(0, 160) ?? '',
+        error: cause.slice(0, ERROR_CHARS),
         count,
         examples: rows.map((row) => ({
           conversation: row.conversation,
