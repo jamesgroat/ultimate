@@ -16,6 +16,13 @@ with `conversation` the row names it and the pane offers **Open in branch**. Eve
 sidebar row and the To-dos' "For you" row too: they all read `Waiting` from `ui.tsx`. A provider that throws is left
 out behind its inline error card. Items are entries keyed by string; a question's key is `message:<id>`.
 
+Async providers also provide `InboxFreshness`, returning `{ state: 'complete' | 'loading' | 'partial' | 'error', text? }`.
+`Waiting` passes the aggregate as its third argument: every provider and the local Messages log must be ready before
+it is complete. Sidebar, list and To-dos share `inboxCount`: an incomplete count is `N+`, or `?` at zero, with explicit
+warnings instead of an all-clear. `InboxSourceChip` optionally adds source identity beside an entry's normal asker;
+it receives the native entry and returns a React node. Remote items omit `conversation`: their pane owns remote
+navigation, Markdown, images and answer transport, never resolving remote numeric ids against the local project.
+
 ## Surface (`web.tsx`)
 
 - **List**: one row per item, the asking branch's feature chip and `#id` as the sidebar draws them, a `preview` tag
@@ -33,7 +40,8 @@ out behind its inline error card. Items are entries keyed by string; a question'
 - **Zero**: "Nothing waits on you", the questions answered or dismissed today, and **Back to @ultimate**.
 
 React renders the shell and reading pane; Solid islands render the list, empty state, sidebar row, badge and link
-handler. They receive plain data, not provided panes.
+handler. They receive plain data, not provided panes. Each list row registers a source-chip slot; the React shell
+portals `AllProvided InboxSourceChip` into it, keeping providers' React hooks and context intact.
 
 The durable UI key `ext.inbox.selected` holds `{ key, at, open }`. The list and the reading pane show that key if
 present. If it leaves, they show the next one in the list's order (by age, then key), or the last entry if none is

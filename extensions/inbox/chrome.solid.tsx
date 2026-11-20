@@ -16,7 +16,8 @@ import {
 } from '@/sdk/solid'
 import { ConversationRef } from '../conversations/ui.solid.tsx'
 import { StandingAction } from '../subagents/refs.ts'
-import { SELECTED, SURFACE, UNLOADED, amber, keyOf } from './items.ts'
+import { SELECTED, SURFACE, UNLOADED, amber, inboxCount, keyOf } from './items.ts'
+import type { InboxStatus } from './ui.tsx'
 import type { Anchor, Answered, Selection } from './items.ts'
 
 async function backToUltimate(source: string) {
@@ -27,15 +28,22 @@ async function backToUltimate(source: string) {
   })
 }
 
-export function Zero(props: { today: readonly Answered[] }) {
+export function Zero(props: { today: readonly Answered[]; status: InboxStatus }) {
   return (
     <div class="flex min-h-0 flex-1 overflow-y-auto" data-inbox-zero>
       <div class="m-auto flex w-full max-w-md flex-col items-center px-6 py-12 text-center">
         <span class="flex size-10 items-center justify-center rounded-full bg-muted/60">
           <Check class="size-5 text-muted-foreground" />
         </span>
-        <h2 class="mt-4 text-[17px] font-semibold tracking-[-0.01em]">Nothing waits on you</h2>
-        <p class="mt-1 text-[14px] text-muted-foreground">Every branch has what it needs.</p>
+        <h2 class="mt-4 text-[17px] font-semibold tracking-[-0.01em]">
+          {props.status.state === 'complete' ? 'Nothing waits on you' : 'Inbox not up to date'}
+        </h2>
+        <output class="mt-1 text-[14px] text-muted-foreground">
+          {props.status.text ??
+            (props.status.state === 'complete'
+              ? 'Every branch has what it needs.'
+              : 'Some sources are not yet known. There may be more waiting on you.')}
+        </output>
         <Button class="mt-6" onClick={(_, { source }) => backToUltimate(source)}>
           Back to @ultimate
         </Button>
@@ -75,15 +83,22 @@ export function Zero(props: { today: readonly Answered[] }) {
   )
 }
 
-export function Badge(props: { count: number }) {
+export function Badge(props: { count: number; status: InboxStatus }) {
   return (
-    <Show when={props.count > 0}>
-      <span class={cn('font-mono text-[11px]', amber)}>{props.count}</span>
+    <Show when={props.count > 0 || props.status.state !== 'complete'}>
+      <span class={cn('font-mono text-[11px]', amber)} title={props.status.text}>
+        {inboxCount(props.count, props.status)}
+      </span>
     </Show>
   )
 }
 
-export function SidebarRow(props: { count: number; oldest?: number; active: boolean }) {
+export function SidebarRow(props: {
+  count: number
+  oldest?: number
+  active: boolean
+  status: InboxStatus
+}) {
   const now = useNow(60_000, () => props.count > 0)
   return (
     <Button
@@ -94,6 +109,7 @@ export function SidebarRow(props: { count: number; oldest?: number; active: bool
         props.active && 'bg-sidebar-accent',
       )}
       data-inbox-sidebar
+      title={props.status.text}
       onClick={() => showSurface(SURFACE)}
       size={null}
       variant={null}
@@ -105,7 +121,10 @@ export function SidebarRow(props: { count: number; oldest?: number; active: bool
           props.count > 0 ? amber : 'text-foreground/70',
         )}
       >
-        Inbox{props.count > 0 ? ` · ${props.count}` : ''}
+        Inbox
+        {props.count > 0 || props.status.state !== 'complete'
+          ? ` · ${inboxCount(props.count, props.status)}`
+          : ''}
       </span>
       <Show when={props.oldest !== undefined}>
         <span class="shrink-0 font-mono text-[10px] text-muted-foreground">

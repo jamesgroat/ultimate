@@ -8,7 +8,11 @@ const ModelOnlyTodoReminder = () => null
 const List = island(TodoList)
 
 function Todos() {
-  return <Waiting>{(entries) => <List inbox={entries.length} />}</Waiting>
+  return (
+    <Waiting>
+      {(entries, _messages, status) => <List inbox={entries.length} status={status} />}
+    </Waiting>
+  )
 }
 
 export default defineWebExtension({

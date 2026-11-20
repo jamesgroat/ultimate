@@ -33,6 +33,7 @@ export const ConversationEpic = definePoint<
 >('conversations.epic')
 
 export { ConversationRef, FeatureTag, useOverview, useStandingName } from './feature.tsx'
+export { featureHue } from '../../lib/conversation-ref.ts'
 export { AgentMark, AgentTitle, useAgentTitle } from './marks.tsx'
 export type { Presence } from './marks.tsx'
 export { hiddenConversationIds } from './visible.ts'
