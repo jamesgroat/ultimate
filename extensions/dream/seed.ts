@@ -14,7 +14,7 @@ import type { Automation } from '../automations/types.ts'
 import { BuiltInDoc, PauseDoc } from './built-ins.ts'
 import { deliver } from './delivery.ts'
 import type { Prepared } from './refs.ts'
-import type { CarriedQuestion, Seed } from './types.ts'
+import type { CarriedQuestion, SeededAsTextBeforeCardsWereCarried, Seed } from './types.ts'
 
 export const SeedState = defineDoc<{ applied?: number; automations: string[] }>({
   kind: 'dream.seed',
@@ -188,6 +188,11 @@ function chapterText(host: ExtensionHost, seed: Seed) {
           `The user's open cards from ${from.name} are open again in their Inbox, asked in your name with their questions and picks: their answers come to you. Each one's \`carried\` field names the chapter, message and conversation that asked it there.`,
         ]
       : []),
+    ...(droppedQuestions(seed)
+      ? [
+          `${droppedQuestions(seed)} of the open questions in the seed were malformed and were not carried: read the open messages to the user in ${from.name} for them.`,
+        ]
+      : []),
     '',
     `Before falling asleep, you wrote this handover to yourself (#${seed.continues.conversation} in ${from.name}):`,
     '<handoff>',
@@ -198,11 +203,23 @@ function chapterText(host: ExtensionHost, seed: Seed) {
   ].join('\n')
 }
 
-const carriedCard = (question: Seed['questions'][number]): question is CarriedQuestion =>
-  'id' in question &&
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const carriedCard = (question: unknown): question is CarriedQuestion =>
+  record(question) &&
   typeof question.id === 'number' &&
   typeof question.at === 'number' &&
-  (typeof question.from === 'number' || question.from === 'user' || question.from === 'remote')
+  typeof question.text === 'string' &&
+  (typeof question.from === 'number' || question.from === 'user' || question.from === 'remote') &&
+  (question.questions === undefined ||
+    (Array.isArray(question.questions) && question.questions.every(record)))
+
+const seededAsText = (question: unknown): question is SeededAsTextBeforeCardsWereCarried =>
+  record(question) && typeof question.text === 'string' && typeof question.ref === 'string'
+
+const droppedQuestions = (seed: Seed) =>
+  seed.questions.filter((question) => !carriedCard(question) && !seededAsText(question)).length
 
 export async function applySeed(host: ExtensionHost) {
   const seed = await readJson<Seed | undefined>(join(host.chapter.dir, 'seed.json'), undefined)
@@ -229,12 +246,10 @@ export async function applySeed(host: ExtensionHost) {
       const cards = seed.questions.filter(carriedCard)
       const carried: Seed['todos'] = [
         ...seed.todos,
-        ...seed.questions
-          .filter((question) => !carriedCard(question))
-          .map((question) => ({
-            owner: 'user' as const,
-            text: `Open question (${seed.from.name}${'ref' in question ? question.ref : `#${question.id}`}): ${question.text}`,
-          })),
+        ...seed.questions.filter(seededAsText).map(({ ref, text }) => ({
+          owner: 'user' as const,
+          text: `Open question (${seed.from.name}${ref}): ${text}`,
+        })),
         ...seed.scripts.map(({ id, scope, name, ask, schedule, timeout, prompt, agent }) => ({
           owner: 'ultimate' as const,
           text:

@@ -541,6 +541,58 @@ it('opens a chapter whose earlier seed holds questions as text, carrying them as
   expect(await opened()).toEqual(after)
 })
 
+it('opens a chapter whose seed holds malformed questions, carrying only well-formed ones', async () => {
+  const f = await fixture()
+  await f.source()
+  const seed = await buildSeed(f.host, PREPARED)
+  const card = {
+    id: 100,
+    from: 1,
+    text: 'Question 100',
+    at: 1,
+    questions: [{ text: 'Go?', kind: 'confirm' }],
+  }
+  const malformed = {
+    ...seed,
+    questions: [
+      card,
+      null,
+      'loose text',
+      { id: 101, from: 1, at: 1 },
+      { id: 102, from: 1, text: 'Bad questions', at: 1, questions: 'not a list' },
+      { id: 103, from: 1, text: 'Bad items', at: 1, questions: [null] },
+      { text: 'No ref' },
+      { text: 7, ref: '#104' },
+      { text: 'Kept as text', ref: '#105' },
+    ],
+  } as unknown as Seed
+  await writeSeed(join(f.home, 'chapters', 'fresh-roots'), malformed)
+  await f.close()
+  await requestChapter(f.home, 'fresh-roots')
+  await f.open()
+  const state = await f.harness.snapshot(SeedState, ROOT_CONVERSATION_ID, context)
+  expect(state!.applied).toBeGreaterThan(0)
+  const messages = (await f.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!.messages
+  expect(messages.map((m) => m.carried?.id)).toEqual([100])
+  const todos = (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!.items
+  expect(todos.map(({ text }) => text).filter((text) => text.startsWith('Open question'))).toEqual([
+    'Open question (the-beginning#105): Kept as text',
+  ])
+  const ultimate = (await f.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))!.ultimate
+  const morning = async () =>
+    f.harness.commit(
+      async (tx) =>
+        (await tx.scanEntries({ conversationId: ultimate }, 100)).items.filter(
+          (entry) => entry.kind === 'dream.chapter',
+        ),
+      context,
+    )
+  await until(async () => (await morning()).length === 1)
+  expect(JSON.stringify((await morning())[0].model)).toContain(
+    '7 of the open questions in the seed were malformed and were not carried',
+  )
+})
+
 it.each(['on', 'off'] as const)(
   'backs up a chapter Fall asleep opened once, only with cloud backups on: %s',
   async (status) => {
