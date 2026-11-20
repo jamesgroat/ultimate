@@ -287,7 +287,7 @@ export function counterparts(
 }
 
 export const answerTo = (messages: readonly Message[], question: Message) =>
-  messages.find((m) => m.from === 'user' && m.re === question.id)
+  messages.find((m) => m.from === 'user' && m.re === question.id && !m.clarifies)
 
 export function openMessages(
   messages: readonly Message[],

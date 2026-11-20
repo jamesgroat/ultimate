@@ -20,6 +20,7 @@ import {
   useUiState,
   useViewport,
 } from '@/sdk'
+import { MessageResponse } from '@/components/ai/message'
 import { CardActions } from './points.tsx'
 import type { Reply } from './refs.ts'
 import type { Question } from '../messages/refs.ts'
@@ -89,7 +90,13 @@ export function MessageQuestions({
   const questions = openQuestions(message)
   const card = cardKey(message.id)
   const shown = useKeys(card)
+  const messages = useDocOf(ROOT, MessagesDoc)?.messages ?? []
   if (!waitsOnUser(message)) return null
+  const localCardThatCanAsk =
+    transport === localTransport && identity === undefined && answerWith === undefined
+  const lastAsked = messages
+    .findLast((m) => m.from === 'user' && m.re === message.id && m.clarifies)
+    ?.text.trim()
   const answer = (reply: Reply, keepalive?: boolean) =>
     answerWith
       ? answerWith(reply, keepalive)
@@ -97,10 +104,16 @@ export function MessageQuestions({
   return (
     <Card
       card={card}
+      {...(localCardThatCanAsk
+        ? { thread: <Clarifications message={message} />, asked: lastAsked }
+        : {})}
+      asks={localCardThatCanAsk}
       questions={questions}
       keys={questions.length > 0 && (keys ?? shown)}
       submit={(answers, note, keepalive) =>
-        answer({ answers, ...(note ? { note } : {}) }, keepalive)
+        !localCardThatCanAsk && !answers.length && note
+          ? answer({ text: note }, keepalive)
+          : answer({ answers, ...(note ? { note } : {}) }, keepalive)
       }
       reply={(text) => answer({ text })}
       actions={
@@ -114,6 +127,38 @@ export function MessageQuestions({
       dismiss={() => api.action(DismissAction, { messageId: message.id })}
       {...(className === undefined ? {} : { className })}
     />
+  )
+}
+
+function Clarifications({ message }: { message: Message }) {
+  const messages = useDocOf(ROOT, MessagesDoc)?.messages ?? []
+  const thread = messages
+    .filter((m) => m.from === 'user' && m.re === message.id && m.clarifies)
+    .flatMap((asked) => [
+      asked,
+      ...messages.filter((m) => m.re === asked.id && m.from === message.from && !m.questions),
+    ])
+  if (!thread.length) return null
+  return (
+    <div className="space-y-1.5 border-b border-border/60 px-3 py-2.5" data-clarifications>
+      {thread.map((m) => (
+        <div
+          className={cn(
+            'rounded-md px-3 py-2 text-[13px] leading-relaxed',
+            m.from === 'user'
+              ? 'ml-8 border border-border/70 bg-secondary/60'
+              : 'mr-8 bg-background/40',
+          )}
+          data-clarification={m.id}
+          key={m.id}
+        >
+          <div className="pb-0.5 font-mono text-[11px] text-muted-foreground">
+            {m.from === 'user' ? 'You asked' : 'Reply'}
+          </div>
+          <MessageResponse>{m.text}</MessageResponse>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -344,9 +389,15 @@ function Card({
   dismiss,
   actions,
   sendLabel,
+  thread,
+  asks = false,
+  asked,
   className = 'border-t border-border/60',
 }: {
   card: string
+  thread?: ReactNode
+  asks?: boolean
+  asked?: string
   questions: Question[]
   keys: boolean
   submit: (answers: Answer[], note?: string, keepalive?: boolean) => Promise<unknown>
@@ -377,6 +428,14 @@ function Card({
   const words = questions.map((question, index) => answerOf(question, drafts[index]))
   const ready = answered(questions, drafts)
   const locked = phase !== 'answering'
+
+  const reconciledDraftWithThread = useRef(false)
+  useEffect(() => {
+    if (reconciledDraftWithThread.current || asked === undefined) return
+    reconciledDraftWithThread.current = true
+    const draftLeftWhenTheFormerPageSentIt = state.note.trim() === asked
+    if (draftLeftWhenTheFormerPageSentIt) setState((old) => ({ ...old, note: '' }))
+  }, [asked, state.note, setState])
 
   useEffect(() => {
     const flushWithKeepaliveOnPagehide = () => flushUndoWindowSend(undoWindowSend, true)
@@ -452,13 +511,16 @@ function Card({
     committed.current = true
     cancelAdvanceAfterCheck.current?.()
     setLockedIn({ drafts, note })
+    const asksWithoutAnswering = asks && !ready.length
     const fire = (keepalive = false) => {
       undoWindowSend.current = undefined
       setPhase('sending')
       setError(undefined)
+      if (asksWithoutAnswering) setState((old) => ({ ...old, note: '' }))
       submit(ready, extra || undefined, keepalive).then(
-        () => setPhase('sent'),
+        () => (asksWithoutAnswering ? unlock() : setPhase('sent')),
         (failure: unknown) => {
+          if (asksWithoutAnswering) setState((old) => ({ ...old, note: old.note || note }))
           unlock()
           setError(errorMessage(failure))
         },
@@ -609,6 +671,7 @@ function Card({
   const unanswered = questions.length - ready.length
   return (
     <div className={className} data-questions-card={card} ref={root}>
+      {thread}
       <div className="flex items-center gap-2 px-3 pt-2.5 pb-1 font-mono text-[11px] text-muted-foreground">
         <MessageCircleQuestionIcon className="size-3.5 text-brand" />
         <span className="text-foreground">
@@ -649,6 +712,21 @@ function Card({
           onChange={(value) => setState((old) => ({ ...old, note: value }))}
           onSend={() => send()}
         />
+        {asks && sendLabel === undefined && !ready.length && note.trim() && !locked && (
+          <p className="pt-1 text-[11px] text-muted-foreground" data-asks-hint>
+            Asks without answering; the card stays open. To discuss first, use{' '}
+            <button
+              className="cursor-pointer text-brand hover:underline"
+              onClick={() =>
+                root.current?.querySelector<HTMLButtonElement>('[data-talk-it-through]')?.click()
+              }
+              type="button"
+            >
+              Talk it through
+            </button>
+            .
+          </p>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2 px-3 pt-2 pb-2.5">
         {hints && phase === 'undo' && (
@@ -709,7 +787,9 @@ function Card({
           >
             {sendLabel ??
               (!ready.length && note.trim()
-                ? 'Send note'
+                ? asks
+                  ? 'Ask'
+                  : 'Send note'
                 : unanswered && ready.length
                   ? `Send ${ready.length} of ${questions.length}`
                   : 'Send')}

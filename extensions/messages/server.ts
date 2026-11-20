@@ -70,6 +70,7 @@ async function answer(
     device?: Device
     via?: { via: Via; primary: number }
     call?: { taskId: TaskId; callId: string }
+    clarify?: boolean
   } = {},
 ) {
   if (options.call) {
@@ -88,6 +89,7 @@ async function answer(
       text,
       re: messageId,
       ...(settledOwnQuestionWithoutWake ? { reply: false } : {}),
+      ...(options.clarify ? { clarify: true } : {}),
     },
     ctx,
     {
@@ -257,8 +259,8 @@ export default function messages(host: ExtensionHost) {
     },
   })
   host.implement(MessagesApi, {
-    answer: (messageId, text, ctx, device, call) =>
-      answer(host, messageId, text, ctx, { device, call }),
+    answer: (messageId, text, ctx, device, call, clarify) =>
+      answer(host, messageId, text, ctx, { device, call, clarify }),
     openQuestions: async (ctx) =>
       (
         (await host.harness().snapshot(Messages, ROOT_CONVERSATION_ID, ctx))?.messages ?? []
