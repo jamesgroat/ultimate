@@ -81,19 +81,31 @@ export const ChaptersAction = actionRef<
 /** `{ chapter }`: restart into an existing, idle chapter. User-only; a returned error means restart failed. */
 export const SwitchAction = actionRef<{ chapter: string }, never>('dream', 'switch')
 
-/** Calls per tool over the trace's window: how often, how often failing, how slow; and enabled tools never called. */
+/** Calls and failures grouped by one side of the call (an extension, or `agent`), most calls first. */
+export type CallCounts = {
+  byCaller: { name: string; calls: number; failed: number }[]
+  byCallee: { name: string; calls: number; failed: number }[]
+}
+
+/** Calls per tool over the window: how often, how often failing, how slow; enabled tools never called; and service and action calls per caller and per callee. `since`/`until` are the first and last tool call in it. */
 export type ToolStats = {
   since?: number
+  until?: number
   calls: number
   tools: { name: string; calls: number; failed: number; avgMs: number }[]
   unused: string[]
-  /** The most frequent errors, secret-shaped text masked, each with its two newest calls as pointers, never their args. */
+  /** The most frequent errors, secret-shaped text masked, each with its two newest calls: where it happened and its terminal error excerpt, never its args. */
   errors: {
     name: string
     error: string
     count: number
-    examples: { conversation: number | null; entry: number | null }[]
+    examples: { conversation: number | null; entry: number | null; error: string }[]
   }[]
+  services: CallCounts
+  actions: CallCounts
 }
-/** No arguments → tool statistics from `trace.sqlite`, no model involved. */
-export const StatsAction = actionRef<null, ToolStats>('dream', 'stats')
+/** `{ since?, until? }` (both inclusive; an ISO time with `Z` or an offset, or a date alone for its UTC midnight; default the chapter's whole trace) → call statistics from `trace.sqlite`, no model involved. */
+export const StatsAction = actionRef<{ since?: string; until?: string } | null, ToolStats>(
+  'dream',
+  'stats',
+)
