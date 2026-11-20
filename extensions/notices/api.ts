@@ -16,8 +16,11 @@ export type NoticePost = {
 }
 
 export type NoticesService = {
-  /** Post a durable one-way notice to the user's Inbox now; resolves with its id and whether the key was posted already. */
-  post(notice: NoticePost): Promise<{ id: number; duplicate: boolean }>
+  /**
+   * Post a durable one-way notice to the user's Inbox now; resolves with its id, whether the key was posted already, and
+   * whether a flood guard folded it into a notice still waiting.
+   */
+  post(notice: NoticePost): Promise<{ id: number; duplicate: boolean; coalesced?: boolean }>
 }
 /** Durable Inbox notices; `want` it: the built-in notices only toasts, a project notices extension (Life's) provides it. */
 export const NoticesApi = defineApi<NoticesService>()('notices')
