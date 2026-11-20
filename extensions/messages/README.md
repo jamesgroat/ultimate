@@ -86,7 +86,8 @@ lineage branch from the explicit root, else the caller's tree root, else the onl
 reply-enabled first message; it returns the branch and message ids. `title` (one line, at most 60 characters) names it
 until its summary does. The branch runs the `coordinator` definition (instructions, pinned model and thinking when its
 provider has a login, else the default model) with the caller's tools, labelled `coordinator`, and its caller is
-recorded in `board.started`.
+recorded in `board.started`. Its agent profile records the `coordinator` definition and preserves its creation time;
+an explicit `family` override records `explicitModel`, even when it resolves to the same model.
 
 A branch's decisions go to @ultimate first, which weighs in; the branch then asks the user with a reply-expected message
 with `questions` in its own conversation. Reports that need no answer use `reply: false`.
