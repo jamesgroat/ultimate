@@ -140,8 +140,15 @@ const SAFE_MODEL_ERROR_CODES = new Set([
   'EAI_AGAIN',
 ])
 
+const SAFE_MODEL_ERROR_PREFIXES: [RegExp, string][] = [
+  [/^Incomplete Claude Code (?:upstream )?response\b/, 'incomplete_response'],
+  [/^claude auth status gave no status\b/, 'empty_auth_status'],
+]
+
 export function classify(stopReason: string, message = '') {
   const parts = [stopReason]
+  const phrase = SAFE_MODEL_ERROR_PREFIXES.find(([pattern]) => pattern.test(message))
+  if (phrase) parts.push(phrase[1])
   const status = /^\s*([45]\d\d)\b|\b(?:status|http)[\s:=]*([45]\d\d)\b/i.exec(message)
   if (status) parts.push(status[1] ?? status[2])
   for (const word of message.split(/[^A-Za-z_]+/)) {
