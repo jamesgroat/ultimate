@@ -26,4 +26,4 @@ export const MessageContent = ({ className, ...props }: HTMLAttributes<HTMLDivEl
   />
 )
 
-export { MentionText, MessageResponse } from '../../sdk/markdown.tsx'
+export { MarkdownSource, MentionText, MessageResponse } from '../../sdk/markdown.tsx'
