@@ -216,12 +216,12 @@ export async function prepareHarness(options: HostOptions) {
       let harness: Harness | undefined
       let storage: Awaited<ReturnType<typeof openNodeSqliteStorage>> | undefined
       try {
-        await writeProject(home, projectRoot)
         const resetOrRestoreIncomplete = existsSync(join(home, 'reset.json'))
         if (resetOrRestoreIncomplete)
           throw new Error(
             `A reset or restore of ${home} was interrupted; rerun pnpm reset or pnpm restore`,
           )
+        await writeProject(home, projectRoot)
         await finishChapterSwitch(home, async (file) => {
           const created = await openNodeSqliteStorage(file)
           await created.close(context)
