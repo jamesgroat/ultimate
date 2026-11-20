@@ -20,4 +20,4 @@ export const VoiceUtteranceEntry = defineEntry<VoiceUtterance>('voice.utterance'
 
 export const VoiceAnswerEntry = defineEntry<VoiceAnswer>('voice.answer')
 
-export const VoiceHeardEntry = defineEntry<{ text: string }>('voice.heard')
+export const VoiceHeardEntry = defineEntry<{ text: string; raw?: string }>('voice.heard')

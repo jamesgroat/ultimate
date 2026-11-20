@@ -78,6 +78,7 @@
     "extensions/tasks/tree.ts",
     "extensions/sidebar/listed.ts",
     "extensions/side-chat/logic.ts",
+    "extensions/voice-live/pause.ts",
     "extensions/voice-live/relay.ts",
     "extensions/voice-live/session.ts",
     "extensions/voice-live/session-local.ts",
