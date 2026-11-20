@@ -3,6 +3,7 @@ import type { JSX } from '@solidjs/web'
 import { MessageCircleQuestion } from '@lucide/solid'
 import { createEffect, createMemo, createSignal, For, onSettled, Show } from 'solid-js'
 import { Markdown } from '@/components/markdown/markdown.solid.tsx'
+import type { MarkdownOrigin } from '@/components/markdown/source.ts'
 import { Button } from '@/components/ui/button.solid.tsx'
 import { Form } from '@/components/ui/form.solid.tsx'
 import { Input, Textarea } from '@/components/ui/input.solid.tsx'
@@ -49,6 +50,29 @@ export const CardActions: Point<{ message: Message }, JSX.Element> = {
   point: 'questions.card-actions',
 }
 
+export function useForgetQuestionCards() {
+  const [, setCards] = useUiState<Record<string, CardState>>(CARDS_KEY, {})
+  return (settled: (identity: string) => boolean) => {
+    setCards((old) => {
+      const kept = Object.entries(old).filter(([identity]) => !settled(identity))
+      return kept.length === Object.keys(old).length ? old : Object.fromEntries(kept)
+    })
+  }
+}
+
+export type MessageQuestionsTransport = {
+  answer: (
+    args: Reply & { messageId: number },
+    options?: { keepalive?: boolean },
+  ) => Promise<unknown>
+  dismiss: (args: { messageId: number }) => Promise<unknown>
+}
+
+const localTransport: MessageQuestionsTransport = {
+  answer: (args, options) => api.action(AnswerAction, args, options),
+  dismiss: (args) => api.action(DismissAction, args),
+}
+
 type CardProps = {
   message: Message
   keys?: boolean
@@ -56,6 +80,9 @@ type CardProps = {
   withActions?: boolean
   answerWith?: (answer: Reply, keepalive?: boolean) => Promise<unknown>
   sendLabel?: string
+  transport?: MessageQuestionsTransport
+  identity?: string
+  origin?: MarkdownOrigin
 }
 
 export function MessageQuestions(props: CardProps) {
@@ -76,7 +103,7 @@ const Key = (props: { children: string; class?: string }) => (
   </Kbd>
 )
 
-function Clarifications(props: { message: Message }) {
+function Clarifications(props: { message: Message; origin?: MarkdownOrigin }) {
   const messages = useDocOf(() => ROOT, MessagesDoc)
   const thread = createMemo(() => {
     const log = messages()?.messages ?? []
@@ -104,7 +131,7 @@ function Clarifications(props: { message: Message }) {
               <div class="pb-0.5 font-mono text-[11px] text-muted-foreground">
                 {m().from === 'user' ? 'You asked' : 'Reply'}
               </div>
-              <Markdown text={m().text} />
+              <Markdown text={m().text} origin={props.origin} />
             </div>
           )}
         </For>
@@ -114,9 +141,11 @@ function Clarifications(props: { message: Message }) {
 }
 
 function AnswerCard(props: CardProps & { id: number }) {
-  const asks = () => props.answerWith === undefined
+  const transport = () => props.transport ?? localTransport
+  const asks = () =>
+    transport() === localTransport && props.identity === undefined && props.answerWith === undefined
   const questions = createMemo(() => openQuestions(props.message))
-  const card = () => cardKey(props.id)
+  const card = () => props.identity ?? cardKey(props.id)
   const [cards, setCards] = useUiState<Record<string, CardState>>(CARDS_KEY, {})
   const state = createMemo(() => cardOf(cards(), card(), questions()))
   const change = (edit: (old: CardState) => CardState, automatic = false, source?: string) => {
@@ -128,10 +157,11 @@ function AnswerCard(props: CardProps & { id: number }) {
   }
   const answerRequest = () => {
     const id = props.id
+    const initialTransport = transport()
     return (
       props.answerWith ??
       ((reply: Reply, keepalive?: boolean) =>
-        api.action(AnswerAction, { messageId: id, ...reply }, { keepalive }))
+        initialTransport.answer({ messageId: id, ...reply }, { keepalive }))
     )
   }
   const [busy, setBusy] = createSignal(false)
@@ -160,7 +190,8 @@ function AnswerCard(props: CardProps & { id: number }) {
         disabled={controls.disabled}
         onClick={() => {
           const messageId = props.id
-          return run(() => api.action(DismissAction, { messageId }))
+          const target = transport()
+          return run(() => target.dismiss({ messageId }))
         }}
         title="Close it without an answer; the agent gets a note"
         class={controls.class}
@@ -190,11 +221,14 @@ function AnswerCard(props: CardProps & { id: number }) {
   })
   let reconciledDraftWithThread = false
   createEffect(
-    () => ({ asked: lastAsked(), note: state().note }),
-    ({ asked, note }) => {
+    () => ({ asked: lastAsked(), note: state().note, key: card(), list: questions() }),
+    ({ asked, note, key, list }) => {
       if (reconciledDraftWithThread || asked === undefined) return
       reconciledDraftWithThread = true
-      if (note.trim() === asked) change((old) => ({ ...old, note: '' }), true)
+      if (note.trim() === asked)
+        writingAs('app', () =>
+          setCards((old) => ({ ...old, [key]: { ...cardOf(old, key, list), note: '' } })),
+        )
     },
   )
   const hints = createMemo(
@@ -294,14 +328,16 @@ function AnswerCard(props: CardProps & { id: number }) {
     const savedNote = note()
     setHeldDraft({ drafts: drafts(), note: savedNote })
     const asksWithoutAnswering = asks() && !answers.length
+    const payload =
+      !asks() && !answers.length && extra
+        ? { text: extra }
+        : { answers, ...(extra ? { note: extra } : {}) }
     const fire = (keepalive = false) => {
       waiting = undefined
       setPhase('sending')
       setError(undefined)
       if (asksWithoutAnswering) change((old) => ({ ...old, note: '' }), false, source)
-      writingAs(source, () =>
-        reply({ answers, ...(extra ? { note: extra } : {}) }, keepalive),
-      ).then(
+      writingAs(source, () => reply(payload, keepalive)).then(
         () => (asksWithoutAnswering ? unlock() : setPhase('sent')),
         (failure: unknown) => {
           if (asksWithoutAnswering)
@@ -436,7 +472,7 @@ function AnswerCard(props: CardProps & { id: number }) {
     <Show when={questions().length} fallback={textOnly()}>
       <div class={frame()} data-questions-card={card()} ref={root}>
         <Show when={asks()}>
-          <Clarifications message={props.message} />
+          <Clarifications message={props.message} origin={props.origin} />
         </Show>
         <div class="flex items-center gap-2 px-3 pt-2.5 pb-1 font-mono text-[11px] text-muted-foreground">
           <MessageCircleQuestion class="size-3.5 text-brand" />
@@ -479,6 +515,7 @@ function AnswerCard(props: CardProps & { id: number }) {
                   onSelect={(option, pressed) => select(index, option, true, pressed)}
                   onText={(value) => draft(index, (old) => ({ ...old, text: value }))}
                   onFieldKey={fieldKey}
+                  origin={props.origin}
                 />
               </div>
             )}
