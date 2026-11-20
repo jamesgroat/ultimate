@@ -657,7 +657,7 @@ export async function loadExtensions(
         host.builds.remove(name)
       }
     }
-    host.builds.refresh(winners.map(({ name, enabled }) => [name, enabled]))
+    host.builds.refresh([...records.values()].map(({ name, enabled }) => [name, enabled]))
     const missing = new Set(apis.missing())
     for (const message of missing) if (!missingApis.has(message)) notice(message)
     missingApis = missing
