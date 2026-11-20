@@ -90,9 +90,12 @@ function toolError(result: ToolExecutionResult) {
   ]
     .map(redactSecrets)
     .join('\n')
-  return text.length <= SUMMARY_CHARACTER_LIMIT
-    ? text
-    : text.slice(0, SUMMARY_CHARACTER_LIMIT) + '…'
+  if (text.length <= SUMMARY_CHARACTER_LIMIT * 2) return text
+  const last = text.split(/\r?\n/).findLast((line) => line.includes('Error:'))
+  const terminal = last
+    ? last.trim().slice(0, SUMMARY_CHARACTER_LIMIT)
+    : text.trim().slice(-SUMMARY_CHARACTER_LIMIT)
+  return `${text.slice(0, SUMMARY_CHARACTER_LIMIT)}\n…\n${terminal}`
 }
 
 const cutBeforeSplitWord = (text: string, length: number) =>
