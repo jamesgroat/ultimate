@@ -26,7 +26,8 @@ import {
   useNow,
   writingAs,
 } from '@/sdk/solid'
-import { Waiting } from '../inbox/ui.solid.tsx'
+import { Waiting, inboxCount } from '../inbox/ui.solid.tsx'
+import type { InboxStatus } from '../inbox/ui.solid.tsx'
 import { StandingAction } from '../subagents/refs.ts'
 import { AddAction, DoneAction, ReopenAction, TodosDoc } from './refs.ts'
 import type { Todo } from './refs.ts'
@@ -35,26 +36,35 @@ const waits = 'text-amber-700 dark:text-amber-300'
 const webOrObsidianLinkWithoutClosingPunctuation =
   /((?:https?|obsidian):\/\/[^\s<>()]*[^\s<>().,;:!?'"])/
 
-function InboxWaiting(props: { count: (count: number) => void }) {
-  const { entries, failures } = Waiting()
+function InboxWaiting(props: {
+  count: (count: number) => void
+  status: (status: InboxStatus) => void
+}) {
+  const { entries, failures, status } = Waiting()
   createEffect(
-    () => entries().length,
-    (count) => {
-      props.count(count)
+    () => ({ count: entries().length, status: status() }),
+    (value) => {
+      props.count(value.count)
+      props.status(value.status)
     },
   )
-  onCleanup(() => props.count(0))
+  onCleanup(() => {
+    props.count(0)
+    props.status({ state: 'complete' })
+  })
   return failures
 }
 
 export function TodoList() {
   const inboxOn = useEnabled('inbox')
   const [inbox, setInbox] = createSignal(0)
+  const [status, setStatus] = createSignal<InboxStatus>({ state: 'complete' })
   const doc = useDocOf(() => ROOT, TodosDoc)
   const now = useNow(60_000)
   const [error, setError] = createSignal<string>()
   const items = () => doc()?.items ?? []
   const open = createMemo(() => items().filter((todo) => !todo.done))
+  const hasInbox = () => inbox() > 0 || status().state !== 'complete'
   const yours = () => open().filter((todo) => todo.owner === 'user')
   const ultimate = () => open().filter((todo) => todo.owner === 'ultimate')
   const done = createMemo(() =>
@@ -100,13 +110,13 @@ export function TodoList() {
       <div class="flex items-center gap-2 px-3 pb-2 section-label">
         To-dos
         <span class="ml-auto text-muted-foreground/70">
-          <Show when={inbox() > 0}>
+          <Show when={hasInbox()}>
             <span class={waits}>
-              {inbox()} in Inbox
+              {inboxCount(inbox(), status())} in Inbox
               {open().length > 0 && ' · '}
             </span>
           </Show>
-          {open().length ? `${open().length} open` : inbox() ? '' : 'none open'}
+          {open().length ? `${open().length} open` : hasInbox() ? '' : 'none open'}
         </span>
       </div>
       <AddTodo add={(text, owner) => run(api.action(AddAction, { text, owner }))} />
@@ -114,10 +124,10 @@ export function TodoList() {
         <p class="px-3 pt-1.5 font-mono text-[11px] break-words text-error">{error()}</p>
       </Show>
       <Show when={inboxOn()}>
-        <InboxWaiting count={setInbox} />
+        <InboxWaiting count={setInbox} status={setStatus} />
       </Show>
       <Show
-        when={inbox() + open().length > 0}
+        when={hasInbox() || open().length > 0}
         fallback={
           <p class="flex items-center gap-2 px-3 py-6 text-xs text-muted-foreground">
             <Check class="size-3.5 text-success" />
@@ -125,8 +135,8 @@ export function TodoList() {
           </p>
         }
       >
-        <Section empty={!inbox() && !yours().length} owner="user" title="For you">
-          <Show when={inbox() > 0}>
+        <Section empty={!hasInbox() && !yours().length} owner="user" title="For you">
+          <Show when={hasInbox()}>
             <li data-todo-inbox>
               <Button
                 class="flex h-auto w-full items-center justify-start gap-2.5 rounded px-2 py-1.5 text-left font-normal hover:bg-muted/50"
@@ -135,7 +145,14 @@ export function TodoList() {
                 variant={null}
               >
                 <Inbox class={cn('size-4 shrink-0', waits)} />
-                <span class={cn('min-w-0 flex-1 text-[13px]', waits)}>Inbox · {inbox()}</span>
+                <span class="min-w-0 flex-1">
+                  <span class={cn('text-[13px]', waits)}>
+                    Inbox · {inboxCount(inbox(), status())}
+                  </span>
+                  <Show when={status().text}>
+                    <span class="block text-[11px] text-muted-foreground">{status().text}</span>
+                  </Show>
+                </span>
                 <ChevronRight class="size-3.5 shrink-0 text-muted-foreground/60" />
               </Button>
             </li>

@@ -7,8 +7,8 @@ import { renderSolid } from '../../../../test/web/solid-dom-setup.ts'
 import { registry, store } from '../../../../web/src/sdk/client.ts'
 import { provide } from '../../../../web/src/sdk/types.ts'
 import { MessagesDoc } from '../../../messages/refs.ts'
-import type { InboxItem } from '../../points.ts'
-import { InboxItems } from '../../points.ts'
+import type { InboxItem, InboxStatus } from '../../points.ts'
+import { InboxFreshness, InboxItems } from '../../points.ts'
 import { AppBadge } from '../../surface.solid.tsx'
 
 const harness = vi.hoisted(() => ({
@@ -41,7 +41,7 @@ vi.mock('../../../../web/src/sdk/client.ts', async () => {
 
 harness.server = fakeSubscriptions(harness.sources)
 
-it('shows the waiting count on the app icon once it has loaded, and clears it at zero', async ({
+it('uses an unnumbered indicator while incomplete, and clears only a complete zero', async ({
   onTestFinished,
 }) => {
   const setAppBadge = vi.fn<Navigator['setAppBadge']>(async () => {})
@@ -58,15 +58,18 @@ it('shows the waiting count on the app icon once it has loaded, and clears it at
   harness.sources[0].open()
   const item = (key: string): InboxItem => ({ key, at: 1, tag: 'task', title: key, pane: null })
   const [items, setItems] = createSignal([item('a:1'), item('a:2')])
+  const [status, setStatus] = createSignal<InboxStatus>({ state: 'loading' })
   await registry.setLoaders({
     'extensions/provider/web.solid.tsx': async () => ({
-      default: { provides: [provide(InboxItems, () => items)] },
+      default: {
+        provides: [provide(InboxItems, () => items), provide(InboxFreshness, () => status)],
+      },
     }),
   })
   renderSolid(() => <AppBadge />)
   flush()
   await settle()
-  expect(setAppBadge).not.toHaveBeenCalled()
+  expect(setAppBadge).toHaveBeenLastCalledWith()
   expect(clearAppBadge).not.toHaveBeenCalled()
 
   harness
@@ -74,9 +77,20 @@ it('shows the waiting count on the app icon once it has loaded, and clears it at
     .send('doc', { kind: MessagesDoc.kind, value: { messages: [], next: 1 } })
   flush()
   await settle()
+  expect(setAppBadge).toHaveBeenLastCalledWith()
+  setStatus({ state: 'complete' })
+  flush()
+  await settle()
   expect(setAppBadge).toHaveBeenLastCalledWith(2)
 
+  setStatus({ state: 'error', text: 'Remote unavailable' })
   setItems([])
+  flush()
+  await settle()
+  expect(setAppBadge).toHaveBeenLastCalledWith()
+  expect(clearAppBadge).not.toHaveBeenCalled()
+
+  setStatus({ state: 'complete' })
   flush()
   await settle()
   expect(clearAppBadge).toHaveBeenCalledOnce()

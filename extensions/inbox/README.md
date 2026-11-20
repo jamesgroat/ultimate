@@ -17,6 +17,19 @@ with `conversation` the row names it and the pane offers **Open in branch**. Eve
 sidebar row and the To-dos' "For you" row too: they all read `Waiting` from `ui.solid.tsx`. A provider that throws is left
 out behind its inline error card. Items are entries keyed by string; a question's key is `message:<id>`.
 
+`ui.solid.tsx` also exports `InboxFreshness`, `InboxSourceChip`, `InboxStatus` and `inboxCount` for other extensions.
+Async providers provide `InboxFreshness` with an accessor returning
+`{ state: 'complete' | 'loading' | 'partial' | 'error', text? }` (`InboxStatus`). `Waiting()` returns `entries`,
+`messages`, `failures` and `status` accessors (except the inline `failures` element): every provider and the local
+Messages log must be ready before the aggregate status is complete. Sidebar, list and To-dos share `inboxCount`:
+an incomplete count is `N+`, or `?` at zero, with explicit warnings instead of an all-clear.
+
+`InboxSourceChip` is an optional Solid UI point: `provide(InboxSourceChip, SourceChip)`, where `SourceChip` receives
+the native Inbox entry as reactive props (`key`, `at`, and either `message` or `item`) and returns Solid JSX beside
+the normal asker. Remote items omit `conversation`: their pane owns remote navigation, Markdown, images and answer
+transport, never resolving remote numeric ids against the local project. `InboxItem` keeps `key`, `at`,
+`conversation?`, `tag`, `title`, `gist?` and the Solid `pane`.
+
 ## Surface (`web.solid.tsx`)
 
 - **List**: one row per item, the asking branch's feature chip and `#id` as the sidebar draws them, a `preview` tag
@@ -53,6 +66,7 @@ its key with `at: 0`, so the entry shows when it arrives and the selection takes
 - **To-dos**: the panel's "For you" keeps one `Inbox · N` row, provided items counted, that opens it.
 - ⌘K **Open Inbox**.
 - **App icon**: an installed app shows the same count as a badge on its Dock, taskbar or home-screen icon
-  (`navigator.setAppBadge`), cleared at zero and left alone until the open questions have loaded; a browser without
+  (`navigator.setAppBadge`), cleared only at a complete zero. While local questions or provider sources are incomplete,
+  it uses the API's unnumbered indicator, not a numeric count; a browser without
   the Badging API shows nothing, and iOS shows it only once notifications are allowed. It follows the open pages, so
   the last count stays on the icon after the last window closes.
