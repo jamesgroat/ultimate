@@ -165,6 +165,21 @@ function SideStage(props: { id?: ConversationId; index?: SideChatIndex }) {
     },
   )
 
+  createEffect(inFront, (active) => {
+    const parent = overlay.closest<HTMLElement>('[data-ui="conversation"]')
+    if (!active || !parent) return undefined
+    const hide = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || overlay.contains(event.target)) return
+      event.preventDefault()
+      event.stopPropagation()
+      setFront(null)
+      if (event.target.closest('[data-side-mode]'))
+        requestAnimationFrame(() => document.getElementById('composer-input')?.focus())
+    }
+    parent.addEventListener('click', hide, true)
+    return () => parent.removeEventListener('click', hide, true)
+  })
+
   const still = () => reduced()
   const away = () => (phone() ? 'translateY(105%)' : 'translateX(14%) scale(0.96)')
   return (
