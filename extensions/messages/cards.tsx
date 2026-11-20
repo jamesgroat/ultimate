@@ -703,13 +703,15 @@ function UserTurn({ entry, id, text }: { entry: EntryRecord; id: number; text: s
         type="button"
       >
         <CornerLeftUpIcon className="size-3" />
-        {question.state === 'dismissed'
-          ? message?.via
-            ? '@ultimate dismissed a question for you'
-            : 'you dismissed a question'
-          : message?.via
-            ? '@ultimate answered a question for you'
-            : 'you answered a question'}
+        {message?.clarifies
+          ? 'you asked about a question'
+          : question.state === 'dismissed'
+            ? message?.via
+              ? '@ultimate dismissed a question for you'
+              : 'you dismissed a question'
+            : message?.via
+              ? '@ultimate answered a question for you'
+              : 'you answered a question'}
       </button>
     )
   }

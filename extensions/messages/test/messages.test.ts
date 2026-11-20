@@ -829,6 +829,54 @@ it('answers questions to the user through answer cards or input in the sender co
   await f.open()
   expect(await state(second.id)).toBe('delivered')
 })
+it('keeps a card open on a clarification, and a new card the asker sends in answer replaces it', async () => {
+  const f = await fixture()
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = f.recipient.id
+  }, context)
+  const questions = [{ text: 'Rotate the SMTP login?', kind: 'confirm' as const }]
+  await (
+    await f.recipient.submit(
+      {
+        type: 'input',
+        content: 'SEND ' + JSON.stringify({ to: 'user', text: 'Rotate?', questions }),
+      },
+      context,
+    )
+  ).wait(context)
+  const asked = (await f.log())!.messages.at(-1)!
+  const state = async (id: number) => (await f.log())!.messages.find((m) => m.id === id)?.state
+
+  // A note that answers none of the questions asks about them: the card stays open.
+  f.holdAgain()
+  await f.service().answer(asked.id, 'Why now?\nHOLD', context, undefined, undefined, true)
+  await until(f.holding)
+  expect(await state(asked.id)).toBe('delivered')
+  expect(f.observed).toContainEqual(
+    expect.stringContaining(`Clarification on message ${asked.id} (still open`),
+  )
+  const clarification = (await f.log())!.messages.find((m) => m.re === asked.id)!
+  expect(clarification).toMatchObject({ from: 'user', clarifies: true })
+
+  // The asker answers it with a new card: that card replaces the old one.
+  const again = await sendMessage(
+    f.host,
+    f.recipient.id,
+    { to: 'user', text: 'The provider expires it Friday. Rotate?', questions },
+    context,
+  )
+  f.hold.release()
+  await f.opened.harness.waitForIdle(context)
+  expect((await f.log())!.messages.find((m) => m.id === asked.id)).toMatchObject({
+    state: 'dismissed',
+    replacedBy: again,
+  })
+  expect(await state(again)).toBe('delivered')
+  const inputs = await eventHost(() => f.opened.harness, 'test').eventLog.recent({
+    events: [UserInputEvent],
+  })
+  expect(inputs.map((event) => event.data.kind)).toEqual(['clarify'])
+})
 it("ends @ultimate's run with its message to the user, unless it still owes a reply", async () => {
   const f = await fixture()
   await f.send('user', 'Landed')
