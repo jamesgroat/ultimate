@@ -31,4 +31,28 @@ export type PinService = {
  * it falls back to the default model. Subagents provides it (it records which definition a conversation runs as).
  */
 export const Pin = defineApi<PinService>()('models.pin')
+
+/** Persistent selection intent; automatic configuration alone never changes it. Unset means no recorded intent. */
+export const Selection = defineDoc<{
+  mode?: 'manual' | 'auto'
+  model?: { provider: string; modelId: string }
+  selectedAt?: number
+}>({
+  kind: 'models.selection',
+  checkpointWhen: () => false,
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({}),
+})
+
+export type BeforeInputService = {
+  /** Apply optional model policy inside the input transaction, before the independent missing-login fallback. */
+  beforeInput(tx: Tx, conversationId: ConversationId): Promise<void>
+  /** Optional synchronous policy for missing-login replacement candidates, after input policy has run. */
+  allowsFallback?(model: { provider: string; modelId: string }): boolean
+}
+/** Optional input-time model policy; implementations use transactional writes only, not network I/O. */
+export const BeforeInput = defineApi<BeforeInputService>()('models.before-input')
 export const tier = 'core'

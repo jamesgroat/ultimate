@@ -29,7 +29,6 @@ export function ModelRow(props: { model: ModelInfo; current: boolean; disabled?:
         class="ml-auto flex shrink-0 items-center gap-3 pl-3 text-[11px] text-muted-foreground tabular-nums"
         aria-hidden="true"
       >
-        {facts().paid && <span class="text-warning/80">{facts().paid}</span>}
         <span
           class={cn(
             'flex items-center gap-1',

@@ -63,7 +63,6 @@ const price = (dollarsPerMillionTokens: number) =>
 
 export function modelFacts(model: ModelInfo) {
   return {
-    paid: model.provider === 'anthropic' ? 'paid API' : undefined,
     thinking: model.reasoning
       ? model.thinkingLevels.filter((level) => level !== 'off').at(-1)
       : 'no thinking',

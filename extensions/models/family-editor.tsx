@@ -415,7 +415,6 @@ function ModelSelect({
                         </span>
                       )}
                       <span className="ml-auto flex shrink-0 items-center gap-3 pl-3 text-[11px] text-muted-foreground tabular-nums">
-                        {facts.paid && <span className="text-warning/80">{facts.paid}</span>}
                         <span
                           className={cn(
                             'flex items-center gap-1',
