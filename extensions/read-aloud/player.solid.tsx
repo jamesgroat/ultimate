@@ -19,7 +19,30 @@ export type Reading = {
 let reading: Reading | undefined
 const listeners = new Set<() => void>()
 let audio: HTMLAudioElement | undefined
-let utterance: SpeechSynthesisUtterance | undefined
+let gestureUnlockedElement: HTMLAudioElement | undefined
+let silence: string | undefined
+
+function silentWav(milliseconds = 50, sampleRate = 8000) {
+  const samples = Math.round((sampleRate * milliseconds) / 1000)
+  const view = new DataView(new ArrayBuffer(44 + samples * 2))
+  const ascii = (at: number, text: string) =>
+    Array.from({ length: text.length }, (_, index) =>
+      view.setUint8(at + index, text.charCodeAt(index)),
+    )
+  ascii(0, 'RIFF')
+  view.setUint32(4, 36 + samples * 2, true)
+  ascii(8, 'WAVEfmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, 1, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  ascii(36, 'data')
+  view.setUint32(40, samples * 2, true)
+  return URL.createObjectURL(new Blob([view], { type: 'audio/wav' }))
+}
 let fetching = new AbortController()
 let fetched = new Map<number, Promise<SpokenSection>>()
 let rate = 1
@@ -63,10 +86,12 @@ function release() {
     URL.revokeObjectURL(audio.src)
     audio = undefined
   }
-  if (utterance) {
-    utterance = undefined
-    speechSynthesis.cancel()
-  }
+}
+
+function unlock() {
+  gestureUnlockedElement ??= new Audio()
+  gestureUnlockedElement.src = silence ??= silentWav()
+  gestureUnlockedElement.play().catch(meansNone)
 }
 
 export function stop() {
@@ -76,6 +101,7 @@ export function stop() {
 
 export function read(conversation: ConversationId, entry: number, text: string) {
   release()
+  unlock()
   set({ conversation, entry, text, section: 0, status: 'loading' })
   setUpMediaSession()
   void play(text, 0)
@@ -105,26 +131,23 @@ async function play(text: string, index: number) {
     set({ ...still, section: index + 1, spoken: undefined, status: 'loading' })
     void play(text, index + 1)
   }
-  if (spoken.audio) {
-    const bytes = Uint8Array.from(atob(spoken.audio), (c) => c.charCodeAt(0))
-    const player = new Audio(URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' })))
-    audio = player
-    player.playbackRate = rate
-    player.addEventListener('ended', () => audio === player && next())
-    await player.play().catch(failed)
-  } else {
-    const line = new SpeechSynthesisUtterance(spoken.spoken)
-    utterance = line
-    line.rate = rate
-    line.addEventListener('end', () => utterance === line && next())
-    speechSynthesis.speak(line)
-  }
+  if (!spoken.audio) return next()
+  const bytes = Uint8Array.from(atob(spoken.audio), (c) => c.charCodeAt(0))
+  const type = spoken.mimeType ?? 'audio/mp4'
+  const player = (gestureUnlockedElement ??= new Audio())
+  const source = URL.createObjectURL(new Blob([bytes], { type }))
+  player.src = source
+  audio = player
+  player.playbackRate = rate
+  player.addEventListener('ended', () => audio === player && player.src === source && next(), {
+    once: true,
+  })
+  await player.play().catch(failed)
 }
 
 export function pause() {
   if (reading?.status !== 'playing') return
-  if (audio) audio.pause()
-  else speechSynthesis.pause()
+  audio?.pause()
   set({ ...reading, status: 'paused' })
 }
 
@@ -133,12 +156,12 @@ export function resume() {
   if (reading.error) {
     const { text, section: index } = reading
     release()
+    unlock()
     set({ ...reading, error: undefined, status: 'loading' })
     void play(text, index)
     return
   }
-  if (audio) void audio.play()
-  else speechSynthesis.resume()
+  void audio?.play()
   set({ ...reading, status: 'playing' })
 }
 
