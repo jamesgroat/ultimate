@@ -45,6 +45,15 @@ export function Reading({
         <span className="shrink-0 rounded border border-border/70 px-1 font-mono text-[10px] leading-4 text-muted-foreground">
           {tagOf(entry)}
         </span>
+        {message?.carried && (
+          <span data-inbox-carried>
+            asked by{' '}
+            {typeof message.carried.from === 'number'
+              ? `#${message.carried.from}`
+              : message.carried.from}{' '}
+            in {message.carried.chapter}
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-1">
           waited
           <time

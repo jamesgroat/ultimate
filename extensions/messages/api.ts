@@ -16,7 +16,7 @@ import { defineDoc } from '@earendil-works/pi-durable'
 import { defineApi } from '../../shared/extension-api.ts'
 import type { Device } from '../../shared/events.ts'
 import { MessagesDoc } from './refs.ts'
-import type { Question, Remote, Via } from './refs.ts'
+import type { Carried, Question, Remote, Via } from './refs.ts'
 
 /** One message as the log stores it. */
 export type Message = {
@@ -56,6 +56,8 @@ export type Message = {
   clarifies?: true
   /** The card the asker sent in answer to a clarification, which closed this one. */
   replacedBy?: number
+  /** An open card carried over from an earlier chapter: that chapter, its message id there and who asked it. */
+  carried?: Carried
 }
 /** Every message between conversations and the user, on the root conversation. */
 export const Messages = defineDoc<{ messages: Message[]; next: number }>({
@@ -134,7 +136,7 @@ export type MessagesService = {
   dropped(tx: Tx, automation: string, source: string, why: string): Promise<void>
 }
 export { MessageSent } from './refs.ts'
-export type { Question, Serves } from './refs.ts'
+export type { Carried, Question, Serves } from './refs.ts'
 /** Messages between conversations; core, so `need` it. */
 export const MessagesApi = defineApi<MessagesService>()('messages')
 

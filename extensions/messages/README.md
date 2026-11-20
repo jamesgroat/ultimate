@@ -133,6 +133,8 @@ as `@ultimate@<project> on <machine>` with a globe mark and a violet accent.
 the log keeps the newest 300 items, and transcripts retain delivered inputs. `Message` is in `api.ts`: `from` and `to`
 are a conversation id, `'user'` or `'remote'`; `state` is `sent`, `delivered`, `answered`, `dismissed`, `failed` or
 `stopped`; `re`, `entry`, `answer`, `error`, `via`, `remote`, `report`, `questions` and `call` are optional.
+`carried { chapter, id, from }` marks an open card a new chapter's seed carried over (see
+[Dream](../dream/README.md#seed)): asked again by @ultimate, it names the chapter, message and asker it came from.
 
 - `board.message` data: `{ id, from, text, reply, delivery: 'steer' | 'followUp' | 'note', images?, remote? }`.
 - `board.reply` data: `{ id, re, from, text, failed, stopped?, images?, remote?, interim? }`; `stopped` also sets
