@@ -1,6 +1,7 @@
 import type { JSX } from '@solidjs/web'
 import { MessageCircleQuestion } from '@lucide/solid'
-import { createMemo, createSignal, For, onSettled, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onSettled, Show } from 'solid-js'
+import { Markdown } from '@/components/markdown/markdown.solid.tsx'
 import { Button } from '@/components/ui/button.solid.tsx'
 import { Form } from '@/components/ui/form.solid.tsx'
 import { Input, Textarea } from '@/components/ui/input.solid.tsx'
@@ -75,16 +76,54 @@ const Key = (props: { children: string; class?: string }) => (
   </Kbd>
 )
 
+function Clarifications(props: { message: Message }) {
+  const messages = useDocOf(() => ROOT, MessagesDoc)
+  const thread = createMemo(() => {
+    const log = messages()?.messages ?? []
+    return log
+      .filter((m) => m.from === 'user' && m.re === props.message.id && m.clarifies)
+      .flatMap((asked) => [
+        asked,
+        ...log.filter((m) => m.re === asked.id && m.from === props.message.from && !m.questions),
+      ])
+  })
+  return (
+    <Show when={thread().length}>
+      <div class="space-y-1.5 border-b border-border/60 px-3 py-2.5" data-clarifications>
+        <For each={thread()} keyed={(m) => m.id}>
+          {(m) => (
+            <div
+              class={cn(
+                'rounded-md px-3 py-2 text-[13px] leading-relaxed',
+                m().from === 'user'
+                  ? 'ml-8 border border-border/70 bg-secondary/60'
+                  : 'mr-8 bg-background/40',
+              )}
+              data-clarification={m().id}
+            >
+              <div class="pb-0.5 font-mono text-[11px] text-muted-foreground">
+                {m().from === 'user' ? 'You asked' : 'Reply'}
+              </div>
+              <Markdown text={m().text} />
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
+  )
+}
+
 function AnswerCard(props: CardProps & { id: number }) {
+  const asks = () => props.answerWith === undefined
   const questions = createMemo(() => openQuestions(props.message))
   const card = () => cardKey(props.id)
   const [cards, setCards] = useUiState<Record<string, CardState>>(CARDS_KEY, {})
   const state = createMemo(() => cardOf(cards(), card(), questions()))
-  const change = (edit: (old: CardState) => CardState, unrecorded = false) => {
+  const change = (edit: (old: CardState) => CardState, automatic = false, source?: string) => {
     const key = card()
     const list = questions()
     const write = () => setCards((old) => ({ ...old, [key]: edit(cardOf(old, key, list)) }))
-    if (unrecorded) writingAs('app', write)
+    if (automatic || source !== undefined) writingAs(automatic ? 'app' : source, write)
     else write()
   }
   const answerRequest = () => {
@@ -141,6 +180,23 @@ function AnswerCard(props: CardProps & { id: number }) {
   const conversation = useConversationId()
   const messages = useDocOf(() => ROOT, MessagesDoc)
   const viewport = useViewport()
+  const lastAsked = createMemo(() => {
+    const id = props.id
+    return asks()
+      ? messages()
+          ?.messages.findLast((m) => m.from === 'user' && m.re === id && m.clarifies)
+          ?.text.trim()
+      : undefined
+  })
+  let reconciledDraftWithThread = false
+  createEffect(
+    () => ({ asked: lastAsked(), note: state().note }),
+    ({ asked, note }) => {
+      if (reconciledDraftWithThread || asked === undefined) return
+      reconciledDraftWithThread = true
+      if (note.trim() === asked) change((old) => ({ ...old, note: '' }), true)
+    },
+  )
   const hints = createMemo(
     () =>
       viewport() !== 'phone' &&
@@ -166,7 +222,9 @@ function AnswerCard(props: CardProps & { id: number }) {
   const sendLabel = () =>
     props.sendLabel ??
     (!ready().length && note().trim()
-      ? 'Send note'
+      ? asks()
+        ? 'Ask'
+        : 'Send note'
       : left() && ready().length
         ? `Send ${ready().length} of ${questions().length}`
         : 'Send')
@@ -236,7 +294,9 @@ function AnswerCard(props: CardProps & { id: number }) {
     const reply = answerRequest()
     committed = true
     advance?.()
-    setHeldDraft({ drafts: drafts(), note: note() })
+    const savedNote = note()
+    setHeldDraft({ drafts: drafts(), note: savedNote })
+    const asksWithoutAnswering = asks() && !answers.length
     const answer = { answers, ...(extra ? { note: extra } : {}) }
     const outlivesPage =
       new TextEncoder().encode(JSON.stringify(answer)).byteLength <= KEEPALIVE_BYTES
@@ -244,9 +304,12 @@ function AnswerCard(props: CardProps & { id: number }) {
       waiting = undefined
       setPhase('sending')
       setError(undefined)
+      if (asksWithoutAnswering) change((old) => ({ ...old, note: '' }), false, source)
       writingAs(source, () => reply(answer, outlivesPage)).then(
-        () => setPhase('sent'),
+        () => (asksWithoutAnswering ? unlock() : setPhase('sent')),
         (failure: unknown) => {
+          if (asksWithoutAnswering)
+            change((old) => ({ ...old, note: old.note || savedNote }), false, source)
           unlock()
           setError(errorMessage(failure))
         },
@@ -376,6 +439,9 @@ function AnswerCard(props: CardProps & { id: number }) {
   return (
     <Show when={questions().length} fallback={textOnly()}>
       <div class={frame()} data-questions-card={card()} ref={root}>
+        <Show when={asks()}>
+          <Clarifications message={props.message} />
+        </Show>
         <div class="flex items-center gap-2 px-3 pt-2.5 pb-1 font-mono text-[11px] text-muted-foreground">
           <MessageCircleQuestion class="size-3.5 text-brand" />
           <span class="text-foreground">
@@ -452,6 +518,31 @@ function AnswerCard(props: CardProps & { id: number }) {
               </Key>
             </Show>
           </div>
+          <Show
+            when={
+              asks() &&
+              props.sendLabel === undefined &&
+              !ready().length &&
+              note().trim() &&
+              !locked()
+            }
+          >
+            <p class="pt-1 text-[11px] text-muted-foreground" data-asks-hint>
+              Asks without answering; the card stays open. To discuss first, use{' '}
+              <Button
+                aria-label={`Talk it through about message ${props.id}`}
+                class="inline h-auto p-0 text-left font-normal whitespace-normal text-brand hover:underline"
+                size={null}
+                variant={null}
+                onClick={() =>
+                  root.querySelector<HTMLButtonElement>('[data-talk-it-through]')?.click()
+                }
+              >
+                Talk it through
+              </Button>
+              .
+            </p>
+          </Show>
         </div>
         <div class="flex flex-wrap items-center gap-2 px-3 pt-2 pb-2.5">
           <Show when={hints() && phase() === 'undo'}>

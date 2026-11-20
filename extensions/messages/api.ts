@@ -52,6 +52,10 @@ export type Message = {
   questions?: Question[]
   /** A user answer or dismissal that @ultimate settled for the user, not their own click. */
   via?: Via
+  /** A user note on an open card that answers none of its questions: the card stays open. */
+  clarifies?: true
+  /** The card the asker sent in answer to a clarification, which closed this one. */
+  replacedBy?: number
   /** An open card carried over from an earlier chapter: that chapter, its message id there and who asked it. */
   carried?: Carried
 }
@@ -70,7 +74,8 @@ export type MessagesService = {
   /**
    * Reply `text` from the user to open message `messageId`, from browser `device`; returns the reply's message
    * id. Records a `user.input` event. With `call` (a tool call), a receipt commits with the reply, and a replay of
-   * that call returns the same id even though the question is closed by then.
+   * that call returns the same id even though the question is closed by then. With `clarify`, the reply asks about
+   * the questions instead of answering them: the message stays open.
    */
   answer(
     messageId: number,
@@ -78,6 +83,7 @@ export type MessagesService = {
     ctx: Context,
     device?: Device,
     call?: { taskId: TaskId; callId: string },
+    clarify?: boolean,
   ): Promise<number>
   /**
    * The messages that wait on the user's answer, oldest first: each one's id, the conversation that asked, when, and its

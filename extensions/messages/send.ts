@@ -63,6 +63,7 @@ export async function send(
     images?: ImagesRef
     imagesFrom?: ConversationId
     dismiss?: boolean
+    clarify?: boolean
     questions?: Question[]
   },
   ctx: Context,
@@ -140,7 +141,8 @@ export async function send(
 
     if (from === 'user' && input.re !== undefined)
       for (const m of (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages)
-        if (openQuestion(m) && m.id === input.re) m.state = input.dismiss ? 'dismissed' : 'answered'
+        if (openQuestion(m) && m.id === input.re && !input.clarify)
+          m.state = input.dismiss ? 'dismissed' : 'answered'
     let re = input.re
     if (from !== 'user' && input.reply !== false) {
       const log = await tx.doc(Messages, ROOT_CONVERSATION_ID)
@@ -201,7 +203,17 @@ export async function send(
       ...(options.routed !== undefined ? { routed: options.routed } : {}),
       ...(options.echo ? { echo: true as const } : {}),
       ...(via ? { via } : {}),
+      ...(from === 'user' && input.clarify ? { clarifies: true as const } : {}),
     })
+    if (questions && re !== undefined) {
+      const { messages } = await tx.doc(Messages, ROOT_CONVERSATION_ID)
+      const clarification = messages.find((m) => m.id === re && m.clarifies)
+      const replaced = messages.find((m) => m.id === clarification?.re)
+      if (replaced && openQuestion(replaced) && replaced.from === from) {
+        replaced.state = 'dismissed'
+        replaced.replacedBy = message.id
+      }
+    }
     await host.emit(tx, MessageSent, {
       message: message.id,
       from,
@@ -212,7 +224,11 @@ export async function send(
     if (primaryId !== undefined) {
       const asked = to === 'user' && message.reply && from !== primaryId && typeof from === 'number'
       const answered =
-        from === 'user' && answerId !== undefined && typeof to === 'number' && to !== primaryId
+        from === 'user' &&
+        answerId !== undefined &&
+        !input.clarify &&
+        typeof to === 'number' &&
+        to !== primaryId
       const notification = asked
         ? {
             kind: 'board.asked' as const,
@@ -263,7 +279,7 @@ export async function send(
     if (userAnswerNotAlreadyCountedInChat)
       await host.emit(tx, UserInputEvent, {
         conversation: to,
-        kind: input.dismiss ? 'dismiss' : 'answer',
+        kind: input.dismiss ? 'dismiss' : input.clarify ? 'clarify' : 'answer',
         message: message.id,
         length: input.dismiss ? 0 : input.text.length,
         ...device,

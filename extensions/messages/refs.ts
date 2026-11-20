@@ -63,6 +63,10 @@ export type Message = {
   questions?: Question[]
   /** A user answer or dismissal that @ultimate settled for the user, not their own click. */
   via?: Via
+  /** A user note on an open card that answers none of its questions: the card stays open. */
+  clarifies?: true
+  /** The card the asker sent in answer to a clarification, which closed this one. */
+  replacedBy?: number
   /** An open card carried over from an earlier chapter: that chapter, its message id there and who asked it. */
   carried?: Carried
 }
