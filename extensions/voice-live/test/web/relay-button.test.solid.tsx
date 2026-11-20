@@ -11,6 +11,7 @@ const harness = vi.hoisted(() => ({
   sources: [] as FakeSource[],
   server: undefined as ReturnType<typeof fakeSubscriptions> | undefined,
   available: false,
+  engine: 'gpt-live',
 }))
 
 vi.mock('../../../../web/src/sdk/client.ts', async () => {
@@ -22,7 +23,13 @@ vi.mock('../../../../web/src/sdk/client.ts', async () => {
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = input as string
     if (path === '/api/extensions/voice-live/actions/status')
-      return Response.json({ result: { available: harness.available } })
+      return Response.json({
+        result: {
+          available: harness.available,
+          engine: harness.engine,
+          ...(!harness.available && { reason: 'Speech worker unavailable' }),
+        },
+      })
     return subscriptions.handle(path, init) ?? Response.json({ ok: true })
   }
   const { answerReadsWith } = await import('../../../../test/web/fake-source.ts')
@@ -38,6 +45,11 @@ vi.mock('../../../../web/src/sdk/client.ts', async () => {
   const api = createApi(store, { fetch: pageFetch })
   return { store, api, reads: createReads(api, store), uiState: createUiState(undefined) }
 })
+
+vi.mock('../../../sounds/ui.solid.tsx', () => ({
+  playNotes: async () => undefined,
+  voiceQuestions: () => undefined,
+}))
 
 import { store } from '../../../../web/src/sdk/client.ts'
 import { events } from '@/sdk/solid'
@@ -84,6 +96,23 @@ it('opens Secrets from the relay button and updates when the key becomes availab
     [{ name: 'OPENAI_API_KEY' }],
   ])
 
+  harness.engine = 'local'
+  events.emit('secrets:changed', undefined)
+  await settle()
+  flush()
+  const localLabel = 'Local voice is not set up: Speech worker unavailable'
+  expect(button.getAttribute('aria-label')).toBe(localLabel)
+  expect(await agent.act({ steps: [{ ref: localLabel, action: 'press' }] })).toMatchObject({
+    ok: true,
+  })
+  flush()
+  expect(live.voiceMode()).toMatchObject({
+    engine: 'local',
+    problem: 'Speech worker unavailable',
+    phase: 'off',
+  })
+  expect(openSecrets).toHaveBeenCalledTimes(2)
+  live.clearProblem()
   harness.available = true
   events.emit('secrets:changed', undefined)
   await settle()

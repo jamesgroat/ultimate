@@ -30,6 +30,8 @@ import {
 import type { OpenAiError } from '../../lib/openai.ts'
 import { formatAgo } from '../../lib/format.ts'
 import { openQuestion } from '../../lib/message-state.ts'
+import { readSettings, userSettingsPath } from '../../lib/settings.ts'
+import { meansNone } from '../../lib/errors.ts'
 import { Messages, MessagesApi } from '../messages/api.ts'
 import type { Message, Question } from '../messages/api.ts'
 import { Standing, SubagentsApi } from '../subagents/api.ts'
@@ -41,6 +43,7 @@ import {
   HeardAction,
   LogAction,
   StartAction,
+  StartLocalAction,
   StatusAction,
 } from './refs.ts'
 import {
@@ -54,6 +57,7 @@ import {
 import type {
   VoiceAnswer,
   VoiceContext,
+  VoiceEngine,
   VoiceGo,
   VoiceLine,
   VoiceQuestion,
@@ -63,14 +67,43 @@ import { voiceBrief } from './brief.ts'
 import { safeToRerun } from '../../lib/replay.ts'
 
 const NO_KEY = `Live voice needs an OpenAI API key: add ${SECRET} in ⌘K → Secrets`
-export const secrets = [
-  {
-    name: SECRET,
-    description: 'OpenAI API key for live voice',
-    url: 'https://platform.openai.com/api-keys',
-    provider: 'openai',
-  },
-]
+export const secrets: { name: string; description: string; url: string; provider: string }[] = []
+export const reloadOnSettings = true
+
+export async function voiceEngine(
+  host: Pick<ExtensionHost, 'userHome' | 'projectSettings'>,
+): Promise<VoiceEngine> {
+  const user = (await readSettings(userSettingsPath(host.userHome)).catch(meansNone)) ?? {}
+  for (const settings of [await host.projectSettings(), user]) {
+    const section = (settings as { voiceLive?: unknown }).voiceLive
+    const engine =
+      section && typeof section === 'object' && (section as { engine?: unknown }).engine
+    if (engine === 'local' || engine === 'gpt-live') return engine
+  }
+  return 'gpt-live'
+}
+
+const NO_LOCAL =
+  'Local voice needs the speak extension and its open-model venv (~/.ultimate/extensions/speak/README.md)'
+
+async function localStatus(host: ExtensionHost, signal: AbortSignal) {
+  try {
+    const status = (await host.invoke('speak', 'sttStatus', {}, signal)) as {
+      ready: boolean
+      hint?: string
+    }
+    return status.ready
+      ? { available: true as const }
+      : { available: false as const, reason: status.hint ?? NO_LOCAL }
+  } catch (error) {
+    return { available: false as const, reason: `${NO_LOCAL}: ${String(error)}` }
+  }
+}
+
+const engineNote = (engine: VoiceEngine) =>
+  engine === 'local'
+    ? 'Audio for this session: local speech recognition and synthesis, no GPT-Live. Nothing answers the user unless you do: answer connection checks, greetings, thanks and small talk yourself with one short voice_say. voice_note has no listener; do not use it.'
+    : 'Audio for this session: GPT-Live, which answers connection checks, greetings, thanks and small talk itself.'
 
 export function liveInstructions() {
   return `Listen to the user. Speak exactly the commentary you receive, in the user's language, without adding content. Never answer questions about their work yourself or announce a handoff on your own.
@@ -92,7 +125,7 @@ const ForwardReceipt = defineDoc<{ scheduled: boolean }>({
   scope: 'task',
   initial: () => ({ scheduled: false }),
 })
-export const userActions = ['status', 'start', 'heard', 'asked', 'log', 'end']
+export const userActions = ['status', 'start', 'startLocal', 'heard', 'asked', 'log', 'end']
 const terminal = {
   status: 'terminal',
   outcome: { status: 'completed', result: null },
@@ -467,37 +500,74 @@ function liveFailureWithProviderReason({ status, message, code }: OpenAiError) {
   return `OpenAI live session failed (HTTP ${status}${code ? ` ${code}` : ''})${said}`
 }
 
+async function sessionBrief(host: ExtensionHost, engine: VoiceEngine): Promise<VoiceContext> {
+  const main = (await host.harness().snapshot(Standing, ROOT_CONVERSATION_ID, context))?.ultimate
+  const started = performance.now()
+  return (
+    main ? voiceBrief(host, main, context) : Promise.reject(new Error('@ultimate is not available'))
+  ).then(
+    (made) => ({
+      ...made,
+      text: made.text.replace('</voice_context>', `\n${engineNote(engine)}\n</voice_context>`),
+      ms: Math.round(performance.now() - started),
+    }),
+    (error: unknown): VoiceContext => ({
+      text: '',
+      memories: 0,
+      requests: 0,
+      branches: 0,
+      tokens: 0,
+      at: Date.now(),
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  )
+}
+
+async function begin(
+  host: ExtensionHost,
+  id: ConversationId,
+  session: string,
+  brief: Promise<VoiceContext>,
+) {
+  await writeDisplayOnlyEntry(
+    host,
+    id,
+    'voice.session',
+    { phase: 'started', at: Date.now() },
+    `voice:start:${session}`,
+  )
+  const briefs = pendingBriefs(host)
+  const placing = brief
+    .then((made) => queueLatestBrief(host, id, session, made))
+    .catch((error: unknown) => console.error('Voice brief:', error))
+    .finally(() => {
+      if (briefs.get(id) === placing) briefs.delete(id)
+    })
+  briefs.set(id, placing)
+}
+
 export const actions = {
-  status: implementAction(StatusAction, async (_args, { host, signal }) =>
-    (await openaiSecretOrNonOAuthKey(host, signal))
-      ? { available: true as const }
-      : { available: false as const, reason: NO_KEY },
-  ),
+  status: implementAction(StatusAction, async (_args, { host, signal }) => {
+    const engine = await voiceEngine(host)
+    if (engine === 'local') return { engine, ...(await localStatus(host, signal)) }
+    return (await openaiSecretOrNonOAuthKey(host, signal))
+      ? { engine, available: true as const }
+      : { engine, available: false as const, reason: NO_KEY }
+  }),
+  startLocal: implementAction(StartLocalAction, async (_args, { host, signal }) => {
+    const status = await localStatus(host, signal)
+    if (!status.available) throw new Error(status.reason)
+    const id = await host.need(SubagentsApi).standing('voice', context)
+    await begin(host, id, `local-${crypto.randomUUID()}`, sessionBrief(host, 'local'))
+    return { conversation: id }
+  }),
   start: implementAction(StartAction, async (args, { host, signal }) => {
     const sdp = args && typeof args === 'object' && !Array.isArray(args) ? args.sdp : undefined
     if (typeof sdp !== 'string' || !sdp.trim()) throw new Error('Expected an SDP offer')
     const key = await openaiSecretOrNonOAuthKey(host, signal)
     if (!key) throw new Error(NO_KEY)
     const id = await host.need(SubagentsApi).standing('voice', context)
-
-    const main = (await host.harness().snapshot(Standing, ROOT_CONVERSATION_ID, context))?.ultimate
-    const started = performance.now()
-    const advisoryBrief = (
-      main
-        ? voiceBrief(host, main, context)
-        : Promise.reject(new Error('@ultimate is not available'))
-    ).then(
-      (made) => ({ ...made, ms: Math.round(performance.now() - started) }),
-      (error: unknown): VoiceContext => ({
-        text: '',
-        memories: 0,
-        requests: 0,
-        branches: 0,
-        tokens: 0,
-        at: Date.now(),
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    )
+    const brief = sessionBrief(host, 'gpt-live')
     const sessionSeedLineLimit = 10
     const sessionSeedLineCharsBelowTokenCap = 200
     const recent = await host.harness().commit((tx) => lines(tx, id, sessionSeedLineLimit), context)
@@ -538,21 +608,7 @@ export const actions = {
     }
     if (!answer.session?.id || answer.transport?.type !== 'webrtc' || !answer.transport.sdp)
       throw new Error('OpenAI returned no WebRTC session answer')
-    await writeDisplayOnlyEntry(
-      host,
-      id,
-      'voice.session',
-      { phase: 'started', at: Date.now() },
-      `voice:start:${answer.session.id}`,
-    )
-    const briefs = pendingBriefs(host)
-    const placing = advisoryBrief
-      .then((made) => queueLatestBrief(host, id, answer.session!.id!, made))
-      .catch((error: unknown) => console.error('Voice brief:', error))
-      .finally(() => {
-        if (briefs.get(id) === placing) briefs.delete(id)
-      })
-    briefs.set(id, placing)
+    await begin(host, id, answer.session.id, brief)
     return { sdp: answer.transport.sdp, conversation: id }
   }),
   heard: implementAction(HeardAction, async (args, { host }) => {
@@ -640,7 +696,15 @@ export const actions = {
   }),
 }
 
-export default (host: ExtensionHost) => {
+export default async (host: ExtensionHost) => {
+  secrets.length = 0
+  if ((await voiceEngine(host)) === 'gpt-live')
+    secrets.push({
+      name: SECRET,
+      description: 'OpenAI API key for live voice',
+      url: 'https://platform.openai.com/api-keys',
+      provider: 'openai',
+    })
   async function commitForwardOnce(
     api: ToolExecutionApi,
     ctx: Context,
