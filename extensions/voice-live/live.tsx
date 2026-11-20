@@ -5,11 +5,12 @@ import type { ActionRef } from '@/sdk'
 import { playNotes, voiceQuestions } from '../sounds/ui.tsx'
 import type { Note } from '../sounds/ui.tsx'
 import { StatusAction } from './refs.ts'
-import type { VoiceStatus } from './refs.ts'
+import type { VoiceEngine, VoiceStatus } from './refs.ts'
 import { IDLE_MS } from './relay.ts'
 import type { LiveEvent } from './relay.ts'
 import { startMicInGesture } from './session.ts'
 import type { LiveSession } from './session.ts'
+import { startLocal } from './session-local.ts'
 
 export type Phase = 'off' | 'starting' | 'live' | 'paused' | 'ending'
 export type VoiceMode = {
@@ -23,6 +24,7 @@ export type VoiceMode = {
   partial?: string
   sending?: { text: string; at: number }
   speaking?: { entry: number; words: number; at: number }
+  engine?: VoiceEngine
 }
 
 let pageMode: VoiceMode = { phase: 'off', muted: false, front: false }
@@ -34,7 +36,8 @@ let closeInFlight: Promise<void> | undefined
 let stopTicking: Cancel | undefined
 const listeners = new Set<() => void>()
 
-const alwaysOnCues: Record<'ready' | 'paused' | 'ended' | 'failed', Note[]> = {
+const alwaysOnCues: Record<'ready' | 'paused' | 'ended' | 'failed' | 'heard', Note[]> = {
+  heard: [[0, 1318.51, 0.18]],
   ready: [
     [0, 783.99, 0.25],
     [0.1, 1046.5, 0.45],
@@ -136,14 +139,25 @@ export const setFront = (front: boolean) => publishMode({ front })
 export const clearProblem = () => publishMode({ problem: undefined })
 
 let gestureKeyStatus: VoiceStatus | undefined
-export const rememberStatus = (next: VoiceStatus) => (gestureKeyStatus = next)
+export const rememberStatus = (next: VoiceStatus) => {
+  gestureKeyStatus = next
+  if (next.engine !== pageMode.engine) publishMode({ engine: next.engine })
+}
 
 export async function start() {
-  gestureKeyStatus ??= await api.action(StatusAction)
-  if (!gestureKeyStatus.available) return events.emit('secrets:open', { name: 'OPENAI_API_KEY' })
+  if (!gestureKeyStatus) rememberStatus(await api.action(StatusAction))
+  if (!gestureKeyStatus!.available) {
+    if (gestureKeyStatus!.engine === 'local')
+      return publishMode({ problem: gestureKeyStatus!.reason }, true)
+    return events.emit('secrets:open', { name: 'OPENAI_API_KEY' })
+  }
   await open()
 }
 
+export function stopSpeaking() {
+  session?.stopSpeaking?.()
+  publishMode({ speaking: undefined })
+}
 export const analyser = () => session?.analyser
 
 const describe = (error: unknown) => {
@@ -261,10 +275,14 @@ export async function open(speech?: string, entry?: number): Promise<void> {
   if (closeInFlight) await closeInFlight
   let started: LiveSession
   try {
-    started = await startMicInGesture({
+    started = await (pageMode.engine === 'local' ? startLocal : startMicInGesture)({
       action: callTypedAction,
       onEvent,
       onError: (error) => publishMode({ problem: describe(error) }),
+      onLine: () =>
+        playNotes(alwaysOnCues.heard, 0.035).catch((error: unknown) =>
+          console.warn('Voice cue failed', error),
+        ),
     })
   } catch (error) {
     const waiting = startupSpeech.at(-1)?.text
