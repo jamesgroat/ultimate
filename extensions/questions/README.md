@@ -81,8 +81,10 @@ shows progress. Kinds: `choice` (one option), `multi` (any), `confirm` (Yes/No),
 labels) and `text` (a field); options offer “Something else…” with an inline field, and an option's Markdown `preview`
 shows beside the options for the hovered or chosen one. Recommended options (@ultimate's picks, also on a branch's card) carry a “my pick” chip and
 come already chosen: the card opens with them in its draft, on the first question without a pick. Under the questions,
-a note field is always there: whatever it holds goes after the answer lines, or on its own (“Send note”), and never
-changes a pick. Send sends what is answered (“Send 2 of 5”). Sending locks the card as it is and turns Send into
+a note field is always there: whatever it holds goes after the answer lines and never changes a pick. On its own,
+with nothing picked, it asks (“Ask”) instead of answering: a line under the field says the card stays open and points
+to Talk it through; once it is sent the field empties and the card stays answerable. The asked notes and the asker's
+prose replies to them show above the questions, as a short thread. Send sends what is answered (“Send 2 of 5”). Sending locks the card as it is and turns Send into
 **Undo**, which fills over a 3 s window before the answer goes out; Undo keeps the picks and the note. Holding Send for
 1 s fills it and sends at once, with no window; released earlier it is a plain click. With Reduce Motion the fills
 advance in steps. Dismiss closes the message without an answer. Beside it, the `questions.card-actions` point
@@ -119,7 +121,8 @@ Both are user-only.
 - `answer { messageId, answers: [{ question, answer }], note? }`, a multi answer as its list of labels, validates against the message's questions, refusing
   unknown or duplicate answers, and posts a normal user reply to the sender with `re: messageId`, one paragraph per
   answer in the message's own numbering: `1a. Topic: option` for an option, `2a,c. Topic: a, c` for several, `3: text` for typed text or a rating (`Topic: answer` when the message numbered
-  nothing), then `Note: …`; with no answers the note alone is the reply. Returns `{ id }`. `answer { messageId, text }`
+  nothing), then `Note: …`; with no answers the note alone is the reply, a clarification that leaves the message open
+  (see [Messages](../messages/README.md)). Returns `{ id }`. `answer { messageId, text }`
   posts `text` instead, for a message with or without questions. Messages admission atomically verifies that the
   original remains open, so concurrent answers produce exactly one reply; normal Messages delivery wakes the sender.
 - `dismiss { messageId }` marks the message `dismissed` and posts a one-way user note to the sender with `re`, in one

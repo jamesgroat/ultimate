@@ -4,7 +4,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, it, vi } from 'vitest'
 import type { CardState } from '../../state.tsx'
 
-const shell = vi.hoisted(() => ({ cards: {} as Record<string, CardState> }))
+const shell = vi.hoisted(() => ({
+  cards: {} as Record<string, CardState>,
+  messages: [] as unknown[],
+}))
 vi.mock('@/sdk', () => ({
   ROOT: 1,
   api: { action: () => Promise.resolve({}) },
@@ -13,7 +16,7 @@ vi.mock('@/sdk', () => ({
   errorMessage: (error: unknown) => String(error),
   Provided: () => null,
   useConversation: () => undefined,
-  useDocOf: () => undefined,
+  useDocOf: () => ({ messages: shell.messages }),
   useUiState: () => [shell.cards, () => {}],
   useViewport: () => 'desktop',
 }))
@@ -45,6 +48,27 @@ const render = () => renderToStaticMarkup(createElement(MessageQuestions, { mess
 
 beforeEach(() => {
   shell.cards = {}
+  shell.messages = []
+})
+
+// The bug: typing "why?" into the note and sending it closed the card as answered, and the decision was lost.
+// A note without picks asks: the card says so, stays open, and shows the question and the asker's reply above it.
+it('asks with a note alone and keeps the card open with its thread', () => {
+  shell.cards = { 'message:5': { drafts: {}, note: 'Why now?', current: 0, text: '' } }
+  let html = render()
+  expect(html).toContain('>Ask<')
+  expect(html).toContain('Talk it through')
+
+  shell.cards = {}
+  shell.messages = [
+    message,
+    { id: 6, from: 'user', to: 2, re: 5, clarifies: true, text: 'Why now?' },
+    { id: 7, from: 2, to: 'user', re: 6, text: 'The login expires Friday.' },
+  ]
+  html = render()
+  expect(html).toContain('Why now?')
+  expect(html).toContain('The login expires Friday.')
+  expect(html).toContain('0/2')
 })
 
 // The bug: switching to another surface and back emptied the card, the user had to answer again. Its state is

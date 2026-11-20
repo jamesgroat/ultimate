@@ -20,6 +20,7 @@ import {
   useUiState,
   useViewport,
 } from '@/sdk'
+import { MessageResponse } from '@/components/ai/message'
 import { CardActions } from './points.tsx'
 import type { Reply } from './refs.ts'
 import type { Question } from '../messages/refs.ts'
@@ -127,6 +128,7 @@ export function MessageQuestions({
   return (
     <Card
       card={card}
+      thread={<Clarifications message={message} />}
       questions={questions}
       keys={questions.length > 0 && (keys ?? shown)}
       submit={(answers, note, keepalive) =>
@@ -144,6 +146,38 @@ export function MessageQuestions({
       dismiss={() => transport.dismiss({ messageId: message.id })}
       {...(className === undefined ? {} : { className })}
     />
+  )
+}
+
+function Clarifications({ message }: { message: Message }) {
+  const messages = useDocOf(ROOT, MessagesDoc)?.messages ?? []
+  const thread = messages
+    .filter((m) => m.from === 'user' && m.re === message.id && m.clarifies)
+    .flatMap((asked) => [
+      asked,
+      ...messages.filter((m) => m.re === asked.id && m.from === message.from && !m.questions),
+    ])
+  if (!thread.length) return null
+  return (
+    <div className="space-y-1.5 border-b border-border/60 px-3 py-2.5" data-clarifications>
+      {thread.map((m) => (
+        <div
+          className={cn(
+            'rounded-md px-3 py-2 text-[13px] leading-relaxed',
+            m.from === 'user'
+              ? 'ml-8 border border-border/70 bg-secondary/60'
+              : 'mr-8 bg-background/40',
+          )}
+          data-clarification={m.id}
+          key={m.id}
+        >
+          <div className="pb-0.5 font-mono text-[11px] text-muted-foreground">
+            {m.from === 'user' ? 'You asked' : 'Reply'}
+          </div>
+          <MessageResponse>{m.text}</MessageResponse>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -374,9 +408,11 @@ function Card({
   dismiss,
   actions,
   sendLabel,
+  thread,
   className = 'border-t border-border/60',
 }: {
   card: string
+  thread?: ReactNode
   questions: Question[]
   keys: boolean
   submit: (answers: Answer[], note?: string, keepalive?: boolean) => Promise<unknown>
@@ -482,12 +518,17 @@ function Card({
     committed.current = true
     cancelAdvanceAfterCheck.current?.()
     setLockedIn({ drafts, note })
+    const asksWithoutAnswering = !ready.length
     const fire = (keepalive = false) => {
       undoWindowSend.current = undefined
       setPhase('sending')
       setError(undefined)
       submit(ready, extra || undefined, keepalive).then(
-        () => setPhase('sent'),
+        () => {
+          if (!asksWithoutAnswering) return setPhase('sent')
+          setState((old) => ({ ...old, note: '' }))
+          unlock()
+        },
         (failure: unknown) => {
           unlock()
           setError(errorMessage(failure))
@@ -639,6 +680,7 @@ function Card({
   const unanswered = questions.length - ready.length
   return (
     <div className={className} data-questions-card={card} ref={root}>
+      {thread}
       <div className="flex items-center gap-2 px-3 pt-2.5 pb-1 font-mono text-[11px] text-muted-foreground">
         <MessageCircleQuestionIcon className="size-3.5 text-brand" />
         <span className="text-foreground">
@@ -679,6 +721,21 @@ function Card({
           onChange={(value) => setState((old) => ({ ...old, note: value }))}
           onSend={() => send()}
         />
+        {sendLabel === undefined && !ready.length && note.trim() && !locked && (
+          <p className="pt-1 text-[11px] text-muted-foreground" data-asks-hint>
+            Asks without answering; the card stays open. To discuss first, use{' '}
+            <button
+              className="cursor-pointer text-brand hover:underline"
+              onClick={() =>
+                root.current?.querySelector<HTMLButtonElement>('[data-talk-it-through]')?.click()
+              }
+              type="button"
+            >
+              Talk it through
+            </button>
+            .
+          </p>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2 px-3 pt-2 pb-2.5">
         {hints && phase === 'undo' && (
@@ -739,7 +796,7 @@ function Card({
           >
             {sendLabel ??
               (!ready.length && note.trim()
-                ? 'Send note'
+                ? 'Ask'
                 : unanswered && ready.length
                   ? `Send ${ready.length} of ${questions.length}`
                   : 'Send')}

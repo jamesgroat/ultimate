@@ -63,6 +63,10 @@ export type Message = {
   questions?: Question[]
   /** A user answer or dismissal that @ultimate settled for the user, not their own click. */
   via?: Via
+  /** A user note on an open card that answers none of its questions: the card stays open. */
+  clarifies?: true
+  /** The card the asker sent in answer to a clarification, which closed this one. */
+  replacedBy?: number
 }
 /** Where @ultimate settled a question for the user: its conversation, and the user's input it read the answer from. */
 export type Via = { conversation: ConversationId; entry?: EntryId }

@@ -58,7 +58,7 @@ type InputCharacterCount = number
 export const UserInputEvent = defineEvent<
   {
     conversation: ConversationId
-    kind: 'prompt' | 'steer' | 'follow-up' | 'answer' | 'dismiss' | 'review'
+    kind: 'prompt' | 'steer' | 'follow-up' | 'answer' | 'clarify' | 'dismiss' | 'review'
     entry?: EntryId
     submission?: number
     message?: number
