@@ -40,7 +40,8 @@ carry it as their sender, and peers key `remotes` on it, so it must not change w
 launchd can). Resolution (`lib/machine.ts`): `ULTIMATE_MACHINE`, then the older `ULTIMATE_CLOUD_MACHINE`, then
 `machine`, then `cloud.machine`, then the OS hostname; cloud backups register the same name. A tell naming any of this
 host's names (the configured ones, the OS hostname, its short form, and on macOS `<LocalHostName>` and
-`<LocalHostName>.local`) resolves here.
+`<LocalHostName>.local`) resolves here, unless `remotes` names that machine explicitly. With `machine` or
+`ULTIMATE_MACHINE` set, joining cloud backups under another name is refused.
 `remotes` (user settings only, `{ "<machine>": { "<project>": "<url>" } }`) names other machines' Ultimate instances,
 for example `{ "laptop": { "my-app": "https://laptop.tail1234.ts.net:4747" } }`: codemode's `{ project }` reads and
 `ultimate.tell` reach a project on another machine at that URL (its Tailscale Serve address; the caller's tailnet login

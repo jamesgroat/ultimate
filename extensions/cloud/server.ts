@@ -6,6 +6,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import type { EventToken } from '../../shared/events.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { cloudConfig, fetchRegister } from '../../lib/cloud.ts'
+import { pinnedMachineName } from '../../lib/machine.ts'
 import { projectIdentity } from '../../lib/project-identity.ts'
 import { readSecret } from '../../lib/secrets.ts'
 import { CloudApi } from './api.ts'
@@ -185,6 +186,7 @@ export const actions = {
         fetch: (input, init) => fetch(input, init),
         setSecret: (name, value) => store.set(name, value),
         saveCloud: saveCloud(host.userHome),
+        pinnedMachine: await pinnedMachineName(host.userHome),
       },
       args && typeof args === 'object' && !Array.isArray(args) ? args : {},
     )

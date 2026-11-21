@@ -15,13 +15,19 @@ async function configuredNames(userHome: string, env: NodeJS.ProcessEnv) {
     cloud && typeof cloud === 'object' && !Array.isArray(cloud)
       ? (cloud as Record<string, unknown>).machine
       : undefined
-  return [env.ULTIMATE_MACHINE, env.ULTIMATE_CLOUD_MACHINE, settings.machine, cloudMachine].flatMap(
+  const pinned = [env.ULTIMATE_MACHINE, env.ULTIMATE_CLOUD_MACHINE, settings.machine].flatMap(
     (value) => named(value) ?? [],
   )
+  const cloudName = named(cloudMachine)
+  return { pinned: pinned[0], all: cloudName ? [...pinned, cloudName] : pinned }
+}
+
+export async function pinnedMachineName(userHome: string, env: NodeJS.ProcessEnv = process.env) {
+  return (await configuredNames(userHome, env)).pinned
 }
 
 export async function machineName(userHome: string, env: NodeJS.ProcessEnv = process.env) {
-  return (await configuredNames(userHome, env))[0] ?? hostname()
+  return (await configuredNames(userHome, env)).all[0] ?? hostname()
 }
 
 let localHostName: Promise<string | undefined> | undefined
@@ -41,7 +47,7 @@ export async function isThisMachine(
 ) {
   const local = await macLocalHostName()
   const names = [
-    ...(await configuredNames(userHome, env)),
+    ...(await configuredNames(userHome, env)).all,
     hostname(),
     hostname().split('.')[0],
     ...(local ? [local, `${local}.local`] : []),

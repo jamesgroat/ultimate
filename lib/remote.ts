@@ -89,11 +89,17 @@ export async function locate(host: ExtensionHost, project: string, machine?: str
       key: project.includes('/') && item.root ? (await projectIdentity(item.root))?.key : undefined,
     })),
   )
-  const here = machine === undefined ? undefined : await isThisMachine(host.userHome, machine)
+  const remotes = () => userConfiguredRemotes(host)
+  const here =
+    machine === undefined
+      ? undefined
+      : machine === (await machineName(host.userHome)) ||
+        (!(await remotes()).some((item) => item.machine === machine) &&
+          (await isThisMachine(host.userHome, machine)))
   const runsHere = local.some((item) => naming(project)(item) && (item.current || item.running))
   if (here !== false && runsHere) return resolveProject(project, local, undefined)
   if (here !== true) {
-    const named = (await userConfiguredRemotes(host)).filter(
+    const named = (await remotes()).filter(
       (item) => naming(project)(item) && (machine === undefined || item.machine === machine),
     )
     if (named.length > 1)
