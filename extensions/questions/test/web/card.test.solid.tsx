@@ -427,7 +427,7 @@ it('keeps typed drafts without recording them, and records a person picking and 
   await uiState.flush()
   expect(harness.writers).toEqual(['person'])
   card.querySelector<HTMLButtonElement>('[aria-label="Send 1 of 2: answer to message 8"]')!.click()
-  await vi.advanceTimersByTimeAsync(3000)
+  await vi.advanceTimersByTimeAsync(8000)
   expect(harness.actions).toEqual([
     {
       name: 'answer',

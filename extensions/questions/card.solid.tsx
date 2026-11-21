@@ -496,7 +496,7 @@ function AnswerCard(props: CardProps & { id: number }) {
           <Button
             size={null}
             variant={null}
-            aria-label={`Undo sending your answer to message ${props.id}`}
+            aria-label={`Take back your answer to message ${props.id}`}
             title="Take your answer back; your picks and note stay"
             class="absolute inset-0 z-10 cursor-pointer rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-ring"
             onClick={undo}
