@@ -1,7 +1,7 @@
-import { hostname } from 'node:os'
 import type { JsonValue } from '@earendil-works/chord/json'
 import { cloudConfig, fetchRegister } from './cloud.ts'
 import type { Register } from './cloud.ts'
+import { isThisMachine, machineName } from './machine.ts'
 import { projectIdentity } from './project-identity.ts'
 import { readSettings, userSettingsPath } from './settings.ts'
 import type { ExtensionHost } from '../server/extensions.ts'
@@ -75,14 +75,10 @@ async function userConfiguredRemotes(host: Pick<ExtensionHost, 'userHome'>) {
   )
 }
 
-async function machineName(host: Pick<ExtensionHost, 'userHome' | 'notice'>) {
-  return (await cloudConfig(host))?.machine ?? hostname()
-}
-
 export async function selfAddress(host: ExtensionHost) {
   const current = (await host.projects()).find((item) => item.current)
   if (!current) throw new Error('This project is not listed among the projects')
-  return { project: current.name, machine: await machineName(host) }
+  return { project: current.name, machine: await machineName(host.userHome) }
 }
 
 export async function locate(host: ExtensionHost, project: string, machine?: string) {
@@ -93,7 +89,7 @@ export async function locate(host: ExtensionHost, project: string, machine?: str
       key: project.includes('/') && item.root ? (await projectIdentity(item.root))?.key : undefined,
     })),
   )
-  const here = machine === undefined ? undefined : machine === (await machineName(host))
+  const here = machine === undefined ? undefined : await isThisMachine(host.userHome, machine)
   const runsHere = local.some((item) => naming(project)(item) && (item.current || item.running))
   if (here !== false && runsHere) return resolveProject(project, local, undefined)
   if (here !== true) {
