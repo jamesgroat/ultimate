@@ -16,10 +16,11 @@ OpenAI key; the only cloud call is the Voice agent's model. Everything after a f
 answer task, transcript and dock) is shared; only the audio layer differs.
 
 - `session-local.ts` replaces `session.ts`: the microphone (with the browser's echo cancellation) feeds a level gate.
-  A 400 ms pause cuts the utterance; it goes as 16 kHz PCM to `speak/transcribe`, where Silero drops non-speech,
-  Parakeet-TDT 0.6B v3 transcribes and Smart Turn v3 judges whether the sentence is finished. An unfinished one is
-  held for up to 1.6 s more quiet. While the user talks, the words so far are transcribed every second for the live
-  line. A finished line plays one soft tick and goes through `heard` as usual.
+  A 400 ms pause cuts the utterance; it goes as 16 kHz PCM to `speak/transcribe`, where Silero drops non-speech
+  and Parakeet-TDT 0.6B v3 transcribes. There is no local unfinished-sentence hold: Voice uses the same instructions
+  as the GPT-Live path to read consecutive lines together and wait for an unfinished request to continue.
+  While the user talks, the words so far are transcribed every second for the live line. A finished line plays
+  one soft tick and goes through `heard` as usual.
 - `startLocal` writes the session divider and brief like `start`, without SDP. The brief tells Voice which audio
   layer it has: with local audio nothing else answers small talk, so Voice does, and `voice_note` has no listener.
 - Speech is half-duplex: `voice_say` lines render through `speak/render` with Kokoro sentence by sentence (the
@@ -29,9 +30,10 @@ answer task, transcript and dock) is shared; only the audio layer differs.
   what is missing instead of opening Secrets. `OPENAI_API_KEY` is declared only for `gpt-live` (the facet reloads on
   settings changes), so setup's Secrets check stays quiet with the local engine.
 
-Measured on an M4 Pro, warm: Silero + Parakeet + Smart Turn take about 45 ms per utterance and a Kokoro sentence
-90–220 ms. With Voice on `anthropic/claude-haiku-5-5` (a user overlay), one model request to a complete `voice_say`
-is about 1.0 s, so a spoken reply starts about 1.5–2 s after the user stops talking.
+Previously measured on an M4 Pro, warm, including Smart Turn: transcription took about 45 ms per utterance and a
+Kokoro sentence 90–220 ms. The local path no longer asks Smart Turn to judge completion. With Voice on
+`anthropic/claude-haiku-5-5` (a user overlay), one model request to a complete `voice_say` is about 1.0 s, so a spoken
+reply starts about 1.5–2 s after the user stops talking.
 
 ## Flow
 
