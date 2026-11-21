@@ -29,6 +29,7 @@ export interface JoinDeps {
   fetch: typeof fetch
   setSecret(name: string, value: string): Promise<unknown>
   saveCloud(cloud: { url: string; machine: string }): Promise<void>
+  pinnedMachine?: string
 }
 
 export async function join(
@@ -41,6 +42,10 @@ export async function join(
   if (!MACHINE.test(machine))
     return check(
       'The machine name takes letters, digits, dots, dashes and underscores (up to 64), starting with a letter or digit',
+    )
+  if (deps.pinnedMachine && machine !== deps.pinnedMachine)
+    return check(
+      `This machine is named ${deps.pinnedMachine} by the machine setting; backups register that name, so join as ${deps.pinnedMachine}`,
     )
   const token = typeof input.token === 'string' ? input.token.trim() : ''
   const snapshotKey = typeof input.snapshotKey === 'string' ? input.snapshotKey.trim() : ''
