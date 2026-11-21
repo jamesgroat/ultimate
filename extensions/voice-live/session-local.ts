@@ -4,7 +4,7 @@ import { actionRef } from '../../shared/extension-api.ts'
 import { EndAction, HeardAction, StartLocalAction } from './refs.ts'
 import type { LiveOptions, LiveSession } from './session.ts'
 
-type Transcript = { text: string; speech: boolean; complete?: boolean; ms: number }
+type Transcript = { text: string; speech: boolean; ms: number }
 const TranscribeAction = actionRef<{ pcm: string; turn?: boolean }, Transcript>(
   'speak',
   'transcribe',
@@ -17,7 +17,6 @@ const RenderAction = actionRef<
 
 const RATE = 16_000
 export const CUT_MS = 400
-export const HOLD_MS = 1600
 const PARTIAL_MS = 1000
 const PREROLL_MS = 300
 const ECHO_TAIL_MS = 350
@@ -93,7 +92,7 @@ export async function startLocal(
   let voicedAt = 0
   let quietSince = 0
   let words = ''
-  let cut: 'none' | 'pending' | 'held' = 'none'
+  let cut: 'none' | 'pending' = 'none'
   let partialAt = 0
   let partialBusy = false
   let floor = 0.004
@@ -125,22 +124,20 @@ export async function startLocal(
     options.onLine?.()
     send(text)
   }
-  const transcribe = async (turn: boolean) =>
-    options.action(TranscribeAction, { pcm: toPcm(heard, audioContext.sampleRate), turn })
+  const transcribe = async () =>
+    options.action(TranscribeAction, { pcm: toPcm(heard, audioContext.sampleRate), turn: false })
 
   const cutNow = () => {
     cut = 'pending'
     const length = heard.length
     inProcess(
       'a voice turn belongs to the open browser page',
-      transcribe(true)
+      transcribe()
         .then((result) => {
           if (releasing || cut !== 'pending') return
           if (heard.length !== length && voicedAt > quietSince) return void (cut = 'none')
           if (!result.speech) return reset()
-          words = result.text
-          if (result.complete !== false) finish(result.text)
-          else cut = 'held'
+          finish(result.text)
         })
         .catch((error: unknown) => {
           reset()
@@ -153,7 +150,7 @@ export async function startLocal(
     partialAt = Date.now()
     inProcess(
       'a partial transcript belongs to the open browser page',
-      transcribe(false)
+      transcribe()
         .then((result) => {
           if (cut === 'none' && heard.length && result.speech) words = result.text
         })
@@ -193,12 +190,10 @@ export async function startLocal(
       voicedAt = now
       activityAt = now
       quietSince = 0
-      if (cut === 'held') cut = 'none'
     } else quietSince ||= now
     const quiet = quietSince ? now - quietSince : 0
     if (heard.length * frameMs > MAX_MS) cutNow()
     else if (cut === 'none' && quiet >= CUT_MS) cutNow()
-    else if (cut === 'held' && quiet >= CUT_MS + HOLD_MS) finish(words)
     else if (cut === 'none' && !quiet && !partialBusy && now - partialAt >= PARTIAL_MS) partial()
   }
 
