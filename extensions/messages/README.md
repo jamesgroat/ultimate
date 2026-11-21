@@ -103,7 +103,8 @@ message is never the user's.
 For the caller: only @ultimate may call `tell`. `project` is the project's name as `ultimate.projects()` or the
 `remotes` user setting lists it, never a path; `machine` picks one machine from `remotes` when the project runs on
 several. A message from another project's @ultimate is answered by answering it: the reply returns automatically, and
-`tell` is refused while that message is open.
+`tell` is refused while that message is open. A sender names its machine by the `machine` user setting
+([Discovery and settings](../../docs/settings.md)); pin it so peers' `remotes` keep routing when the OS hostname changes.
 
 - **Sender:** codemode `ultimate.tell({ project, text, reply? })` (@ultimate only) posts the target's `messages.remote`
   action, located as codemode's `{ project }` reads are (`lib/remote.ts`). A failed post throws a sentence naming the

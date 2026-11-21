@@ -1,4 +1,4 @@
-import { hostname } from 'node:os'
+import { machineName } from './machine.ts'
 import { readSecret } from './secrets.ts'
 import { readSettings, userSettingsPath } from './settings.ts'
 import type { ExtensionHost } from '../server/extensions.ts'
@@ -34,8 +34,7 @@ export async function cloudConfig(
     })
     return undefined
   }
-  const machine =
-    env.ULTIMATE_CLOUD_MACHINE ?? (typeof config.machine === 'string' ? config.machine : hostname())
+  const machine = await machineName(host.userHome, env)
   const satelliteDoesNotOwnBackups = config.satellite === true
   return { url, token, machine, satellite: satelliteDoesNotOwnBackups }
 }
