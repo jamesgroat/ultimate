@@ -356,7 +356,7 @@ function AnswerCard(props: CardProps & { id: number }) {
     }
     if (immediately) fire()
     else {
-      const short = answers.length < questions().length
+      const short = answers.length > 0 && answers.length < questions().length
       setIncomplete(short)
       waiting = {
         cancel: deadline(short ? INCOMPLETE_UNDO_WINDOW_MS : ANSWER_UNDO_WINDOW_MS, fire),
@@ -498,7 +498,8 @@ function AnswerCard(props: CardProps & { id: number }) {
             variant={null}
             aria-label={`Take back your answer to message ${props.id}`}
             title="Take your answer back; your picks and note stay"
-            class="absolute inset-0 z-10 cursor-pointer rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            tabindex={-1}
+            class="absolute inset-0 z-10 cursor-pointer rounded-[inherit] outline-none"
             onClick={undo}
           />
         </Show>
