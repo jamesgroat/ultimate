@@ -126,7 +126,7 @@ export function SendButton(props: {
         else if (answering()) props.onSend(details.source)
       }}
       class={cn(
-        'relative isolate touch-manipulation overflow-hidden select-none [-webkit-touch-callout:none] max-md:h-11 max-md:px-4',
+        'relative isolate z-20 touch-manipulation overflow-hidden select-none [-webkit-touch-callout:none] max-md:h-11 max-md:px-4',
         !answering() &&
           (props.incomplete && undo()
             ? 'border-warning/60 bg-warning/10 text-foreground dark:border-warning/60 dark:bg-warning/10'
