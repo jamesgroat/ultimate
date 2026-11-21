@@ -5,6 +5,8 @@ import type { ExtensionHost } from '../server/extensions.ts'
 import { cloudConfig } from '../lib/cloud.ts'
 import { writeJson } from '../lib/json-file.ts'
 import { machineName } from '../lib/machine.ts'
+import { join as joinCloud } from '../extensions/cloud/join.ts'
+import type { JoinDeps } from '../extensions/cloud/join.ts'
 import { locate, selfAddress } from '../lib/remote.ts'
 import { writeSecret } from '../extensions/secrets/store.ts'
 import { temp } from './helpers.ts'
@@ -80,9 +82,46 @@ it("resolves this host's other names locally and still refuses another machine",
   )
 })
 
+it('routes to a remote the user keyed on a name that is also an alias of this host', async () => {
+  const host = await fixture({
+    machine: 'nevyn.malazan.groat.com',
+    remotes: {
+      nevyn: { onasset: 'https://nevyn.tail.ts.net:4748', blog: 'https://nevyn.tail.ts.net:4749' },
+    },
+  })
+  expect(await locate(host, 'onasset', 'nevyn')).toMatchObject({
+    url: 'https://nevyn.tail.ts.net:4748',
+  })
+  expect(await locate(host, 'blog', 'nevyn')).toMatchObject({
+    url: 'https://nevyn.tail.ts.net:4749',
+  })
+  expect(await locate(host, 'onasset', 'nevyn-4.local')).toMatchObject({
+    url: 'http://127.0.0.1:4748',
+  })
+})
+
 it('gives the cloud register the same machine name that messages advertise', async () => {
   const host = await fixture({ machine: 'desk', cloud: { url: 'wss://user/sync' } })
   await writeSecret(host.userHome, 'ULTIMATE_CLOUD_TOKEN', 'secret-token')
   expect((await cloudConfig(host, {}))?.machine).toBe('desk')
   expect((await selfAddress(host)).machine).toBe('desk')
+})
+
+it('refuses a cloud join under another name than the pinned one', async () => {
+  const deps = {
+    fetch: async () => Response.json({ projects: [] }),
+    setSecret: vi.fn<JoinDeps['setSecret']>(async () => undefined),
+    saveCloud: vi.fn<JoinDeps['saveCloud']>(async () => undefined),
+    pinnedMachine: 'desk',
+  }
+  const input = { url: 'wss://cloud.example', token: 't', snapshotKey: 'k' }
+  expect(await joinCloud(deps, { ...input, machine: 'backup-desk' })).toMatchObject({
+    ok: false,
+    error: expect.stringContaining('join as desk'),
+  })
+  expect(deps.saveCloud).not.toHaveBeenCalled()
+  expect(await joinCloud(deps, { ...input, machine: 'desk' })).toMatchObject({
+    ok: true,
+    machine: 'desk',
+  })
 })
