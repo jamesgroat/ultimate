@@ -16,7 +16,9 @@
   },
   "isolates": {
     "worktree": {
-      "setup": ["pnpm install --frozen-lockfile --prefer-offline"]
+      "setup": [
+        "s=$HOME/life/.ultimate/bin/seed-worktree-modules; if [ -x \"$s\" ]; then \"$s\" .; else pnpm install --frozen-lockfile --prefer-offline; fi"
+      ]
     }
   },
   "lander": {
