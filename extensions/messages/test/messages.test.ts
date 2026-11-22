@@ -2431,10 +2431,45 @@ it('refuses telling back an Ultimate whose question is open, and only @ultimate 
   await expect(
     f.service().tell(ROOT_CONVERSATION_ID, { project: 'poe2-rust', text: 'Yes' }, context),
   ).rejects.toThrow('is sent back automatically')
+  await expect(
+    f
+      .service()
+      .tell(ROOT_CONVERSATION_ID, { project: 'poe2-rust', text: 'Yes', reply: true }, context),
+  ).rejects.toThrow('is sent back automatically')
   f.hold.release()
   await expect(
     f.service().tell(f.recipient.id, { project: 'poe2-rust', text: 'Hi' }, context),
   ).rejects.toThrow("Only @ultimate tells another project's Ultimate")
+})
+it('allows a one-way tell while the target’s question stays open', async () => {
+  const other = await otherUltimate(() => [200, { result: 7 }])
+  const f = await remoteFixture(other.url)
+  await f.opened.root.submit({ type: 'input', content: 'HOLD' }, context)
+  await until(f.holding)
+  const question = await actions.remote(
+    { key: 'open-question', text: 'Proceed?', reply: true, from },
+    f.action(),
+  )
+  const before = (await f.log())!.messages.find((m) => m.id === question)
+  const serving = await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context)
+  const receipt = await f
+    .service()
+    .tell(
+      ROOT_CONVERSATION_ID,
+      { project: 'poe2-rust', text: 'Progress only', reply: false },
+      context,
+    )
+  expect(receipt.delivered).toBe(7)
+  expect(other.posted.map(({ body }) => body)).toEqual([
+    expect.objectContaining({ text: 'Progress only', reply: false }),
+  ])
+  expect((await f.log())!.messages.find((m) => m.id === receipt.message)).toMatchObject({
+    reply: false,
+    state: 'delivered',
+  })
+  expect((await f.log())!.messages.find((m) => m.id === question)).toEqual(before)
+  expect(await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context)).toEqual(serving)
+  f.hold.release()
 })
 it('names the project when another Ultimate cannot be reached, and marks the message failed', async () => {
   const closed = await otherUltimate(() => [200, {}])
@@ -2681,6 +2716,8 @@ it('a one-way update from the remote asker gives its request to the replacement 
   await create('A1')
   f.hold.release()
   await until(() => other.posted.length === 1)
+  const serving = await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context)
+  const request = (await f.log())!.messages.find((m) => m.remote?.key === key)
   f.holdAgain()
   await actions.remote(
     {
@@ -2692,6 +2729,8 @@ it('a one-way update from the remote asker gives its request to the replacement 
     f.action(),
   )
   await until(f.holding)
+  expect(await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context)).toEqual(serving)
+  expect((await f.log())!.messages.find((m) => m.remote?.key === key)).toEqual(request)
   await create('A2')
   f.hold.release()
   await until(() => other.posted.length === 2)

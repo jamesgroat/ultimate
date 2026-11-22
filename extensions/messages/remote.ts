@@ -92,7 +92,7 @@ export async function tell(
       m.remote.machine === (target.machine ?? self.machine) &&
       isOpen(m),
   )
-  if (openQuestionFromTarget)
+  if (reply && openQuestionFromTarget)
     throw new Error(
       `Your answer to ${remoteLabel(openQuestionFromTarget.remote!)}'s message ${openQuestionFromTarget.id} is sent back automatically. Answer instead of telling.`,
     )

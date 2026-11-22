@@ -41,7 +41,8 @@ report.**
   other inputs (the user's, another Ultimate's, a card) neither receive it nor keep it from a branch.
 - **Results to the asker.** A branch, waking automation or reply-expected `tell` started by @ultimate can own a request.
   New work takes it over if the run owes the request, reads its current owner's output or hears from its asker (their
-  newest open request). Only the current owner's result goes back. A branch's result is final once it is concluded;
+  newest open request). A one-way update's arrival alone does not change the owner; explicitly starting new work in
+  that run can. Only the current owner's result goes back. A branch's result is final once it is concluded;
   local askers receive a normal early answer and then a one-way result.
 - **Everything else wakes:** reply-enabled messages and one-way messages from anyone who is not the recipient's child or
   branch.
@@ -103,12 +104,14 @@ message is never the user's.
 For the caller: only @ultimate may call `tell`. `project` is the project's name as `ultimate.projects()` or the
 `remotes` user setting lists it, never a path; `machine` picks one machine from `remotes` when the project runs on
 several. A message from another project's @ultimate is answered by answering it: the reply returns automatically, and
-`tell` is refused while that message is open. A sender names its machine by the `machine` user setting
+reply-enabled `tell` is refused while that message is open. Use `reply: false` for a one-way update: it neither answers
+the open request nor waits for a reply. A sender names its machine by the `machine` user setting
 ([Discovery and settings](../../docs/settings.md)); pin it so peers' `remotes` keep routing when the OS hostname changes.
 
 - **Sender:** codemode `ultimate.tell({ project, text, reply? })` (@ultimate only) posts the target's `messages.remote`
   action, located as codemode's `{ project }` reads are (`lib/remote.ts`). A failed post throws a sentence naming the
-  project and machine. Telling an Ultimate whose question to you is still open is refused: answer it instead.
+  project and machine. A reply-enabled tell to an Ultimate whose question to you is still open is refused: answer it
+  instead. A one-way tell (`reply: false`) is allowed while that question stays open.
 - **Target:** `messages.remote { key, text, reply, from: { project, machine } }` delivers to its own primary agent only,
   which reads `Message from @ultimate@<project> on <machine> (another project's Ultimate, not the user)`. A repeated key
   delivers once. A request that expects a reply is refused when the target has no route back to the sender (its

@@ -339,7 +339,7 @@ function globals(
     {
       name: 'tell',
       description:
-        "Message another project's @ultimate (only @ultimate reaches it, as a message from you, never the user), as @ultimate only; with reply (default true) its answer returns to you as a reply. project is the project's name as ultimate.projects() or the remotes setting lists it, never a path; machine picks one machine from remotes when the project runs on several. To answer a message from another project's @ultimate, just answer: its reply returns automatically, and tell is refused for it.",
+        "Message another project's @ultimate (only @ultimate reaches it, as a message from you, never the user), as @ultimate only; with reply (default true) its answer returns to you as a reply. project is the project's name as ultimate.projects() or the remotes setting lists it, never a path; machine picks one machine from remotes when the project runs on several. To answer a message from another project's @ultimate, just answer: its reply returns automatically. While that question is open, reply-enabled tell is refused; reply: false may send a one-way update without answering it or waiting for a reply.",
       signature:
         '(input: { project: string; text: string; reply?: boolean; machine?: string }): Promise<{ message: number; delivered: number }>',
       execute: ([input], { signal }) => {
