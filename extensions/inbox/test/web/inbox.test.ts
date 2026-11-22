@@ -1,6 +1,14 @@
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { expect, it } from 'vitest'
-import { inboxItems, keyOf, selectionAfterChange, shown, UNLOADED } from '../../items.ts'
+import {
+  inboxItems,
+  keyOf,
+  lead,
+  selectionAfterChange,
+  shown,
+  toRow,
+  UNLOADED,
+} from '../../items.ts'
 import type { Anchor, Selection } from '../../items.ts'
 import type { InboxItem } from '../../points.ts'
 import type { Message } from '../../../messages/refs.ts'
@@ -96,4 +104,19 @@ it('reads a link as a key, a plain number as a message id', () => {
   expect(keyOf(12)).toBe('message:12')
   expect(keyOf('shell:3')).toBe('shell:3')
   expect(keyOf('')).toBeUndefined()
+})
+
+it('titles a row with the reader’s text of its inline Markdown, a link’s text without its URL', () => {
+  const title = (text: string) =>
+    toRow({ key: 'message:1', at: 1, message: ask(1, 1, { text }) }).title
+  const pr = '[PR 1784](https://github.com/o/r/pull/1784)'
+  expect(lead(`**Remove the throttle: ${pr}**\n\nBody`)).toEqual({
+    title: `Remove the throttle: ${pr}`,
+    body: 'Body',
+  })
+  expect(title(`**Remove the throttle: ${pr}**\n\nBody`)).toBe('Remove the throttle: PR 1784')
+  expect(title(`## Remove the \`throttle\` _now_: ${pr}\nBody`)).toBe(
+    'Remove the throttle now: PR 1784',
+  )
+  expect(title('- 2. not a list')).toBe('2. not a list')
 })

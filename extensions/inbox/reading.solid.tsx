@@ -13,7 +13,16 @@ import {
 import { ConversationRef } from '../conversations/ui.solid.tsx'
 import { Body, MessageExtras, MessageImages } from '../messages/ui.solid.tsx'
 import { MessageQuestions } from '../questions/ui.solid.tsx'
-import { WAIT_WARNING_AFTER_MS, amber, lead, previewUrl, senderOf, tagOf } from './items.ts'
+import { Markdown } from '@/components/markdown/markdown.solid.tsx'
+import {
+  WAIT_WARNING_AFTER_MS,
+  amber,
+  asOneParagraph,
+  lead,
+  previewUrl,
+  senderOf,
+  tagOf,
+} from './items.ts'
 import type { Entry } from './items.ts'
 
 export function Reading(props: { entry: Entry; now: number; phone: boolean; onBack: () => void }) {
@@ -22,6 +31,7 @@ export function Reading(props: { entry: Entry; now: number; phone: boolean; onBa
     const item = props.entry
     return item.message ? lead(item.message.text) : { title: item.item.title, body: '' }
   })
+  const origin = () => props.entry.item?.origin
   const preview = createMemo(() => message() && previewUrl(message()!.text))
   const images = createMemo(() => {
     const item = message()
@@ -97,8 +107,8 @@ export function Reading(props: { entry: Entry; now: number; phone: boolean; onBa
               </time>
             </span>
           </header>
-          <h2 class="mt-3 text-[17px] leading-7 font-semibold tracking-[-0.01em]">
-            {text().title}
+          <h2 class="mt-3 text-[17px] leading-7 font-semibold tracking-[-0.01em]" data-inbox-title>
+            <Markdown origin={origin()} text={asOneParagraph(text().title)} without={['img']} />
           </h2>
           <Show when={text().body}>
             {(body) => <Body class="mt-1 px-0 py-0 text-[15px] leading-6" text={body()} />}
