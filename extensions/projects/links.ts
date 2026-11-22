@@ -8,6 +8,7 @@ export const onLoopback = ({ hostname }: Page) =>
 const port = (url: string) => new URL(url).port || '80'
 
 export function target(project: RunningProject, page: Page) {
+  if (project.machine !== undefined) return project.url
   if (onLoopback(page)) return `${project.url}/`
   return project.tailnetPort
     ? `${page.protocol}//${page.hostname}:${project.tailnetPort}/`
@@ -22,5 +23,18 @@ export function inboxTarget(project: RunningProject, page: Page) {
   return url.href
 }
 
-export const shownPort = (project: RunningProject, page: Page) =>
-  onLoopback(page) ? `:${port(project.url)}` : project.tailnetPort ? `:${project.tailnetPort}` : '—'
+export const shownPort = (project: RunningProject, page: Page) => {
+  if (project.machine !== undefined) {
+    try {
+      const url = new URL(project.url)
+      return `:${url.port || (url.protocol === 'https:' ? '443' : '80')}`
+    } catch {
+      return '—'
+    }
+  }
+  return onLoopback(page)
+    ? `:${port(project.url)}`
+    : project.tailnetPort
+      ? `:${project.tailnetPort}`
+      : '—'
+}
