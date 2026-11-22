@@ -14,11 +14,19 @@ conversation as `#123` or `123`, a standing agent as `@name`, or `user`.
 - **Delivery.** An idle recipient wakes. A busy one gets a follow-up after its current run, or steering with
   `steer: true`, the default for @ultimate's messages and `false` for everyone else. A message to a concluded
   conversation resumes it.
-- **Answers.** With `reply` (the default) the recipient's final answer returns as a `board.reply`, steering the sender;
-  one answer to several of the sender's messages returns once and closes them all. An unanswered input returns a
-  `failed` reply, or `stopped` when a person pressed Stop. Answer directly instead of messaging the sender: a
-  reply-enabled message back to a sender whose message you have read and owe becomes that answer and ends your run. A message still queued is unread and never owed. `reply: false` is one-way: it wakes the
-  recipient and returns nothing.
+- **Answers.** Agent requests require `request {id, action: 'reply', text}` (or codemode `ultimate.request(...)`).
+  The local id is shown in the input. The caller must be the recipient and the request must remain outstanding;
+  nonempty text completes exactly that request through its stored local or remote return address. The completion
+  and call receipt commit together: replay returns the receipt without sending twice. Ordinary final prose cannot
+  complete requests, including after an explicit reply; unrelated requests remain open. A stopped or failed run
+  still reports its failure. User chat and unsolicited notes are not agent requests. `reply: false` sends only a note.
+- **Continuing work.** `request {id, action: 'work'}` selects an outstanding request for subsequent delegation and
+  acknowledges continuing work in this run without completing it or replacing its owner. Delegation infers one
+  eligible request; several without explicit selection fail closed. Notes never settle or reassign requests.
+- **One reminder.** At final yield, unread requests are excluded. Read, unanswered requests not acknowledged with
+  `work` and not waiting on real delegated work get one durable corrective nudge per run. Ignoring it leaves them
+  open, without a loop. The narrow native tool remains available to restricted-tool agents without granting codemode;
+  explicitly denying it refuses incoming reply-expected requests rather than stranding them.
 - **Images.** `images` forwards images from the sender's own conversation: `'latest'` takes the newest entry with
   images in the current turn (its input, or a tool result such as a screenshot since) and fails when there is none; an
   entry id names an older one. At most `maxImages`, each at most
@@ -40,10 +48,9 @@ report.**
   that run (not concluded, not messaged in the run) with `routed: true`, so a weigh-in reaches the branch. The run's
   other inputs (the user's, another Ultimate's, a card) neither receive it nor keep it from a branch.
 - **Results to the asker.** A branch, waking automation or reply-expected `tell` started by @ultimate can own a request.
-  New work takes it over if the run owes the request, reads its current owner's output or hears from its asker (their
-  newest open request). A one-way update's arrival alone does not change the owner; explicitly starting new work in
-  that run can. Only the current owner's result goes back. A branch's result is final once it is concluded;
-  local askers receive a normal early answer and then a one-way result.
+  New work takes over the explicitly selected request, or the sole eligible request read in the run or represented
+  by its current owner's output. Multiple candidates require selection; an asker's one-way update never selects one. Only the current owner's result goes back. A branch's result is final once it is concluded;
+  completion remains explicit after an owner's result arrives; pending output reservations remain separate from ownership.
 - **Everything else wakes:** reply-enabled messages and one-way messages from anyone who is not the recipient's child or
   branch.
 
@@ -62,7 +69,7 @@ Messages provides `conversations.conclusion-guard`: an agent cannot conclude a b
 
 A message to `user` shows in the sender's transcript and starts no run. For @ultimate it is its answer: the run ends
 without restating it, unless a reply-enabled message it has read is still open or a branch whose reply or report the
-run read still waits for its answer: the run goes on to its final answer, which routing sends there. While a user's message it has read is
+run read still waits for its answer: the run goes on so it can explicitly answer request ids. Final prose may still route unsolicited feedback to branch reports, but never settles requests. While a user's message it has read is
 open, @ultimate's message to the user answers it and, with `questions`, stays open itself, so it can ask one card after
 another.
 
@@ -105,15 +112,15 @@ message is never the user's.
 
 For the caller: only @ultimate may call `tell`. `project` is the project's name as `ultimate.projects()` or the
 `remotes` user setting lists it, never a path; `machine` picks one machine from `remotes` when the project runs on
-several. A message from another project's @ultimate is answered by answering it: the reply returns automatically, and
-reply-enabled `tell` is refused while that message is open. Use `reply: false` for a one-way update: it neither answers
+several. A request from another project's @ultimate is answered with `ultimate.request({id, action: 'reply', text})`;
+reply-enabled `tell` is refused while that request is open. Use `reply: false` for a one-way update: it neither answers
 the open request nor waits for a reply. A sender names its machine by the `machine` user setting
 ([Discovery and settings](../../docs/settings.md)); pin it so peers' `remotes` keep routing when the OS hostname changes.
 
 - **Sender:** codemode `ultimate.tell({ project, text, reply? })` (@ultimate only) posts the target's `messages.remote`
   action, located as codemode's `{ project }` reads are (`lib/remote.ts`). A failed post throws a sentence naming the
-  project and machine. A reply-enabled tell to an Ultimate whose question to you is still open is refused: answer it
-  instead. A one-way tell (`reply: false`) is allowed while that question stays open.
+  project and machine. A reply-enabled tell to an Ultimate whose question to you is still open is refused: explicitly
+  answer its local request id instead. A one-way tell (`reply: false`) is allowed while that question stays open.
 - **Target:** `messages.remote { key, text, reply, from: { project, machine } }` delivers to its own primary agent only,
   which reads `Message from @ultimate@<project> on <machine> (another project's Ultimate, not the user)`. A repeated key
   delivers once. A request that expects a reply is refused when the target has no route back to the sender (its
@@ -121,9 +128,9 @@ the open request nor waits for a reply. A sender names its machine by the `machi
   arrive.
 - **One hop back:** with `reply`, the answer posts to the sender's
   `messages.remoteReply { key, text, failed, stopped?, interim? }` as a reply that expects none.
-- **The reply is the wait.** `board.serving` records one owner per request. An answer that hands a remote request on
-  arrives as an interim note and doesn't wake the asker. The current owner's final result closes the request and
-  wakes the asker. A reply-expected `tell` can own a branch's relay request; the remote result returns to that branch.
+- **The reply is the wait.** `board.serving` records one owner per request. Progress leaves the request open.
+  After the owner's result arrives, explicitly replying completes the selected request and wakes the asker.
+  The existing `remoteReply` wire protocol is unchanged. A reply-expected `tell` can own a branch's relay request; the remote result returns to that branch.
 - **Failures are loud.** Lost owners fail the request once. An answer that cannot be posted wakes the answering
   @ultimate with the cause and the undelivered text. Two Ultimates never loop: a reply expects no answer.
 - **Durable on the sender:** `tell` logs the message and creates the `messages.tell` effect task in one commit; the
@@ -170,7 +177,8 @@ Server side, imported in one direction (`log`, `images`, `addresses`, `questions
 
 - `server.ts`: wiring: the `message` tool, prompt section, hooks, actions, `MessagesApi` and the `workspaces.branches`
   point.
-- `send.ts`: `send()`, validation, receipts, and turning a message to a sender you owe into that answer.
+- `request.ts`: shared native request operation, replay receipts and one corrective nudge per run.
+- `send.ts`: `send()`, validation, receipts, and refusal of inferred agent replies.
 - `delivery.ts`: the `board.delivery` task, owner-output admission and the `board.settle` task that waits for that input.
 - `route.ts`: the `board.route` task: notes, reports and answers back down.
 - `outcomes.ts`: fail requests whose owner has stopped, failed or been deleted.

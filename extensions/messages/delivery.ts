@@ -108,7 +108,7 @@ export function delivery(host: ExtensionHost) {
               : `Answer to message ${m.re}:\n`
         const body = task.input.note
           ? `Note from ${task.input.fromLabel} (one-way update, no answer goes back):\n${m.text}${serves}`
-          : `Message from ${task.input.fromLabel}${m.from === 'remote' ? " (another project's Ultimate, not the user)" : ''}:\n${answeredQuestionLabel}${m.text}${m.reply ? `\nAnswer here; your answer is sent to ${task.input.fromLabel} automatically. Do not use message to reply.` : `\nOne-way message: ${task.input.fromLabel} expects no answer, and your answer here is not sent to it. If it needs to hear from you, message it.`}${serves}`
+          : `Message from ${task.input.fromLabel}${m.from === 'remote' ? " (another project's Ultimate, not the user)" : ''}:\n${answeredQuestionLabel}${m.text}${m.reply ? (m.from === 'user' ? '\nAnswer the user here.' : `\nRequest ${m.id}: use request { id: ${m.id}, action: 'reply', text } to answer, or action: 'work' to continue working. Final prose does not answer this request.`) : `\nOne-way message: ${task.input.fromLabel} expects no answer, and your answer here is not sent to it. If it needs to hear from you, message it.`}${serves}`
         const content = replayStableImages.length
           ? [{ type: 'text' as const, text: body }, ...replayStableImages]
           : body
@@ -223,6 +223,8 @@ export function delivery(host: ExtensionHost) {
             retainOneWayAnswer(original, answer)
             return terminal
           }
+
+          if (m.from !== 'user' && answer !== undefined) return terminal
 
           const { pending } = await tx.doc(EarlyReplies, ROOT_CONVERSATION_ID)
           const early = pending[m.id]
@@ -397,7 +399,10 @@ export function delivery(host: ExtensionHost) {
               ...(m.remote ? { remote: m.remote } : {}),
             },
           }
-          const body = `Reply from ${task.input.toLabel} to your message ${m.re}${stopped ? ' (stopped)' : failed ? ' (failed)' : ''}:\n${m.text}${task.state.checkpoint.serves ?? ''}`
+          const serves =
+            task.state.checkpoint.serves ??
+            (await host.harness().commit((tx) => servesLine(tx, m.from, m.to), ctx))
+          const body = `Reply from ${task.input.toLabel} to your message ${m.re}${stopped ? ' (stopped)' : failed ? ' (failed)' : ''}:\n${m.text}${serves}`
           const content = replayStableImages.length
             ? [{ type: 'text' as const, text: body }, ...replayStableImages]
             : body
@@ -593,6 +598,12 @@ export function settle(host: ExtensionHost) {
             await runtime.waitForTask(route, ctx)
         }
         await runtime.commit(async (tx) => {
+          if (outcome?.status === 'done') {
+            const { owners } = await tx.doc(Serving, ROOT_CONVERSATION_ID)
+            for (const record of Object.values(owners))
+              record.pending = record.pending.filter((id) => id !== submission)
+            return terminal
+          }
           await retireOutput(
             host,
             tx,
@@ -615,7 +626,12 @@ export async function sendResult(
   from: ConversationId,
   request: Serves,
   text: string,
-  { answer, interim, failed }: { answer?: EntryId; interim?: boolean; failed?: boolean },
+  {
+    answer,
+    interim,
+    failed,
+    reply,
+  }: { answer?: EntryId; interim?: boolean; failed?: boolean; reply?: boolean },
 ) {
   const { messages } = await tx.doc(Messages, ROOT_CONVERSATION_ID)
   if (answer !== undefined && !interim && !failed) {
@@ -637,8 +653,11 @@ export async function sendResult(
     ...(remote ? { remote } : {}),
   })
   const original = messages.find((m) => m.id === request.message)
-  if (!interim && original && isOpen(original)) original.ownerSettled = true
-  if (!remote)
+  if (!interim && original && isOpen(original)) {
+    original.ownerSettled = true
+    original.state = failed ? 'failed' : 'answered'
+  }
+  if (!remote && !reply)
     await host.emit(tx, MessageSent, {
       message: message.id,
       from,
@@ -653,8 +672,8 @@ export async function sendResult(
       steer: true,
       note: false,
       fromLabel: `#${from} (@ultimate)`,
-      toLabel: remote ? remoteLabel(remote) : `#${request.from}`,
-      ...(remote ? { reply: { message, failed: failed ?? false } } : {}),
+      toLabel: remote ? remoteLabel(remote) : `#${reply ? from : request.from}`,
+      ...(remote || reply ? { reply: { message, failed: failed ?? false } } : {}),
     },
     { conversationId: ROOT_CONVERSATION_ID, ownership: { kind: 'conversation' }, background: true },
   )

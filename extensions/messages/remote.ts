@@ -14,7 +14,13 @@ import { Messages, MessageSent } from './api.ts'
 import type { Message } from './api.ts'
 import { append } from './log.ts'
 import { isOpen } from '../../lib/message-state.ts'
-import { branchesReadThisRun, remoteLabel, senderName, serve } from './addresses.ts'
+import {
+  branchesReadThisRun,
+  remoteLabel,
+  requireRequestTool,
+  senderName,
+  serve,
+} from './addresses.ts'
 import { dropped } from './outcomes.ts'
 import { delivery } from './delivery.ts'
 
@@ -94,7 +100,7 @@ export async function tell(
   )
   if (reply && openQuestionFromTarget)
     throw new Error(
-      `Your answer to ${remoteLabel(openQuestionFromTarget.remote!)}'s message ${openQuestionFromTarget.id} is sent back automatically. Answer instead of telling.`,
+      `Use request { id: ${openQuestionFromTarget.id}, action: 'reply', text } to answer ${remoteLabel(openQuestionFromTarget.remote!)}. Final prose does not answer requests; reply: false sends only a note.`,
     )
   const remote = {
     project: target.name,
@@ -212,6 +218,8 @@ export async function remoteAction(args: JsonValue, { host }: ActionContext) {
       ? await noRouteBackTo(host, sender)
       : undefined
   const to = await host.need(SubagentsApi).standing('ultimate', BACKGROUND_CONTEXT)
+  if (reply && !Object.hasOwn(receipts?.received ?? {}, key))
+    await requireRequestTool(host, to, BACKGROUND_CONTEXT)
   const toLabel = await senderName(host, to, BACKGROUND_CONTEXT)
   return host.harness().commit(async (tx) => {
     const { received } = await tx.doc(UnprunedRemoteReceipts, ROOT_CONVERSATION_ID)

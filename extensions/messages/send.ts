@@ -13,7 +13,14 @@ import type { Device } from '../../shared/events.ts'
 import { resolveImages } from './images.ts'
 import type { ImagesRef } from './images.ts'
 import { append } from './log.ts'
-import { parentOf, resolveRecipient, senderName, serve, starterOf } from './addresses.ts'
+import {
+  parentOf,
+  requireRequestTool,
+  resolveRecipient,
+  senderName,
+  serve,
+  starterOf,
+} from './addresses.ts'
 import { delivery } from './delivery.ts'
 import { notice } from './notice.ts'
 
@@ -111,6 +118,8 @@ export async function send(
       `Subagents report to the conversation that started them: message only #${parent}. Your final answer reaches it anyway.`,
     )
   const to = await resolveRecipient(host, input.to, from, ctx)
+  if (from !== 'user' && typeof to === 'number' && input.reply !== false)
+    await requireRequestTool(host, to, ctx)
   const fromLabel = via
     ? `user (settled for them by @ultimate, from what they said in its chat)`
     : await senderName(host, from, ctx)
@@ -155,36 +164,9 @@ export async function send(
         readMessageOwedToRecipient.state = 'answered'
         re = readMessageOwedToRecipient.id
       } else if (readMessageOwedToRecipient) {
-        readMessageOwedToRecipient.state = 'answered'
-        const response = await append(tx, {
-          from,
-          to,
-          text: input.text,
-          reply: false,
-          re: readMessageOwedToRecipient.id,
-          state: 'sent',
-          ...(callId === undefined ? {} : { call: callId }),
-          ...(images ? { images } : {}),
-        })
-        await tx.createTask(
-          delivery(host),
-          {
-            message: readMessageOwedToRecipient,
-            steer: false,
-            note: false,
-            fromLabel: toLabel,
-            toLabel: fromLabel,
-            reply: { message: response, failed: false },
-          },
-          {
-            conversationId: ROOT_CONVERSATION_ID,
-            ownership: { kind: 'conversation' },
-            background: true,
-          },
+        throw new Error(
+          `Use request { id: ${readMessageOwedToRecipient.id}, action: 'reply', text } to answer; reply: false sends only a note`,
         )
-        if (receipt && callId !== undefined) receipt.ids[callId] = response.id
-        if (requests && requestId !== undefined) requests.ids[requestId] = response.id
-        return response.id
       }
     }
     if (options.serveBranch && typeof from === 'number' && typeof to === 'number')

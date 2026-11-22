@@ -185,7 +185,7 @@ export function definitionAgent(
     tools: tools.filter(
       (tool) =>
         !excludeTools.includes(tool.name) &&
-        (!definition?.tools || definition.tools.includes(tool.name)),
+        (!definition?.tools || tool.name === 'request' || definition.tools.includes(tool.name)),
     ),
     extensions: parent.extensions.filter(
       (extension) => !excludeExtensions.includes(extension.name),

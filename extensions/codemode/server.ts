@@ -43,6 +43,7 @@ import { closedChapter, compactEntry, id, limit, readChapter, searchHit } from '
 import type { EntriesOptions, HistoryRead, SearchOptions } from './chapters.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { MessagesApi } from '../messages/api.ts'
+import { REQUEST_DESCRIPTION } from '../../lib/request-description.ts'
 import type { ResponseReceipt } from '../conversations/summary.ts'
 import type { SummaryModel } from '../conversations/summary-model.ts'
 import { Summarized } from './refs.ts'
@@ -213,6 +214,7 @@ function globals(
   conversationId: ConversationId,
   context: Context,
   record?: (name: string, args: unknown[]) => (status: string) => void,
+  request?: CodemodeTool['execute'],
 ): CodemodeTool[] {
   const reads = localReads(host, context)
   const remoteMachine = (machine: unknown) => {
@@ -337,9 +339,19 @@ function globals(
       },
     },
     {
+      name: 'request',
+      description: REQUEST_DESCRIPTION,
+      signature:
+        "(input: { id: number; action: 'work' | 'reply'; text?: string }): Promise<unknown>",
+      execute: ([input], options) => {
+        if (!request) throw new Error('The request tool is unavailable in this agent')
+        return request(input, options)
+      },
+    },
+    {
       name: 'tell',
       description:
-        "Message another project's @ultimate (only @ultimate reaches it, as a message from you, never the user), as @ultimate only; with reply (default true) its answer returns to you as a reply. project is the project's name as ultimate.projects() or the remotes setting lists it, never a path; machine picks one machine from remotes when the project runs on several. To answer a message from another project's @ultimate, just answer: its reply returns automatically. While that question is open, reply-enabled tell is refused; reply: false may send a one-way update without answering it or waiting for a reply.",
+        "Message another project's @ultimate (only @ultimate reaches it, as a message from you, never the user), as @ultimate only; with reply (default true) its answer returns to you as a reply. project is the project's name as ultimate.projects() or the remotes setting lists it, never a path; machine picks one machine from remotes when the project runs on several. To answer a request from another project's @ultimate, use ultimate.request({id, action: 'reply', text}) with its local request id. Use action: 'work' to acknowledge continuing work; final prose never closes requests. While that question is open, reply-enabled tell is refused; reply: false may send a one-way update without answering it or waiting for a reply.",
       signature:
         '(input: { project: string; text: string; reply?: boolean; machine?: string }): Promise<{ message: number; delivered: number }>',
       execute: ([input], { signal }) => {
@@ -560,7 +572,11 @@ export default function codemode(host: ExtensionHost) {
         const saved = await api.snapshot(Store, api.conversationId, context)
         const sandbox = new CodemodeSandbox({
           tools,
-          globals: globals(host, api.conversationId, sandboxContext, record),
+          globals: globals(host, api.conversationId, sandboxContext, record, (args, options) => {
+            const tool = tools.find((candidate) => candidate.name === 'request')
+            if (!tool) throw new Error('The request tool is unavailable in this agent')
+            return tool.execute(args, options)
+          }),
           timeoutMs: parsed.options.timeoutMs ?? 60000,
           memoryLimitBytes: 256 * 1024 * 1024,
         })

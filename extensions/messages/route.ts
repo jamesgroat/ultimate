@@ -57,7 +57,7 @@ export async function working(tx: Tx, id: ConversationId): Promise<boolean> {
     return true
   return hasBusyDescendant(tx, id)
 }
-async function hasBusyDescendant(tx: Tx, id: ConversationId): Promise<boolean> {
+export async function hasBusyDescendant(tx: Tx, id: ConversationId): Promise<boolean> {
   for (const child of Object.values((await tx.doc(Subagents, id)).agents))
     if (
       (await hasRunQueuedInputOrWakeTask(tx, child.conversationId)) ||
@@ -262,19 +262,11 @@ export function route(host: ExtensionHost) {
                 : ''
             if (!text.trim()) return []
             if (down) {
-              const { branches, askers } = await reported(host, tx, by, inputsSettledByThisAnswer)
+              const { branches } = await reported(host, tx, by, inputsSettledByThisAnswer)
               const together =
                 branches.length > 1
                   ? `(This answers ${branches.map((b) => `#${b}`).join(' and ')} together.)\n\n`
                   : ''
-              const { owners } = await tx.doc(Serving, ROOT_CONVERSATION_ID)
-              for (const { request, source, interim } of askers) {
-                if (!interim) delete owners[request.message]
-                const result = source
-                  ? `Result of ${source}, which worked on your message ${request.message}:\n\n${text}`
-                  : text
-                await sendResult(host, tx, id, request, result, { answer, interim })
-              }
               return branches.map((to) => ({
                 to,
                 text: together + text,
@@ -291,16 +283,7 @@ export function route(host: ExtensionHost) {
               const entry = await tx.entry(entryId)
               const data: Partial<DeliveredMessage> | undefined =
                 MessageEntry.is(entry) || ReplyEntry.is(entry) ? entry.data : undefined
-              const repliedByMessageMidRun =
-                data?.id !== undefined &&
-                log.messages.some(
-                  (m) => m.from === id && m.to === by && m.re === data.id && m.answer === undefined,
-                )
-              const asked =
-                MessageEntry.is(entry) &&
-                data?.reply === true &&
-                data.from !== 'user' &&
-                !repliedByMessageMidRun
+              const asked = MessageEntry.is(entry) && data?.reply === true && data.from !== 'user'
               if (asked && data?.from === by) return []
               if (!asked) everyInputReturnsToAnotherAsker = false
               if (data?.routed !== true) answersOnlyRoutedInputs = false

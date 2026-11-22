@@ -49,6 +49,7 @@ import {
   tell,
 } from './remote.ts'
 import { branchTool } from './branch.ts'
+import { requestTool, requestNudge } from './request.ts'
 import { remoteProgress } from './progress.ts'
 import { safeToRerun } from '../../lib/replay.ts'
 export { gist, openQuestionsNote } from './questions.ts'
@@ -291,6 +292,7 @@ export default function messages(host: ExtensionHost) {
     name: 'messages',
     tasks: [delivery(host), route(host), settle(host), notice(host), tellTask(host)],
     hooks: [
+      requestNudge(host),
       hook(GenerationTask, {
         // Pi upstream: @earendil-works/pi-durable@1.6.0 — patched transactional beforeInput hook.
         beforeInput: (_input, api) => openQuestionsNote(api.tx, api.conversationId, Date.now()),
@@ -328,18 +330,23 @@ export default function messages(host: ExtensionHost) {
       }),
     ],
     sections: [
+      section('requests', (input) =>
+        input.agent.tools.some((tool) => tool.name === 'request')
+          ? "Agent requests carry local ids. Use request {id, action: 'reply', text} to answer exactly one, or action: 'work' to select it for delegation and acknowledge continuing work. Final prose and one-way notes never answer requests. Multiple eligible requests require selection before delegation. A single corrective nudge may remind you at final yield; ignored requests remain open."
+          : undefined,
+      ),
       section('messages', async (input, ctx) => {
         if (!input.agent.tools.some((tool) => tool.name === 'message')) return undefined
         const parent = await parentOf(host, input.conversationId, ctx)
         if (parent !== undefined)
-          return `Use message only to update #${parent}, the conversation that started you, while you work; your final answer reaches it anyway. One-way updates (reply: false) reach #${parent} as notes it reads with its next input; ask with reply: true when you need its answer to continue.`
+          return `Use message only to update #${parent}, the conversation that started you, while you work; the subagent report reaches it independently. Explicit agent request ids still require request with action: 'reply'. One-way updates (reply: false) reach #${parent} as notes it reads with its next input; ask with reply: true when you need its answer to continue.`
         const agents = await host.need(SubagentsApi).residents(ctx)
         const starter = await starterOf(host, input.conversationId, ctx)
         const upward =
           starter === undefined
             ? ''
-            : ` #${starter} started you: when you stop with nothing under way (no subagent, landing or reply pending), your final answer goes to it and wakes it; while work is under way it arrives as a note, and so do your one-way messages to it.`
-        return `Use message to contact #id or @name. Any conversation except a subagent may message user. Messages wake their recipient; its answer returns as a reply and wakes you. End your turn instead of waiting. A one-way message (reply: false) gets no answer; use reply: true when you need one. Inputs identify their sender; answer here and your answer is sent to the sender automatically; do not use message to reply. A message to an agent whose message you still owe an answer becomes that answer and ends your run; use it only to attach images.${upward}\n${agents.map((a) => `@${a.name} — ${a.description}`).join('\n')}`
+            : ` #${starter} started you: unsolicited reports when you stop with nothing under way (no subagent, landing or reply pending) wake it; final prose never completes its explicit requests; while work is under way it arrives as a note, and so do your one-way messages to it.`
+        return `Use message to contact #id or @name. Any conversation except a subagent may message user. Messages wake their recipient; its answer returns as a reply and wakes you. End your turn instead of waiting. A one-way message (reply: false) gets no answer; use reply: true when you need one. Inputs identify their sender and local request id. Use request {id, action: 'reply', text} (or codemode ultimate.request) to complete exactly that request. Final prose never answers agent requests. Use action: 'work' to select a request for delegation and acknowledge ongoing work without closing it; multiple eligible requests require selection. One-way notes neither answer nor reassign requests. Attach images with a separate one-way message.${upward}\n${agents.map((a) => `@${a.name} — ${a.description}`).join('\n')}`
       }),
 
       section('projects', async (input, ctx) => {
@@ -352,11 +359,12 @@ export default function messages(host: ExtensionHost) {
       }),
     ],
     tools: [
+      requestTool(host),
       branchTool(host),
       defineTool({
         name: 'message',
         description:
-          'Send a message to #id or @name; it returns immediately. A busy recipient gets it after its current run, or during it with steer: true (the default for @ultimate). images forwards screenshots or other images from your conversation, to an agent or to the user. To an agent or the user whose message you owe an answer, it is that answer (with its images and questions). One to an agent ends your run; one to the user ends it too, unless an agent still waits for your answer or a branch whose reply or report you read in this run does. Sent from codemode or beside other calls in its tool round, it never ends the run.',
+          'Send a message to #id or @name; it returns immediately. A busy recipient gets it after its current run, or during it with steer: true (the default for @ultimate). images forwards screenshots or other images from your conversation, to an agent or to the user. Agent requests must be answered with request {id, action: "reply", text}, not message or final prose. A message to the user whose message you owe answers it (with its images and questions), and ends your run unless an agent still waits for your answer or a branch whose reply or report you read in this run does. Sent from codemode or beside other calls in its tool round, it never ends the run.',
         parameters: obj({
           to: str(),
           text: str({ minLength: 1 }),
