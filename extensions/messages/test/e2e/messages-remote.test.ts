@@ -26,7 +26,7 @@ const textOf = (content: unknown) =>
         .flatMap((part) => (part.type === 'text' ? [part.text!] : []))
         .join('')
 
-/** One faux Ultimate whose @ultimate runs the codemode in `TELL <code>` inputs and echoes anything else. */
+/** One faux Ultimate that runs `TELL <code>` and explicitly answers incoming requests. */
 async function ultimate(userHome: string, ultimateRoot: string, name: string) {
   const projectRoot = join(userHome, name)
   await mkdir(join(projectRoot, '.ultimate'), { recursive: true })
@@ -53,6 +53,21 @@ async function ultimate(userHome: string, ultimateRoot: string, name: string) {
       return fauxAssistantMessage([fauxToolCall('codemode', { code: text.slice(5) })], {
         stopReason: 'toolUse',
       })
+    const request =
+      last.role === 'user' && text.startsWith('Message from')
+        ? /\nRequest (\d+):/.exec(text)
+        : undefined
+    if (request)
+      return fauxAssistantMessage(
+        [
+          fauxToolCall('request', {
+            id: Number(request[1]),
+            action: 'reply',
+            text: `Answer from ${name}`,
+          }),
+        ],
+        { stopReason: 'toolUse' },
+      )
     return fauxAssistantMessage(last.role === 'toolResult' ? 'Told.' : `Answer from ${name}`)
   }
   server.host.faux!.setResponses([route])
