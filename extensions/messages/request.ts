@@ -70,7 +70,7 @@ export const requestTool = (host: ExtensionHost) =>
               ...(message.remote ? { remote: message.remote } : {}),
             },
             input.text,
-            { reply: true },
+            { reply: true, replyRun: state.run },
           )
           message.state = 'answered'
           delete (await tx.doc(Serving, ROOT_CONVERSATION_ID)).owners[message.id]

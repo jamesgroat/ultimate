@@ -5,6 +5,7 @@ import type {
   ConversationRecord,
   Cursor,
   EntryId,
+  SubmissionId,
   EntryRecord,
   JsonObject,
   ModelRef,
@@ -428,9 +429,20 @@ function lineage(host: ExtensionHost) {
             const boardByKind = host.doc('board')
             const log =
               boardByKind && (await host.harness().snapshot(boardByKind, ROOT_CONVERSATION_ID, ctx))
-            const answerAlreadyReplied = (
-              log?.messages as { from: unknown; to: unknown; answer?: EntryId }[] | undefined
-            )?.some((m) => m.from === target && m.to === caller && m.answer === answerId)
+            const replies = log?.messages as
+              | { from: unknown; to: unknown; answer?: EntryId; replyRun?: SubmissionId }[]
+              | undefined
+            const answerAlreadyReplied = await host.harness().commit(async (tx) => {
+              for (const reply of replies ?? []) {
+                if (reply.from !== target || reply.to !== caller) continue
+                if (reply.answer === answerId) return true
+                if (reply.replyRun === undefined) continue
+                const run = await tx.submission(reply.replyRun)
+                if (run?.type === 'input' && run.status === 'done' && run.answer === answerId)
+                  return true
+              }
+              return false
+            }, ctx)
             const callerHasNotReceivedAnswer =
               !answerAlreadyReplied &&
               (lastNotifiedAnswer === undefined || answerId > lastNotifiedAnswer)

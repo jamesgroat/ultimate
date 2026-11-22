@@ -247,9 +247,26 @@ export async function servesLine(
     .join('')
 }
 
-export async function requireRequestTool(host: ExtensionHost, id: ConversationId, ctx: Context) {
+export async function refreshStandingDefinition(
+  host: ExtensionHost,
+  id: ConversationId,
+  ctx: Context,
+) {
+  const index = await host.harness().snapshot(Standing, ROOT_CONVERSATION_ID, ctx)
+  const name = Object.keys(index ?? {}).find((candidate) => index![candidate] === id)
+  if (name === undefined) return
+  const service = host.need(SubagentsApi)
+  if ((await service.residents(ctx)).some((agent) => agent.name === name))
+    await service.standing(name, ctx)
+}
+
+export async function hasRequestTool(host: ExtensionHost, id: ConversationId, ctx: Context) {
   const agent = await (await host.harness().conversation(id, ctx))?.agent(ctx)
-  if (!agent?.tools.some((tool) => tool.name === 'request'))
+  return agent?.tools.some((tool) => tool.name === 'request') === true
+}
+
+export async function requireRequestTool(host: ExtensionHost, id: ConversationId, ctx: Context) {
+  if (!(await hasRequestTool(host, id, ctx)))
     throw new Error(
       `#${id} cannot accept a reply-expected request: its request completion tool is unavailable or denied. Send a one-way note instead.`,
     )

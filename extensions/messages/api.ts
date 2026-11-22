@@ -31,6 +31,8 @@ export type Message = {
   state: 'sent' | 'delivered' | 'answered' | 'dismissed' | 'failed' | 'stopped'
   entry?: EntryId
   answer?: EntryId
+  /** Local run input during which this explicit reply was sent; final prose was not sent as the reply. */
+  replyRun?: SubmissionId
   error?: string
   /** The tool call that sent it: `message`'s or `branch`'s own id, `<script>/<n>` for a nested codemode call. */
   call?: string

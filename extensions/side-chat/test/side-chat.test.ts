@@ -120,6 +120,18 @@ async function fixture() {
       const { name, args } = JSON.parse(text.slice(5))
       return fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' })
     }
+    const request = text.startsWith('Message from') ? /\nRequest (\d+):/.exec(text) : undefined
+    if (request)
+      return fauxAssistantMessage(
+        [
+          fauxToolCall('request', {
+            id: Number(request[1]),
+            action: 'reply',
+            text: `echo ${text}`,
+          }),
+        ],
+        { stopReason: 'toolUse' },
+      )
     return fauxAssistantMessage(`echo ${text}`)
   }
   server.host.faux!.setResponses([route])

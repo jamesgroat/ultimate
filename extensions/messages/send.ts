@@ -16,6 +16,7 @@ import { append } from './log.ts'
 import {
   parentOf,
   requireRequestTool,
+  refreshStandingDefinition,
   resolveRecipient,
   senderName,
   serve,
@@ -118,8 +119,10 @@ export async function send(
       `Subagents report to the conversation that started them: message only #${parent}. Your final answer reaches it anyway.`,
     )
   const to = await resolveRecipient(host, input.to, from, ctx)
-  if (from !== 'user' && typeof to === 'number' && input.reply !== false)
+  if (from !== 'user' && typeof to === 'number' && input.reply !== false) {
+    if (!input.to.startsWith('@')) await refreshStandingDefinition(host, to, ctx)
     await requireRequestTool(host, to, ctx)
+  }
   const fromLabel = via
     ? `user (settled for them by @ultimate, from what they said in its chat)`
     : await senderName(host, from, ctx)

@@ -306,6 +306,7 @@ it('answers a connection check itself in the standing Voice conversation, with i
   const agent = await (await f.server.harness.conversation(f.voice, context))!.agent(context)
   expect(agent.tools.map((t) => t.name).toSorted()).toEqual([
     'codemode',
+    'request',
     'voice_answer',
     'voice_ask_ultimate',
     'voice_note',
