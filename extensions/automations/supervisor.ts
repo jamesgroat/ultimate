@@ -15,13 +15,14 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   readdir,
   rename,
   rm,
   stat,
   writeFile,
 } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import {
   awaitWithContext,
   BACKGROUND_CONTEXT,
@@ -101,7 +102,36 @@ const exists = (path: string) =>
   )
 function manifest(value: unknown): Manifest | undefined {
   if (!value || typeof value !== 'object') return undefined
-  const { name, ask, once, secrets, to, schedule, timeout } = value as Record<string, unknown>
+  const {
+    name,
+    ask,
+    once,
+    secrets,
+    to,
+    schedule,
+    timeout,
+    agent,
+    prompt,
+    promptFile,
+    subscribers,
+  } = value as Record<string, unknown>
+  if (to !== undefined && subscribers !== undefined) return undefined
+  if (prompt !== undefined && promptFile !== undefined) return undefined
+  for (const field of [agent, prompt, promptFile])
+    if (field !== undefined && (typeof field !== 'string' || !field.trim())) return undefined
+  if (
+    subscribers !== undefined &&
+    (!Array.isArray(subscribers) ||
+      subscribers.some((s) => typeof s !== 'string' || !STANDING.test(s)))
+  )
+    return undefined
+  if (
+    Array.isArray(subscribers) &&
+    !subscribers.length &&
+    prompt === undefined &&
+    promptFile === undefined
+  )
+    return undefined
   if (
     timeout !== undefined &&
     (!Number.isInteger(timeout) || Number(timeout) < 1 || Number(timeout) > 3600)
@@ -125,12 +155,17 @@ function manifest(value: unknown): Manifest | undefined {
     once: once ?? true,
     ...(timing ? { schedule: timing, timeout: Number(timeout ?? 300) } : {}),
     ...(secrets?.length ? { secrets: secrets as string[] } : {}),
-    to: to ?? '@ultimate',
+    ...(subscribers !== undefined
+      ? { subscribers: subscribers as string[] }
+      : { to: to ?? '@ultimate' }),
+    ...(agent !== undefined ? { agent: agent as string } : {}),
+    ...(prompt !== undefined ? { prompt: prompt as string } : {}),
+    ...(promptFile !== undefined ? { promptFile: promptFile as string } : {}),
   }
 }
 const committedManifest = ({ to, ...rest }: Manifest) => ({
   ...rest,
-  ...(to === '@ultimate' ? {} : { to }),
+  ...(to === undefined || to === '@ultimate' ? {} : { to }),
 })
 type Delivery = {
   sub: Automation
@@ -228,7 +263,7 @@ export function supervisor(
     join(sub.scope === 'project' ? projectDir(sub.id) : folder(sub.id), 'run')
   const trusted = async () => (await host.projectSetup()).decision === true
   async function manifests() {
-    const found = new Map<string, Manifest>()
+    const found = new Map<string, { manifest: Manifest; prompt?: string }>()
     if (!(await trusted())) return found
     let entries: Dirent[]
     try {
@@ -255,33 +290,39 @@ export function supervisor(
       } catch {
         parsed = undefined
       }
-      if (parsed) found.set(entry.name, parsed)
-      else host.notice(`Automation ${entry.name}: invalid ${MANIFEST}`)
+      if (parsed) {
+        try {
+          let prompt = parsed.prompt
+          if (parsed.promptFile !== undefined) {
+            const root = await realpath(projectDir(entry.name))
+            const path = parsed.promptFile
+            const confined = (target: string) => {
+              const rel = relative(root, target)
+              return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel)
+            }
+            if (isAbsolute(path) || !confined(resolve(root, path)))
+              throw new Error('Invalid promptFile')
+            const source = await realpath(resolve(root, path))
+            if (!confined(source)) throw new Error('Invalid promptFile')
+            prompt = required(await readFile(source, 'utf8'), 'promptFile contents')
+          }
+          found.set(entry.name, { manifest: parsed, ...(prompt ? { prompt } : {}) })
+        } catch {
+          host.notice(`Automation ${entry.name}: invalid prompt source`)
+        }
+      } else host.notice(`Automation ${entry.name}: invalid ${MANIFEST}`)
     }
     return found
   }
   async function discover() {
     const found = await manifests()
     const gone = (s: Automation) => s.scope === 'project' && !found.has(s.id)
-    const fields = (sub: Automation) =>
-      JSON.stringify([
-        sub.name,
-        sub.script!.ask,
-        sub.script!.once,
-        sub.script!.secrets,
-        sub.script!.to,
-        sub.schedule,
-        sub.script!.timeout,
-      ])
+    const changed = (sub: Automation, m: Manifest, prompt?: string) =>
+      JSON.stringify([sub.manifest, sub.manifestPrompt]) !== JSON.stringify([m, prompt])
     const differs = (subs: Record<string, Automation>) =>
-      [...found].some(([id, m]) => {
+      [...found].some(([id, { manifest: m, prompt }]) => {
         const sub = subs[id]
-        return (
-          !sub ||
-          (sub.scope === 'project' &&
-            fields(sub) !==
-              JSON.stringify([m.name, m.ask, m.once, m.secrets, m.to, m.schedule, m.timeout]))
-        )
+        return !sub || (sub.scope === 'project' && changed(sub, m, prompt))
       }) || Object.values(subs).some(gone)
     const current =
       (await host.harness().snapshot(Automations, BACKGROUND_CONTEXT))?.automations ?? {}
@@ -293,7 +334,7 @@ export function supervisor(
       const state = await tx.doc(Automations)
       const stops: Effect[] = []
       const now = Date.now()
-      for (const [id, m] of found) {
+      for (const [id, { manifest: m, prompt }] of found) {
         const sub = state.automations[id]
         if (!sub && prepared)
           state.automations[id] = {
@@ -307,20 +348,52 @@ export function supervisor(
               once: m.once,
               ...(m.timeout ? { timeout: m.timeout } : {}),
               ...(m.secrets ? { secrets: m.secrets } : {}),
-              to: m.to,
+              ...(m.to ? { to: m.to } : {}),
               conversationId: await agentConversation(tx, prepared, id, m.name),
               state: 'stopped',
             },
-            subscribers: [m.to],
+            manifest: m,
+            ...(prompt ? { prompt, manifestPrompt: prompt } : {}),
+            ...(m.agent ? { agent: m.agent } : {}),
+            overrides: {},
+            subscribers: m.subscribers ?? [m.to!],
             runs: [],
             createdAt: now,
             updatedAt: now,
             fires: 0,
           }
-        else if (sub?.scope === 'project') {
+        else if (sub?.scope === 'project' && changed(sub, m, prompt)) {
+          sub.overrides ??= sub.manifest
+            ? {}
+            : {
+                agent: true,
+                prompt: true,
+                subscribers:
+                  JSON.stringify(sub.subscribers) !==
+                  JSON.stringify([sub.script!.to ?? '@ultimate']),
+              }
+          if (!sub.overrides.agent) {
+            delete sub.agent
+            if (m.agent) sub.agent = m.agent
+          }
+          if (!sub.overrides.prompt) {
+            delete sub.prompt
+            if (prompt) sub.prompt = prompt
+          }
+          if (!sub.overrides.subscribers) {
+            const previous = sub.manifest?.to ?? sub.script!.to
+            sub.subscribers =
+              m.to && previous
+                ? [...new Set([...sub.subscribers.filter((s) => s !== previous), m.to])]
+                : (m.subscribers ?? [m.to!])
+          }
+          sub.manifest = m
+          delete sub.manifestPrompt
+          if (prompt) sub.manifestPrompt = prompt
           if (
+            (!sub.prompt && !sub.subscribers.length) ||
             JSON.stringify([sub.schedule, sub.script!.timeout, sub.script!.ask]) !==
-            JSON.stringify([m.schedule, m.timeout, m.ask])
+              JSON.stringify([m.schedule, m.timeout, m.ask])
           ) {
             sub.enabled = false
             sub.script!.state = 'stopped'
@@ -334,15 +407,14 @@ export function supervisor(
           delete sub.schedule
           delete sub.script!.timeout
           if (m.schedule) sub.schedule = m.schedule
-          const before = sub.script!.to
-          sub.subscribers = [...new Set([...sub.subscribers.filter((s) => s !== before), m.to])]
           delete sub.script!.secrets
+          delete sub.script!.to
           sub.name = m.name
           Object.assign(sub.script!, {
             ask: m.ask,
             once: m.once,
             ...(m.timeout ? { timeout: m.timeout } : {}),
-            to: m.to,
+            ...(m.to ? { to: m.to } : {}),
             ...(m.secrets ? { secrets: m.secrets } : {}),
           })
           sub.updatedAt = now
@@ -351,7 +423,20 @@ export function supervisor(
       for (const sub of Object.values(state.automations)) {
         if (!gone(sub)) continue
         const publishedSinceScan = trust && (await exists(join(projectDir(sub.id), MANIFEST)))
-        if (publishedSinceScan) continue
+        if (publishedSinceScan) {
+          sub.enabled = false
+          sub.script!.state = 'stopped'
+          stops.push({
+            id: sub.id,
+            action: 'pause',
+            ...(sub.scheduler ? { scheduler: sub.scheduler } : {}),
+            ...(sub.script!.pid ? { previousPid: sub.script!.pid } : {}),
+          })
+          delete sub.scheduler
+          delete sub.nextAt
+          delete sub.script!.pid
+          continue
+        }
         await drop(tx, sub, 'was deleted')
         delete state.automations[sub.id]
         stops.push({
@@ -1001,6 +1086,7 @@ export function supervisor(
     agentFor,
     projectDir,
     manifest,
+    manifests,
     committedManifest,
     snapshot,
     validId,

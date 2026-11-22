@@ -85,7 +85,7 @@ export const Automations = defineDoc<Ledger>({
         const legacyIntervalAnchor = a.runs.at(-1)
         if (legacyIntervalAnchor) a.lastFireAt = legacyIntervalAnchor.firedAt
       }
-      if (a.scope === 'project' && !a.prompt && !a.subscribers.length) {
+      if (a.scope === 'project' && !a.manifest && !a.prompt && !a.subscribers.length) {
         a.subscribers = ['@ultimate']
         a.script!.to = '@ultimate'
       }
@@ -258,6 +258,12 @@ function backend(host: ExtensionHost) {
     const id = validId(args.id)
     if (!id.startsWith('A')) await discover()
     const sub = await snapshot(id)
+    if (
+      sub.scope === 'project' &&
+      ['resume', 'run'].includes(args.action) &&
+      !(await scripts.manifests()).has(id)
+    )
+      throw new Error('Invalid project automation manifest or prompt source')
     const prepared: Prepared = {}
     if (
       args.action === 'update' &&
@@ -267,10 +273,16 @@ function backend(host: ExtensionHost) {
       )
     ) {
       const script = sub.script!
+      const defaults = manifest(JSON.parse(await readFile(join(projectDir(id), MANIFEST), 'utf8')))
+      if (!defaults) throw new Error('Invalid project automation manifest')
       prepared.previousAsk = script.ask
       await writeJson(
         join(projectDir(id), MANIFEST),
         committedManifest({
+          ...(defaults.agent ? { agent: defaults.agent } : {}),
+          ...(defaults.prompt ? { prompt: defaults.prompt } : {}),
+          ...(defaults.promptFile ? { promptFile: defaults.promptFile } : {}),
+          ...(defaults.subscribers ? { subscribers: defaults.subscribers } : { to: defaults.to }),
           name: args.name?.trim() ?? sub.name,
           ask: args.ask?.trim() ?? script.ask,
           once: args.once ?? script.once,
@@ -283,7 +295,6 @@ function backend(host: ExtensionHost) {
           ...((args.secrets ?? script.secrets)?.length
             ? { secrets: args.secrets ?? script.secrets }
             : {}),
-          to: script.to ?? '@ultimate',
         }),
       )
     }
@@ -385,6 +396,12 @@ function backend(host: ExtensionHost) {
             ...(prepared.subscribers ?? (args.prompt || !caller ? [] : [caller])),
           ]),
         ]
+        sub.overrides = {
+          ...sub.overrides,
+          ...(args.agent !== undefined ? { agent: true } : {}),
+          ...(args.prompt !== undefined ? { prompt: true } : {}),
+          ...(args.subscribers !== undefined ? { subscribers: true } : {}),
+        }
         Object.assign(sub, runProfile, {
           enabled: true,
           updatedAt: Date.now(),
@@ -436,6 +453,10 @@ function backend(host: ExtensionHost) {
     if (!sub) throw new Error(`Unknown automation: ${id}`)
     if (args.action === 'log') return { result: { text: await tail(id, args.lines) } }
     sub.updatedAt = Date.now()
+    if (sub.scope === 'project' && ['subscribe', 'unsubscribe'].includes(args.action)) {
+      sub.overrides ??= {}
+      sub.overrides.subscribers = true
+    }
     if (args.action === 'subscribe')
       sub.subscribers = [...new Set([...sub.subscribers, prepared.subscriber!])]
     else if (args.action === 'unsubscribe') {
@@ -725,6 +746,12 @@ function backend(host: ExtensionHost) {
     }
     let effect: Effect | undefined
     if (args.action === 'create' || args.action === 'update') {
+      if (a.scope === 'project') {
+        a.overrides ??= {}
+        if (args.agent !== undefined) a.overrides.agent = true
+        if (args.prompt !== undefined) a.overrides.prompt = true
+        if (args.subscribers !== undefined) a.overrides.subscribers = true
+      }
       if (args.name !== undefined) a.name = required(args.name, 'name')
       if (args.prompt !== undefined) {
         if (args.prompt) a.prompt = required(args.prompt, 'prompt')

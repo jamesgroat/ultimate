@@ -25,6 +25,9 @@ export type Subscriber = ConversationId | StandingAgentName
 export type Automation = {
   id: string
   scope?: 'project'
+  manifest?: Manifest
+  manifestPrompt?: string
+  overrides?: { agent?: boolean; prompt?: boolean; subscribers?: boolean }
   key?: CreateIdempotencyKey
   name: string
   enabled: boolean
@@ -119,7 +122,11 @@ export type Manifest = {
   schedule?: Schedule
   timeout?: number
   secrets?: string[]
-  to: string
+  to?: string
+  subscribers?: string[]
+  agent?: string
+  prompt?: string
+  promptFile?: string
 }
 export const STANDING = /^@[a-zA-Z0-9_-]+$/
 export const FAILURE_LIMIT = 3
