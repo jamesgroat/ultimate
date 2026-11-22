@@ -144,6 +144,17 @@ async function fixture(
   let opened: OpenHost
   let service!: MessagesService
   let hold = gate()
+  // A synthetic tool call must remain live across reopen until this fixture closes.
+  // Do not reuse reporter: another test resolves its module-global gate.
+  const callHold = gate()
+  const requestCall = defineTask<null, { phase: 'hold' }, null>({
+    name: 'messages-test.request-call',
+    version: 1,
+    initial: () => ({ phase: 'hold' }),
+    phases: { hold: (_task, _runtime, caller) => awaitWithContext(callHold.promise, caller) },
+    abort: (_task, runtime, caller) =>
+      runtime.commit(() => ({ status: 'terminal', outcome: { status: 'aborted' } }), caller),
+  })
   let holding = false
   const events = eventHost(() => opened.harness, 'messages')
   const openers: (() => Promise<void>)[] = []
@@ -249,7 +260,7 @@ async function fixture(
   prepared.registry.install(
     defineExtension({
       name: 'test-hold',
-      tasks: [anchor, reporter],
+      tasks: [anchor, reporter, requestCall],
       tools: [
         defineTool({
           name: 'workspace',
@@ -477,6 +488,7 @@ async function fixture(
     log,
     action,
     service: () => service,
+    requestCall,
     open,
     get hold() {
       return hold
@@ -527,15 +539,11 @@ it('keeps an acknowledgement open and completes exactly one request across repla
   await until(async () => !(await f.opened.harness.snapshot(LiveDoc, f.recipient.id, context))?.run)
   const taskId = await f.opened.harness.commit(
     (tx) =>
-      tx.createTask(
-        reporter,
-        { delivered: false },
-        {
-          conversationId: f.recipient.id,
-          ownership: { kind: 'conversation' },
-          background: true,
-        },
-      ),
+      tx.createTask(f.requestCall, null, {
+        conversationId: f.recipient.id,
+        ownership: { kind: 'conversation' },
+        background: true,
+      }),
     context,
   )
   const api = {
@@ -2694,15 +2702,11 @@ it('replays an explicit remote answer after restart mid-delivery without answeri
   await f.opened.root.waitForIdle(context)
   const taskId = await f.opened.harness.commit(
     (tx) =>
-      tx.createTask(
-        reporter,
-        { delivered: false },
-        {
-          conversationId: ROOT_CONVERSATION_ID,
-          ownership: { kind: 'conversation' },
-          background: true,
-        },
-      ),
+      tx.createTask(f.requestCall, null, {
+        conversationId: ROOT_CONVERSATION_ID,
+        ownership: { kind: 'conversation' },
+        background: true,
+      }),
     context,
   )
   const api = {
