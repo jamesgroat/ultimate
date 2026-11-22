@@ -34,7 +34,15 @@ import { activityBehavior } from './activity.ts'
 import { activityStats } from './activity-stats.ts'
 import { compactionEvents } from './compactions.ts'
 import { contextBehavior } from './context.ts'
-import { ContextUsageDoc, ConversationsApi, Marks, Previews, Release, Trees } from './api.ts'
+import {
+  ConclusionGuard,
+  ContextUsageDoc,
+  ConversationsApi,
+  Marks,
+  Previews,
+  Release,
+  Trees,
+} from './api.ts'
 import {
   ActivityAction,
   ConcludeAction,
@@ -225,7 +233,7 @@ async function ownedTree(tx: Tx, ids: ConversationId[]) {
   return tree
 }
 export async function concludeIn(
-  host: Pick<ExtensionHost, 'doc' | 'emit'>,
+  host: Pick<ExtensionHost, 'doc' | 'emit' | 'want'>,
   tx: Tx,
   ids: ConversationId[],
   by: ConversationId | 'landing' | 'user',
@@ -236,6 +244,8 @@ export async function concludeIn(
     if (found.owner) throw new Error(`Conversation ${id} is owned, not a top-level conversation`)
     await refuseFixed(host, tx, id, 'concluded')
   }
+  const tree = await ownedTree(tx, ids)
+  if (typeof by === 'number') await host.want(ConclusionGuard)?.check(tx, [...tree])
   const ui = await tx.doc(UiState, ROOT_CONVERSATION_ID)
   const previous = ui['ext.conversations.concluded']
   ui['ext.conversations.concluded'] = [
@@ -251,7 +261,6 @@ export async function concludeIn(
       : {}),
     ...Object.fromEntries(ids.map((id) => [id, now])),
   }
-  const tree = await ownedTree(tx, ids)
   await host.emit(tx, Concluded, { conversations: [...tree].toSorted((a, b) => a - b), by })
   return tree
 }

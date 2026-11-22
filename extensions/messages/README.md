@@ -56,6 +56,8 @@ append ` · run 2/4` (using its label and counts), or ` · not running` when it 
 popover counts branches the conversation started that currently wait on it, rather than inferring a debt from past
 reports. The browser reads `board.started` read-only.
 
+Messages provides `conversations.conclusion-guard`: an agent cannot conclude a branch that owns an unanswered Serving request unless an output is durably pending. User conclusion still permits cancellation and its existing lost-output failure; landing continues to reserve and deliver its card through the existing output route.
+
 ### Messages to the user
 
 A message to `user` shows in the sender's transcript and starts no run. For @ultimate it is its answer: the run ends

@@ -61,6 +61,7 @@ Actions are callable from the browser with `api.action` or by agents with
 `await ultimate.action('conversations', 'conclude', {ids: [N]})` in codemode. The browser never rewrites the concluded
 list. No state-key migration runs automatically.
 
+- Agent-driven conclusion is refused transactionally when messages' `conversations.conclusion-guard` finds a Serving branch in the tree without a durable pending output. The agent must queue its report first. User conclusions and landing reservations retain their existing behavior; no assistant text is forwarded implicitly.
 - `conclude {ids:number[]}`: validates top-level conversations (unknown ids, subagents, listed roots and standing agents
   throw, refusing the whole call; a standing agent is one marked by the service's `setStanding`, which subagents calls
   for residents and workspaces for landers, never by its label or title), deduplicates and

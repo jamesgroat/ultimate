@@ -94,6 +94,12 @@ export type ReleaseService = {
 }
 /** The extension point concluding frees resources through; workspaces provides it (worktrees). */
 export const Release = defineApi<ReleaseService>()('conversations.release')
+export type ConclusionGuardService = {
+  /** Refuse agent conclusion of a tree whose request still lacks a durable queued output, inside the conclusion transaction. */
+  check(tx: Tx, ids: ConversationId[]): Promise<void>
+}
+/** Messages protects unanswered requests before an agent concludes their owner; user and landing conclusions bypass it. */
+export const ConclusionGuard = defineApi<ConclusionGuardService>()('conversations.conclusion-guard')
 export type PreviewsService = {
   /** Stop the previews conversations `ids` started (each listed, descendants included); returns their instance ids. */
   stop(ids: ConversationId[], caller: Context): Promise<string[]>

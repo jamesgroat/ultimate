@@ -32,7 +32,7 @@ import { isOwed } from '../../lib/message-state.ts'
 import { actingAs } from '../../lib/acting-as.ts'
 import { imagesParameter, SCAN_PAGE } from './images.ts'
 import { owed, parentOf, Serving, Started, starterOf } from './addresses.ts'
-import { Concluded } from '../conversations/api.ts'
+import { Concluded, ConclusionGuard } from '../conversations/api.ts'
 import { dropped } from './outcomes.ts'
 import { delivery, reconcileOutputs, retireOutput, settle, submitOutput } from './delivery.ts'
 import { notice } from './notice.ts'
@@ -239,6 +239,16 @@ export default function messages(host: ExtensionHost) {
     { from: 'now' },
   )
 
+  host.implement(ConclusionGuard, {
+    check: async (tx, ids) => {
+      const { owners } = await tx.doc(Serving, ROOT_CONVERSATION_ID)
+      for (const { owner, pending } of Object.values(owners))
+        if (owner.kind === 'branch' && ids.includes(owner.id) && pending.length === 0)
+          throw new Error(
+            `Branch #${owner.id} still owes a result. Queue its report before concluding it.`,
+          )
+    },
+  })
   host.implement(Branches, {
     starter: (id, ctx) => starterOf(host, id, ctx),
     working: (tx, id) => working(tx, id),

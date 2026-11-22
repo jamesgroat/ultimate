@@ -51,7 +51,13 @@ import { Profile, Standing, Subagents } from '../../subagents/api.ts'
 import { Family, Selection } from '../../models/api.ts'
 import { writeFamilies } from '../../../lib/families-settings.ts'
 import { landingPending, pendingLandingCards, Workspaces } from '../../workspaces/workspaces.ts'
-import { actions as conversationActions, concludedIn } from '../../conversations/server.ts'
+import { Branches, LanderReportEntry } from '../../workspaces/api.ts'
+import type { BranchesService } from '../../workspaces/api.ts'
+import {
+  actions as conversationActions,
+  concludedIn,
+  concludeIn,
+} from '../../conversations/server.ts'
 import { UiState } from '../../../shared/ui-state.ts'
 
 const homes: string[] = []
@@ -169,6 +175,7 @@ async function fixture(
     // Messages also implements workspaces' branches point; the tests call its own service.
     implement: (api: { name: string }, value: MessagesService) => {
       if (api.name === 'messages') service = value
+      else provided.set(api.name, value)
     },
     want: provider,
     need: provider,
@@ -241,6 +248,17 @@ async function fixture(
       tasks: [anchor, reporter],
       tools: [
         defineTool({
+          name: 'workspace',
+          description: 'Submission boundary stub, without git or a lander',
+          parameters: obj({}),
+          replay: 'safe',
+          async execute(_input, _api, ctx) {
+            holding = true
+            await awaitWithContext(hold.promise, ctx)
+            return { output: [{ type: 'text', text: 'Submitted' }] }
+          },
+        }),
+        defineTool({
           name: 'hold',
           description: 'Hold the current run',
           parameters: obj({}),
@@ -267,6 +285,14 @@ async function fixture(
         : last.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('')
     observed.push(text)
     const command = text.startsWith('Message from') ? text.split('\n')[1] : text
+    if (last.role === 'user' && command === 'DESIGN_SUBMIT')
+      return fauxAssistantMessage(
+        [
+          fauxText('Design: keep the report durable before concluding.'),
+          fauxToolCall('workspace', {}),
+        ],
+        { stopReason: 'toolUse' },
+      )
     if (last.role === 'user' && command.startsWith('BRANCH '))
       return fauxAssistantMessage([fauxToolCall('branch', JSON.parse(command.slice(7)))], {
         stopReason: 'toolUse',
@@ -2484,6 +2510,123 @@ it('names the project when another Ultimate cannot be reached, and marks the mes
     stopped.service().tell(ROOT_CONVERSATION_ID, { project: 'poe2-rust', text: 'Hi' }, context),
   ).rejects.toThrow('poe2-rust is not running on this machine')
 })
+it('baseline boundary: design and submit share an assistant entry before landing concludes', async () => {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  await enableBranch(f)
+  const request = await actions.remote(
+    {
+      key: 'design-submit',
+      text: 'BRANCH ' + JSON.stringify({ prompt: 'DESIGN_SUBMIT', isolated: false }),
+      reply: true,
+      from,
+    },
+    f.action(),
+  )
+  await until(f.holding)
+  const branch = (await f.log())!.messages.find((m) => m.text === 'DESIGN_SUBMIT')!
+    .to as ConversationId
+  const view = await (await f.opened.harness.conversation(branch, context))!.context(context)
+  const entry = view.entries.find(
+    (e) => e.kind === 'pi.assistant' && JSON.stringify(e).includes('Design:'),
+  )
+  expect(JSON.stringify(entry)).toContain('workspace')
+  await f.opened.harness.commit((tx) => concludeIn(f.host, tx, [branch], 'landing'), context)
+  await until(f.reactorsSettled)
+  expect(
+    (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[request]
+      ?.owner,
+  ).toEqual({ kind: 'branch', id: branch })
+  expect((await f.log())!.messages.some((m) => m.state === 'failed')).toBe(false)
+  f.hold.release()
+})
+
+async function unreportedBranch(reserveLanding = false) {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  await enableBranch(f)
+  const request = await actions.remote(
+    {
+      key: 'unsafe-conclude',
+      text: 'BRANCH ' + JSON.stringify({ prompt: 'Progress STALL', isolated: false }),
+      reply: true,
+      from,
+    },
+    f.action(),
+  )
+  await until(f.holding)
+  await until(() => other.posted.length === 1)
+  const branch = (await f.log())!.messages.find((m) => m.text === 'Progress STALL')!
+    .to as ConversationId
+  f.hold.release()
+  await until(async () => {
+    const owner = (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[
+      request
+    ]
+    return owner?.owner.kind === 'branch' && owner.owner.id === branch && owner.pending.length === 0
+  })
+  const branches = f.provided.get(Branches.name) as BranchesService
+  await f.opened.harness.commit(async (tx) => {
+    await concludeIn(f.host, tx, [branch], 'landing')
+    if (reserveLanding) await branches.reserveLanding(tx, branch, 'result-1')
+  }, context)
+  await until(f.reactorsSettled)
+  return { f, other, request, branch, branches }
+}
+
+it('delivers a reserved landing through the existing output route', async () => {
+  const { f, other, request, branch, branches } = await unreportedBranch(true)
+  expect(other.posted).toHaveLength(1)
+  expect(
+    (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[request]
+      ?.pending,
+  ).toEqual(['landing:result-1'])
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).results['result-1'] = {
+      conversationId: branch,
+    } as never
+    await branches.submitLanding(
+      tx,
+      f.opened.root,
+      {
+        type: 'input',
+        content: 'Landed the reviewed change',
+        entry: { kind: LanderReportEntry.kind, data: { id: 'result-1' } },
+        requestId: 'lander:result-1',
+      },
+      branch,
+      'result-1',
+    )
+  }, context)
+  await until(() => other.posted.length === 2)
+  expect(other.posted[1].body).toMatchObject({
+    failed: false,
+    text: expect.stringContaining('Landed the reviewed change'),
+  })
+  expect(
+    (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[request],
+  ).toBeUndefined()
+})
+
+it('refuses unsafe agent conclusion after landing but preserves user conclusion and lost-output failure', async () => {
+  const { f, other, branch } = await unreportedBranch()
+  await expect(
+    conversationActions.conclude(
+      { ids: [branch] },
+      { ...f.action(), conversationId: ROOT_CONVERSATION_ID },
+    ),
+  ).rejects.toThrow('Queue its report before concluding')
+  await until(f.reactorsSettled)
+  expect(other.posted).toHaveLength(1)
+  await conversationActions.conclude({ ids: [branch] }, f.action())
+  await until(() => other.posted.length === 2)
+  expect(other.posted[1].body).toMatchObject({
+    key: 'unsafe-conclude',
+    failed: true,
+    text: expect.stringContaining('was concluded without reporting'),
+  })
+})
+
 it('hands a concluded branch’s remote request to the automation created while reading its reply', async () => {
   const other = await otherUltimate(() => [200, { result: 1 }])
   const f = await remoteFixture(other.url)
@@ -2692,7 +2835,10 @@ it('lets a pending branch report settle a concluded branch without failing on ea
     { report: true, note: false },
   )
   await until(f.holding)
-  await conversationActions.conclude({ ids: [branch] }, f.action())
+  await conversationActions.conclude(
+    { ids: [branch] },
+    { ...f.action(), conversationId: ROOT_CONVERSATION_ID },
+  )
   await until(f.reactorsSettled)
   expect(other.posted).toHaveLength(1)
   f.hold.release()
