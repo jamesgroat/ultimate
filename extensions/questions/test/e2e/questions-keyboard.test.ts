@@ -172,22 +172,27 @@ it('answers a decisions card with letters, arrows and Enter', async () => {
     name: `Send: answer to message ${second.id}`,
     exact: true,
   })
+  // Keep the hold duration in the browser: a delayed test worker must not turn a short press into a long one.
+  const now = new Date()
+  await page.clock.install({ time: now })
+  await page.clock.pauseAt(now)
   const box = (await sendNext.boundingBox())!
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
   // Released early, the hold is an ordinary click: Send with its undo window.
   await page.mouse.down()
-  await page.waitForTimeout(400)
+  await page.clock.runFor(400)
   await page.mouse.up()
   await next.getByRole('button', { name: 'Undo' }).click()
   await sendNext.waitFor()
   const picked = async () =>
     (await log())?.messages.find((m) => m.re === second.id && m.from === 'user')
-  const held = Date.now()
   await page.mouse.down()
+  await page.clock.runFor(999)
+  expect(await picked()).toBeUndefined()
+  await page.clock.runFor(1)
   await until(async () => !!(await picked()))
-  expect(Date.now() - held).toBeLessThan(2500)
   await page.mouse.up()
-  await page.waitForTimeout(500)
+  await page.clock.runFor(500)
   expect(
     (await log())?.messages.filter((m) => m.re === second.id && m.from === 'user'),
   ).toHaveLength(1)
