@@ -463,6 +463,7 @@ function backend(host: ExtensionHost) {
       sub.subscribers = sub.subscribers.filter((s) => s !== prepared.subscriber)
       reachesSomeone(sub)
     } else if (args.action === 'resume' || args.action === 'run') {
+      reachesSomeone(sub)
       if (sub.script!.state === 'stopped' && caller === sub.script!.conversationId)
         throw new Error(`Automation ${id} is stopped; only its owner resumes it`)
       if (

@@ -667,6 +667,30 @@ it('discovers a paused handler default and sends FIRE only through its prompt ru
       (e) => e.kind.startsWith('automations.fired') || e.kind.startsWith('automations.finished'),
     ),
   ).toEqual([])
+  const path = join(dir, 'automation.json')
+  const defaults = JSON.parse(await readFile(path, 'utf8'))
+  await writeFile(path, JSON.stringify({ ...defaults, subscribers: ['@ultimate'] }))
+  await list(app)
+  await app.extensions.invoke(
+    'automations',
+    'update',
+    { id: 'handler', prompt: '' },
+    new AbortController().signal,
+  )
+  await writeFile(path, JSON.stringify(defaults))
+  await list(app)
+  expect(await record()).toMatchObject({
+    enabled: false,
+    subscribers: [],
+    overrides: { prompt: true },
+  })
+  expect((await record()).prompt).toBeUndefined()
+  for (const action of ['resume', 'run']) {
+    await expect(call(app, action, 'handler')).rejects.toThrow(
+      'At least one of prompt or subscribers is required',
+    )
+    expect(await record()).toMatchObject({ enabled: false, fires: 1, script: { state: 'stopped' } })
+  }
 })
 
 it('does not restore a removed subscriber when an unrelated manifest changes, and preserves runtime profiles', async () => {
