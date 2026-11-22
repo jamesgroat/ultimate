@@ -2650,6 +2650,119 @@ it('takes a late answer after the log dropped its message, and keys named like o
   expect(typeof id).toBe('number')
   expect((await f.log())!.messages.find((m) => m.id === id)).toMatchObject({ from: 'remote' })
 })
+it('replays an explicit remote answer after restart mid-delivery without answering its sibling', async () => {
+  const sink = await otherUltimate(() => [200, { result: 41 }])
+  const receiver = await remoteFixture(sink.url)
+  for (const text of ['Selected request', 'Sibling request'])
+    await receiver.service().tell(ROOT_CONVERSATION_ID, { project: 'poe2-rust', text }, context)
+  const keys = sink.posted.map((post) => (post.body as { key: string }).key)
+  const acknowledgments = gate()
+  const attempts: { key: string; text: string; failed: boolean }[] = []
+  const receipts: unknown[] = []
+  const transport = createServer(async (request, response) => {
+    let raw = ''
+    for await (const chunk of request) raw += String(chunk)
+    const { args } = JSON.parse(raw) as { args: { key: string; text: string; failed: boolean } }
+    attempts.push(args)
+    // Apply through the real receiver, but lose the acknowledgment when the sender closes.
+    const receipt = await actions.remoteReply(args, receiver.action())
+    receipts.push(receipt)
+    await acknowledgments.promise
+    response
+      .writeHead(200, { 'Content-Type': 'application/json' })
+      .end(JSON.stringify({ result: receipt }))
+  })
+  await new Promise<void>((done) => transport.listen(0, '127.0.0.1', done))
+  servers.push(transport)
+  const f = await remoteFixture(`http://127.0.0.1:${(transport.address() as AddressInfo).port}`)
+  const prose: FauxResponseFactory = () => {
+    f.faux.appendResponses([prose])
+    return fauxAssistantMessage([fauxText('Noted. Ordinary final prose is not a reply.')])
+  }
+  f.faux.setResponses([prose])
+  const ids: number[] = []
+  for (const [index, key] of keys.entries()) {
+    ids.push(await actions.remote({ key, text: `Request ${index}`, reply: true, from }, f.action()))
+    await f.opened.root.waitForIdle(context)
+  }
+  await until(async () => {
+    const log = await f.log()
+    return ids.every(
+      (id) => log?.messages.find((message) => message.id === id)?.state === 'delivered',
+    )
+  })
+  await f.opened.root.waitForIdle(context)
+  const taskId = await f.opened.harness.commit(
+    (tx) =>
+      tx.createTask(
+        reporter,
+        { delivered: false },
+        {
+          conversationId: ROOT_CONVERSATION_ID,
+          ownership: { kind: 'conversation' },
+          background: true,
+        },
+      ),
+    context,
+  )
+  const api = {
+    conversationId: ROOT_CONVERSATION_ID,
+    taskId,
+    callId: 'explicit-mid-delivery',
+  } as ToolExecutionApi
+  const complete = () =>
+    requestTool(f.host).execute(
+      { id: ids[0], action: 'reply', text: 'Selected result' },
+      api,
+      context,
+    )
+  await complete()
+  await until(() => receipts.length === 1)
+  const outbound = () =>
+    f
+      .log()
+      .then((log) =>
+        log!.messages.filter((message) => message.to === 'remote' && message.re === ids[0]),
+      )
+  expect(await outbound()).toMatchObject([{ state: 'sent', remote: { key: keys[0] } }])
+  expect((await f.log())!.messages.find((message) => message.id === ids[1])?.state).toBe(
+    'delivered',
+  )
+  await f.opened.close()
+  await f.open()
+  f.opened.harness.resume()
+  await complete() // Same persisted tool-call receipt: do not queue a second result.
+  await until(() => receipts.length === 2)
+  expect(await outbound()).toHaveLength(1)
+  expect((await outbound())[0].state).toBe('sent') // Still awaiting the transport acknowledgment.
+  acknowledgments.release()
+  await until(async () => (await outbound())[0].state === 'delivered')
+  await (
+    await f.opened.root.submit(
+      { type: 'input', content: 'Ordinary final prose after restart' },
+      context,
+    )
+  ).wait(context)
+  await receiver.opened.root.waitForIdle(context)
+  expect(attempts).toEqual([
+    { key: keys[0], text: 'Selected result', failed: false },
+    { key: keys[0], text: 'Selected result', failed: false },
+  ])
+  expect(receipts[1]).toBe(receipts[0])
+  expect(await replies(receiver)).toHaveLength(1)
+  expect((await replies(receiver))[0].data).toMatchObject({
+    text: 'Selected result',
+    failed: false,
+  })
+  expect(
+    (await receiver.log())!.messages.find((message) => message.remote?.key === keys[1])?.state,
+  ).toBe('delivered')
+  expect((await f.log())!.messages.find((message) => message.id === ids[1])?.state).toBe(
+    'delivered',
+  )
+  expect(await outbound()).toHaveLength(1)
+})
+
 it('posts a tell a crash cut off once, after the restart, and settles it delivered', async () => {
   // Before the post was a task, a crash between logging and posting left the message `sent` with nothing to post it.
   const keys: string[] = []
