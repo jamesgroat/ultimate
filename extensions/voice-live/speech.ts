@@ -1,4 +1,5 @@
 import { cell } from '../../lib/cell.ts'
+import { inProcess, isAborted } from '../../lib/errors.ts'
 
 export const CHARS_PER_SECOND = 14.5
 
@@ -72,6 +73,8 @@ export function createPlayer(options: {
   enabled: () => boolean
   listening: () => boolean
   frame: (fn: () => void) => () => void
+  render: (text: string, signal: AbortSignal) => Promise<{ audio: string; mimeType: string }>
+  error: (error: unknown) => void
 }) {
   let items: Sentence[] = []
   const state = cell<PlayerState>({
@@ -84,6 +87,31 @@ export function createPlayer(options: {
   })
   let token = 0
   let stopWordClock: (() => void) | undefined
+  let fetching = new AbortController()
+  let audio: HTMLAudioElement | undefined
+  let source: string | undefined
+  const silence =
+    'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAAAA=='
+  const cancel = () => {
+    fetching.abort()
+    fetching = new AbortController()
+    audio?.pause()
+    if (source) URL.revokeObjectURL(source)
+    source = undefined
+    stopWordClock?.()
+  }
+  const unlock = () => {
+    audio ??= new Audio()
+    if (!source) {
+      audio.src = silence
+      inProcess(
+        'the gesture unlock belongs to this page audio element',
+        audio.play().catch((error: unknown) => {
+          if (!isAborted(error)) options.error(error)
+        }),
+      )
+    }
+  }
   const idle = new Set<() => void>()
   const publish = (change: Partial<PlayerState>) => {
     state.set({ ...state.get(), ...change })
@@ -98,57 +126,78 @@ export function createPlayer(options: {
     const item = items[index]
     if (!item) return
     if (options.listening()) {
-      speechSynthesis.cancel()
+      cancel()
       publish({ index, charIndex: -1, playing: false, paused: true })
       return
     }
     const mine = ++token
-    speechSynthesis.cancel()
-    stopWordClock?.()
-    const utterance = new SpeechSynthesisUtterance(item.text)
-    utterance.rate = options.rate()
-    let boundaries = false
-    let audible: number | undefined
-    const rate = utterance.rate
-    const startedAt = Date.now()
-    const show = (at: number) => {
-      const charIndex = item.starts.findLast((start) => start <= at) ?? 0
-      if (charIndex > state.get().charIndex) publish({ charIndex })
-    }
-    utterance.addEventListener('start', () => {
+    cancel()
+    unlock()
+    const signal = fetching.signal
+    const rate = options.rate()
+    publish({ index, charIndex: -1, playing: true, paused: false, startedAt: Date.now() })
+    const failed = (error: unknown) => {
       if (mine !== token) return
-      audible = Date.now()
-      stopWordClock = options.frame(() => {
-        if (boundaries || mine !== token || audible === undefined) return
-        show(((Date.now() - audible) / 1000) * charsPerSecond(rate))
-      })
-    })
-    utterance.addEventListener('boundary', (event) => {
-      if (event.name && event.name !== 'word') return
-      boundaries = true
-      if (mine === token) show(event.charIndex)
-    })
-    const finished = () => {
-      if (mine !== token) return
-      stopWordClock?.()
-      if (audible !== undefined) learn(rate, item.text.length, (Date.now() - audible) / 1000)
-      if (items[index + 1]) play(index + 1)
-      else publish({ playing: false, charIndex: -1 })
+      cancel()
+      publish({ playing: false, paused: true })
+      options.error(error)
     }
-    utterance.addEventListener('end', finished)
-    utterance.addEventListener('error', finished)
-    publish({ index, charIndex: -1, playing: true, paused: false, startedAt })
-    speechSynthesis.speak(utterance)
+    inProcess(
+      'sentence playback belongs to this page and is canceled by its player',
+      options
+        .render(item.text, signal)
+        .then(async (rendered) => {
+          if (mine !== token || signal.aborted) return
+          const bytes = Uint8Array.from(atob(rendered.audio), (c) => c.charCodeAt(0))
+          const player = (audio ??= new Audio())
+          const url = URL.createObjectURL(new Blob([bytes], { type: rendered.mimeType }))
+          source = url
+          player.src = url
+          player.playbackRate = rate
+          player.addEventListener(
+            'ended',
+            () => {
+              if (mine !== token) return
+              stopWordClock?.()
+              if (Number.isFinite(player.duration))
+                learn(rate, item.text.length, player.duration / rate)
+              if (items[index + 1]) play(index + 1)
+              else {
+                cancel()
+                publish({ playing: false, charIndex: -1 })
+              }
+            },
+            { signal },
+          )
+          player.addEventListener(
+            'error',
+            () => failed(new Error('Local speech audio could not play')),
+            { signal },
+          )
+          await player.play()
+          if (mine !== token) return
+          stopWordClock = options.frame(() => {
+            if (mine !== token) return
+            const at =
+              Number.isFinite(player.duration) && player.duration > 0
+                ? (player.currentTime / player.duration) * item.text.length
+                : player.currentTime * charsPerSecond(1)
+            const charIndex = item.starts.findLast((start) => start <= at) ?? 0
+            if (charIndex > state.get().charIndex) publish({ charIndex })
+          })
+        })
+        .catch(failed),
+    )
   }
 
   const halt = () => {
     token++
-    speechSynthesis.cancel()
-    stopWordClock?.()
+    cancel()
   }
 
   return {
     state,
+    unlock,
     items: () => items as readonly Sentence[],
     load(key: string, sentences: readonly Sentence[], streaming: boolean) {
       halt()

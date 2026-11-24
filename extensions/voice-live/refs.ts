@@ -3,6 +3,12 @@ import type { JsonValue } from '@earendil-works/chord/json'
 import type { ConversationId, EntryId, TaskId } from '@earendil-works/pi-durable'
 import { actionRef, docRef } from '../../shared/extension-api.ts'
 
+/** Render a sentence through the personal speak worker, with no remote or browser fallback. */
+export const RenderAction = actionRef<{ text: string }, { audio: string; mimeType: string }>(
+  'voice-live',
+  'render',
+)
+
 /** How one turn reached the model: the recording itself (`audio`) or its transcript (`text`). */
 export type VoiceRoute = 'audio' | 'text'
 

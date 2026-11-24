@@ -15,7 +15,6 @@ import { Branch } from '../../lineage/api.ts'
 import { context } from '../../../server/harness.ts'
 import { Fork, Session, Ui } from '../server.ts'
 import { fauxServer, post, sourceCopy, temp, until } from '../../../test/helpers.ts'
-import { writeSecret } from '../../secrets/store.ts'
 
 let ultimateRoot: string
 const servers: Awaited<ReturnType<typeof fauxServer>>[] = []
@@ -23,7 +22,33 @@ beforeAll(async () => {
   ultimateRoot = await sourceCopy(await temp())
   await writeFile(
     join(ultimateRoot, '.ultimate/settings.json'),
-    JSON.stringify({ extensions: { enable: ['voice-live'] } }),
+    JSON.stringify({ extensions: { enable: ['voice-live', 'speak'] } }),
+  )
+  // Decode is tested separately; these tests exercise the durable task and fork settlement without spawning ffmpeg.
+  await writeFile(
+    join(ultimateRoot, 'extensions/voice-live/local.ts'),
+    `
+    export async function localTranscript(host, recording, signal) {
+      const result = await host.invoke('speak', 'transcribe', { pcm: recording.data, turn: false }, signal)
+      return result.text.trim()
+    }
+  `,
+  )
+  await mkdir(join(ultimateRoot, 'extensions/speak'), { recursive: true })
+  await writeFile(
+    join(ultimateRoot, 'extensions/speak/server.ts'),
+    `
+    export default { name: 'speak' }
+    export const actions = {
+      sttStatus: async () => ({ ready: true }),
+      transcribe: async ({ pcm, turn }) => {
+        if (!pcm || turn !== false) throw new Error('Expected PCM without endpoint prediction')
+        const result = await fetch('https://local.test/transcribe')
+        if (!result.ok) throw new Error('Local worker failed (HTTP ' + result.status + ')')
+        return result.json()
+      },
+    }
+  `,
   )
 })
 afterEach(async () => {
@@ -40,12 +65,11 @@ async function fixture() {
     join(home, '.ultimate/settings.json'),
     JSON.stringify({ voice: { model: 'faux/gemini-faux' } }),
   )
-  await writeSecret(home, 'OPENAI_API_KEY', 'sk-test')
   const realFetch = globalThis.fetch
   const transcribed: string[] = []
   vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : input.toString()
-    if (url !== 'https://api.openai.com/v1/audio/transcriptions') return realFetch(input, init)
+    if (url !== 'https://local.test/transcribe') return realFetch(input, init)
     const text = transcribed.shift()
     return Promise.resolve(
       text === undefined
@@ -257,7 +281,7 @@ it('the status lists the setup: ready pieces and what is missing', async () => {
   expect(setup.transcription.ready).toBe(true)
   expect(setup.handsFree).toMatchObject({
     ready: false,
-    fix: expect.stringContaining('TYPESAFE_API_KEY'),
+    fix: expect.stringContaining('Local voice needs no API key.'),
   })
 })
 

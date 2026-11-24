@@ -20,7 +20,8 @@ import { arr, lit, num, obj, opt, str, union, unknown } from '@earendil-works/pi
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { defineEffect } from '../../lib/effect.ts'
-import { openaiSecretOrNonOAuthKey, openaiTranscribe } from '../../lib/openai.ts'
+import { localTranscript } from './local.ts'
+import { RenderAction } from './refs.ts'
 import { readSecret } from '../../lib/secrets.ts'
 import { offsetEntryId } from '../../lib/ids.ts'
 import { safeToRerun } from '../../lib/replay.ts'
@@ -59,10 +60,10 @@ import type {
 } from './refs.ts'
 import { voicePrompt } from './prompt.ts'
 
-const DEFAULT_MODEL = { provider: 'antigravity', modelId: 'gemini-4-neon-low' }
+const DEFAULT_MODEL = { provider: 'openai-codex', modelId: 'gpt-6-luna' }
 const MAX_AUDIO_BYTES = 8 * 1024 * 1024
 const PLACEHOLDER = '(no transcript yet)'
-const TRANSCRIBE_TIMEOUT_MS = 65_000
+const TRANSCRIBE_TIMEOUT_MS = 150_000
 const VOICE_TOOLS = [
   'read',
   'memory',
@@ -163,19 +164,11 @@ const transcribeEffect = (host: ExtensionHost) =>
   defineEffect<{ session: ConversationId; audio: string }, string>(
     'voice-live.transcribe',
     async ({ session, audio }, { signal }) => {
-      const key = await openaiSecretOrNonOAuthKey(host, signal)
-      if (!key) throw new Error('Transcription needs an OpenAI API key in ⌘K → Secrets')
-      const { data, mimeType } = await readRecording(host, session, audio)
-      const answer = await openaiTranscribe(
-        key,
-        new Blob([Buffer.from(data, 'base64')], { type: mimeType }),
+      const heard = await localTranscript(
+        host,
+        await readRecording(host, session, audio),
         AbortSignal.any([signal, AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS)]),
       )
-      if (answer.text === undefined)
-        throw new Error(
-          `Transcription failed (HTTP ${answer.status})${answer.detail ? `: ${answer.detail}` : ''}`,
-        )
-      const heard = answer.text.trim()
       if (!heard) await dropSilentTurn(host, session, audio)
       return heard
     },
@@ -317,6 +310,20 @@ const unwrap = <T extends object>(args: unknown) =>
   (args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as Partial<T>
 
 export const actions = {
+  render: implementAction(RenderAction, async (args, { host, signal }) => {
+    const { text } = unwrap<{ text: unknown }>(args)
+    if (typeof text !== 'string' || !text.trim()) throw new Error('Expected speech text')
+    const result = await host.invoke('speak', 'render', { text, engine: 'mlx' }, signal)
+    const { audio, mimeType } = (result ?? {}) as { audio?: unknown; mimeType?: unknown }
+    if (
+      typeof audio !== 'string' ||
+      !audio ||
+      typeof mimeType !== 'string' ||
+      !mimeType.startsWith('audio/')
+    )
+      throw new Error('Local Kokoro returned no audio')
+    return { audio, mimeType }
+  }),
   status: implementAction(StatusAction, async (_args, { host }) => {
     const open = (await host.harness().snapshot(Session, ROOT_CONVERSATION_ID, context))?.id
     const model =
@@ -328,7 +335,18 @@ export const actions = {
       .getAvailableSnapshot()
       .some((listed) => listed.provider === model.provider && listed.id === model.modelId)
     const name = `${model.provider}/${model.modelId}`
-    const transcribes = !!(await openaiSecretOrNonOAuthKey(host))
+    let local: { ready?: boolean; hint?: string }
+    try {
+      local = (await host.invoke(
+        'speak',
+        'sttStatus',
+        null,
+        AbortSignal.timeout(10_000),
+      )) as typeof local
+    } catch (error) {
+      local = { ready: false, hint: String(error) }
+    }
+    const transcribes = local.ready === true
     const classifies =
       !!host.want(ClassifyApi) && !!(await readSecret(host.userHome, 'TYPESAFE_API_KEY'))
     return {
@@ -342,32 +360,31 @@ export const actions = {
               ready: true,
               detail: hearsAudio(model)
                 ? `${name}: hears your voice directly`
-                : `${name}: reads the transcript (Gemini Neon hears your voice directly)`,
+                : `${name}: reasons over the local Parakeet transcript`,
             }
           : {
               ready: false,
               detail: `${name} has no login`,
-              fix:
-                model.provider === 'antigravity'
-                  ? 'Recommended: Gemini 4 Neon through Antigravity. Sign in with `agy` on this machine, or pick another model in the voice settings.'
-                  : 'Log in to its provider, or pick another model in the voice settings.',
+              fix: 'Log in to its provider, or explicitly pick another reasoning model in the voice settings.',
             },
         transcription: transcribes
           ? {
               ready: true,
-              detail: 'OpenAI transcription: your words show as text and reach any model',
+              detail: 'Local Parakeet transcription through speak (ffmpeg required)',
             }
           : {
               ready: false,
-              detail: 'OpenAI transcription is missing',
-              fix: 'Required: add OPENAI_API_KEY in ⌘K → Secrets.',
+              detail: 'Local Parakeet transcription is unavailable',
+              fix:
+                local.hint ??
+                'Install the speak extension and its local worker; ffmpeg is required.',
             },
         handsFree: classifies
           ? { ready: true, detail: 'Jev: "send it" sends a collected message hands-free' }
           : {
               ready: false,
-              detail: 'Hands-free send is off',
-              fix: 'Optional: turn on classify and add TYPESAFE_API_KEY in ⌘K → Secrets, so "send it" sends a collected message. Enter works without it.',
+              detail: 'Optional spoken “send it” is off',
+              fix: 'Local voice needs no API key. Hold Talk while speaking, then release to send. On a keyboard, press Enter to send a collected message.',
             },
       },
     }

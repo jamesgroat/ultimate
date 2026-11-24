@@ -2,13 +2,13 @@ Voice mode: hold to talk, and a fork of @ultimate thinks it through with you, sp
 back to @ultimate when you agree.
 
 It is off by default. Enable it with `"extensions": { "enable": ["voice-live"] }` in your user or project
-`.ultimate/settings.json`. It needs the voice model's login (by default Antigravity, `agy`, for
-`antigravity/gemini-4-neon-low`) and an OpenAI API key for transcription (`OPENAI_API_KEY` in ⌘K → Secrets, the key
-dictation uses). Pick another model with `"voice": { "model": "provider/model" }` in `~/.ultimate/settings.json`.
+`.ultimate/settings.json`. It needs the reasoning model's login (by default `openai-codex/gpt-6-luna`),
+the personal `speak` extension with its local Parakeet/Kokoro worker, and `ffmpeg` on PATH.
+Pick another reasoning model explicitly with `"voice": { "model": "provider/model" }` in `~/.ultimate/settings.json`.
+Local speech failures are shown, never sent to an OpenAI speech API or a browser voice.
 
-The empty voice panel shows this setup as a checklist from `status`: the voice model's login (Gemini 4 Neon through
-Antigravity recommended, since it hears the recording), OpenAI transcription (required) and Jev for hands-free send in
-collect mode (optional), each with what to do when it is missing.
+The empty voice panel shows the model login, local transcription setup and optional Jev hands-free send checklist.
+The worker's saved model, voice and rate remain authoritative; the playback speed is an additional user control.
 
 ## Flow
 
@@ -20,6 +20,8 @@ collect mode (optional), each with what to do when it is missing.
 3. **The turn**: the recording goes to the server (`record`), which keeps it for the session under
    `<home>/voice/` and starts a durable `voice-live.transcribe` task. Its result lands in the fork's `voice.fork`
    document (`transcripts`, or `failed` with the error), so a reload or restart shows the real state.
+   The task decodes MediaRecorder WebM/MP4/OGG with ffmpeg to 16 kHz mono PCM16 in a temporary directory,
+   calls `speak.transcribe` with `turn: false`, then removes the temporary audio. No completion prediction gates a turn.
    - A model that hears audio (Gemini) gets the turn at once: `turn` submits the transcript placeholder as the input,
      and a `beforeRequest` hook adds the recording to that request only. Stored history stays text, so compaction,
      renderers and other models never see audio. The transcript arrives in parallel and shows as your message.
@@ -32,9 +34,10 @@ collect mode (optional), each with what to do when it is missing.
    input carries a short digest of what @ultimate did since the last turn, and every turn says which surface and
    conversation are on screen. The session stays hot until it hands off or End: after a handoff the next turn
    concludes it and forks @ultimate afresh; End concludes it and deletes the session's recordings.
-5. **Replies** stream from the fork's live partial. Each finished sentence is spoken by the browser's
-   `speechSynthesis` at the chosen speed, and the sentence being read is highlighted: word timing from the browser's
-   voices is too unreliable to follow word by word. Folded, the talk bar shows the whole paragraph being read with that
+5. **Replies** stream from the fork's live partial. Each finished sentence renders through `speak.render`
+   (`engine: mlx`) with its returned audio MIME type. The existing sentence player handles interruption, replay,
+   skipping and approximate word highlighting from audio progress. Pressing Talk or a playback control unlocks
+   the audio element inside the gesture for iOS; physical phone acceptance is still required. Folded, the talk bar shows the whole paragraph being read with that
    sentence highlighted, and grows to fit it. The playback bar shows the paragraph, sentence and time left, and skips by sentence or paragraph; any
    sentence plays on click and each reply has replay. Thinking shows open while the model thinks, with a token count
    in the trace, and folds once the reply has played.

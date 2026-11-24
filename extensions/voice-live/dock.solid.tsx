@@ -17,6 +17,7 @@ import {
 } from './refs.ts'
 import type { VoiceClip, VoiceDelivery, VoiceFork, VoiceTurn } from './refs.ts'
 import { createPlayer, splitReply, splitSentences } from './speech.ts'
+import { RenderAction } from './refs.ts'
 import type { Player } from './speech.ts'
 import { createTrace } from './trace.ts'
 import type { Trace } from './trace.ts'
@@ -45,7 +46,7 @@ type Cut = { key: string; sentence: number; charIndex: number }
 export const dock = createRoot(() => {
   const [speak, setSpeak] = useUiState('ext.voice-live.speak', true)
   const [cuesOn, setCuesOn] = useUiState('ext.voice-live.cues', true)
-  const [rate, setRate] = useUiState('ext.voice-live.rate', 1.15)
+  const [rate, setRate] = useUiState('ext.voice-live.rate', 1)
   const [open, setOpen] = useUiState('ext.voice-live.open', false)
   const [holdKeys, setHoldKeys] = useUiState('ext.voice-live.hold', 'mod+shift+space')
   const [collect, setCollect] = useUiState('ext.voice-live.collect', false)
@@ -57,7 +58,14 @@ export const dock = createRoot(() => {
   const [pending, setPending] = createSignal<string | undefined>()
   const cues = createCues(cuesOn)
   const mic = createMic(frame)
-  const player: Player = createPlayer({ rate, enabled: speak, listening: mic.recording, frame })
+  const player: Player = createPlayer({
+    rate,
+    enabled: speak,
+    listening: mic.recording,
+    frame,
+    render: (text, signal) => api.action(RenderAction, { text }, { signal }),
+    error: (failure) => setError(errorMessage(failure)),
+  })
   let held: { busy: boolean } | undefined
   let stopPulse: (() => void) | undefined
   return {
@@ -198,6 +206,7 @@ export async function press() {
   }
   dock.setError(undefined)
   const paused = dock.player.pause()
+  dock.player.unlock()
   dock.hold({ busy: paused || dock.phase() === 'thinking' || dock.phase() === 'sending' })
   try {
     await dock.mic.start()
@@ -205,7 +214,7 @@ export async function press() {
     released = mine
     dock.hold(undefined)
     if (paused) dock.player.resume()
-    dock.setError(errorMessage(failure))
+    dock.setError(`Microphone start failed: ${errorMessage(failure)}`)
     return
   }
   if (released >= mine) {
