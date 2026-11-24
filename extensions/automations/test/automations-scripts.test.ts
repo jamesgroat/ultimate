@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { afterAll, expect, it } from 'vitest'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
@@ -129,6 +129,76 @@ it('stops a paused or deleted automation’s watcher, which cannot resume it', a
     enabled: false,
     script: { state: 'stopped' },
   })
+})
+
+it('keeps explicit handler clears across per-record default reconciliation and refuses unreachable runs', async () => {
+  const home = await temp('ultimate-handler-defaults-')
+  homes.push(home)
+  const projectRoot = join(home, 'project')
+  const definitions = join(home, '.ultimate/agents')
+  await mkdir(definitions, { recursive: true })
+  await writeFile(
+    join(definitions, 'watcher.md'),
+    '---\nname: watcher\ndescription: Test\nmodel: faux/faux-1\ntools: []\n---\nShort.\n',
+  )
+  const folder = join(projectRoot, '.ultimate/automations/handler')
+  const other = join(projectRoot, '.ultimate/automations/other')
+  await mkdir(folder, { recursive: true })
+  await mkdir(other, { recursive: true })
+  const defaults = {
+    ask: 'Check changes',
+    schedule: 'every 5m',
+    agent: 'watcher',
+    promptFile: 'prompt.md',
+    subscribers: ['@ultimate'],
+  }
+  const path = join(folder, 'automation.json')
+  await writeFile(path, JSON.stringify(defaults))
+  await writeFile(join(folder, 'prompt.md'), 'Handle the payload')
+  await writeFile(join(folder, 'run'), '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+  await writeFile(join(other, 'automation.json'), JSON.stringify({ ask: 'Other' }))
+  const server = await fauxServer({
+    ultimateRoot: resolve('.'),
+    projectRoot,
+    userHome: home,
+    home: join(home, 'state'),
+    localSetup: true,
+  })
+  servers.push(server)
+  const invoke = (action: string, args: JsonValue = {}) =>
+    server.extensions.invoke('automations', action, args, new AbortController().signal)
+  const record = async () => {
+    await invoke('list')
+    return (await server.harness.snapshot(Automations, context))!.automations.handler
+  }
+  const original = await record()
+  expect(original).toMatchObject({ enabled: false, agent: 'watcher', prompt: 'Handle the payload' })
+  await invoke('update', { id: 'handler', agent: '', prompt: '' })
+  await writeFile(join(other, 'automation.json'), JSON.stringify({ ask: 'Changed other' }))
+  expect(await record()).toMatchObject({
+    overrides: { agent: true, prompt: true },
+    subscribers: ['@ultimate'],
+  })
+  await writeFile(path, JSON.stringify({ ...defaults, subscribers: [] }))
+  const cleared = await record()
+  expect(cleared.agent).toBeUndefined()
+  expect(cleared.prompt).toBeUndefined()
+  expect(cleared.subscribers).toEqual([])
+  expect(cleared.script!.conversationId).toBe(original.script!.conversationId)
+  for (const action of ['resume', 'run']) {
+    await expect(invoke(action, { id: 'handler' })).rejects.toThrow(
+      'At least one of prompt or subscribers is required',
+    )
+    expect(await record()).toMatchObject({ enabled: false, fires: 0, script: { state: 'stopped' } })
+  }
+  await invoke('update', { id: 'handler', prompt: 'Runtime prompt', subscribers: [] })
+  await invoke('update', { id: 'handler', ask: 'Revised check' })
+  expect(JSON.parse(await readFile(path, 'utf8'))).toMatchObject({
+    promptFile: 'prompt.md',
+    subscribers: [],
+  })
+  await writeFile(path, JSON.stringify(defaults))
+  expect(await record()).toMatchObject({ prompt: 'Runtime prompt', subscribers: [] })
 })
 
 // A project extension outside the clone cannot import api.ts; the token is its name, which is all `want` needs.

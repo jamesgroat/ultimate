@@ -114,6 +114,22 @@ starting itself; changed manifests update it, with ask or timing changes stoppin
 folder or revoked trust forgets it. `delete` forgets the record, not the folder. `run` executes from the host checkout;
 a watcher's repairs edit the committed file, and a branch's edits apply after landing.
 
+A manifest can also set `agent` and either `prompt` or `promptFile`. `promptFile` is a nonempty UTF-8 file relative to the automation folder; absolute paths, traversal and symlinks outside that folder are rejected. Missing or invalid sources stop discovery from enabling the automation and cannot fall back to delivery-only behavior. The normal prompt-run agent resolution applies.
+
+Use `subscribers` instead of `to` for a list of standing agent names (never chapter-specific conversation ids). An explicit `[]` means handler-only and requires a prompt source. Omitting both keeps the legacy `to` default. Specifying both `to` and `subscribers`, or both prompt sources, is invalid. For example:
+
+```json
+{
+  "ask": "Watch for changed reports",
+  "once": false,
+  "agent": "report-handler",
+  "promptFile": "handler.md",
+  "subscribers": []
+}
+```
+
+These are durable defaults: each new chapter discovers them paused. Runtime changes to the agent, prompt or subscribers are chapter-local overrides and survive rediscovery and restarts, including explicit clears. Existing records without default provenance retain their agent and prompt; subscribers follow defaults only when they still exactly match the old manifest target. Updating trigger fields preserves the manifest's handler settings and prompt file reference, not its resolved text. Supervisor escalations and watcher relays are unchanged.
+
 ## Service and browser API
 
 `AutomationsApi` (`api.ts`, token `automations`, core tier: consumers `need` it) offers `create(args)` (`subscribers` stand in for a
