@@ -131,7 +131,7 @@ export const actions = {
   },
 )
 
-it('transfers scheduled and continuous scripts with preserved PR and changelog state, without a writing turn or replay on reopen', async () => {
+it('preserves transfer state and retries missing-secret activation even after a previous start and reopen', async () => {
   const root = await temp('ultimate-transfer-')
   const userHome = join(root, 'user')
   const home = join(root, 'home')
@@ -241,8 +241,26 @@ export const actions = {
       (await app.harness.snapshot(Automations, context))!.automations,
     ).find((a) => a.key === key)!
     expect(pending.transferPending).toBe(true)
-    expect(pending.enabled).toBe(false)
-    expect(pending.script!.state).toBe('stopped')
+    expect(pending.enabled).toBe(true)
+    expect(pending.script!.state).toBe('running')
+    expect(pending.script!.error).toContain('Missing secret ACTIVATION_TEST')
+    await app.harness.commit(async (tx) => {
+      ;(await tx.doc(Automations)).automations[pending.id].script!.startedAt = 1
+    }, context)
+    await app.close()
+    server = undefined
+    app = await open()
+    await expect(invoke('adopt', { transfer, key })).rejects.toThrow(
+      'Missing secret ACTIVATION_TEST',
+    )
+    const failedRecovery = (await app.harness.snapshot(Automations, context))!.automations[
+      pending.id
+    ]
+    expect(failedRecovery.transferPending).toBe(true)
+    expect(failedRecovery.enabled).toBe(true)
+    expect(failedRecovery.script!.state).toBe('running')
+    expect(failedRecovery.script!.startedAt).toBe(1)
+    expect(failedRecovery.script!.error).toContain('Missing secret ACTIVATION_TEST')
     const marker = join(
       userHome,
       '.ultimate/automations',
@@ -262,7 +280,19 @@ export const actions = {
     await app.close()
     server = undefined
     app = await open()
-    await invoke('adopt', { transfer, key })
+    const recovered = (await invoke('adopt', { transfer, key })) as Automation
+    expect(recovered.transferPending).toBeUndefined()
+    expect(recovered.enabled).toBe(true)
+    expect(recovered.script!.state).toBe('running')
+    expect(recovered.script!.startedAt).toBeGreaterThan(1)
+    expect(recovered.script!.pid).toBeGreaterThan(0)
+    expect(recovered.script!.error).toBeUndefined()
+    await app.harness.commit(async (tx) => {
+      ;(await tx.doc(Automations)).automations[recovered.id].transferPending = true
+    }, context)
+    const alreadyRunning = (await invoke('adopt', { transfer, key })) as Automation
+    expect(alreadyRunning.script!.pid).toBe(recovered.script!.pid)
+    expect(alreadyRunning.transferPending).toBeUndefined()
     expect(await readFile(marker, 'utf8')).toBe('new destination observation\n')
   }
   const adopted: Automation[] = []

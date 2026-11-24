@@ -1018,9 +1018,8 @@ function backend(host: ExtensionHost) {
       await scripts.quiesce(active.id)
       await host.harness().commit(async (tx) => {
         const a = (await tx.doc(Automations)).automations[active.id]
-        a.enabled = false
-        a.script!.state = 'stopped'
-        a.script!.error = `Chapter transfer activation failed: ${String(error)}`
+        if (a.enabled && a.script!.state === 'running')
+          a.script!.error = `Chapter transfer activation failed: ${String(error)}`
       }, BACKGROUND_CONTEXT)
       throw error
     }
