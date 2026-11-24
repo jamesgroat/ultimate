@@ -747,8 +747,9 @@ describe('web replica store', () => {
         (event) => void secondRefusal.push(event),
       )
       store.watchRead({ extension: 'test', action: 'valid', args: null }, undefined, () => {})
-      await vi.advanceTimersByTimeAsync(10)
+      vi.advanceTimersByTime(10)
       expect(microtasks).toHaveLength(1)
+      spy.mockRestore()
       expect(() => microtasks[0]()).toThrow('refusal boom')
       await tick()
       expect(server.reads.some((item) => !item.closed && item.read.action === 'valid')).toBe(true)
