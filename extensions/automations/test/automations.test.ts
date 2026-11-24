@@ -331,6 +331,7 @@ it('pause keeps a running profile run alive, skips overlap, and abort cancels a 
   // Labelled 'automation', the run still records the definition it runs, which fast mode reads.
   expect(await f.opened.harness.snapshot(Profile, child.id, context)).toEqual({
     definition: 'writer',
+    createdAt: expect.any(Number),
   })
   await until(async () => (await f.records())[0].runs.some((r) => r.status === 'skipped'), 2500)
   await f.action('pause', { id: a.id })
