@@ -79,6 +79,7 @@ it('isolates preview cloud environment and host identity', () => {
     ULTIMATE_CLOUD_URL: 'wss://parent.example/sync',
     ULTIMATE_CLOUD_TOKEN: 'parent-token',
     ULTIMATE_CLOUD_MACHINE: 'parent-machine',
+    ULTIMATE_MACHINE: 'parent-machine',
   }
   const before = { ...parent }
   const child = previewEnv(parent, {
@@ -90,6 +91,7 @@ it('isolates preview cloud environment and host identity', () => {
   expect(child).not.toHaveProperty('ULTIMATE_CLOUD_URL')
   expect(child).not.toHaveProperty('ULTIMATE_CLOUD_TOKEN')
   expect(child).not.toHaveProperty('ULTIMATE_CLOUD_MACHINE')
+  expect(child).not.toHaveProperty('ULTIMATE_MACHINE')
   expect(child).toEqual({
     PATH: '/bin',
     ULTIMATE_HOME: '/preview/state',

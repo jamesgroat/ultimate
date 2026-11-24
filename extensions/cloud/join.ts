@@ -1,7 +1,7 @@
-import { hostname } from 'node:os'
 import type { JsonObject } from '@earendil-works/pi-durable'
 import { httpBase } from '../../lib/cloud.ts'
 import { meansNone } from '../../lib/errors.ts'
+import { machineName } from '../../lib/machine.ts'
 import { secretMetadata } from '../../lib/secrets.ts'
 import { readSettings, updateSettings, userSettingsPath } from '../../lib/settings.ts'
 import type { JoinResult, JoinState } from './refs.ts'
@@ -29,6 +29,7 @@ export interface JoinDeps {
   fetch: typeof fetch
   setSecret(name: string, value: string): Promise<unknown>
   saveCloud(cloud: { url: string; machine: string }): Promise<void>
+  pinnedMachine?: string
 }
 
 export async function join(
@@ -41,6 +42,10 @@ export async function join(
   if (!MACHINE.test(machine))
     return check(
       'The machine name takes letters, digits, dots, dashes and underscores (up to 64), starting with a letter or digit',
+    )
+  if (deps.pinnedMachine && machine !== deps.pinnedMachine)
+    return check(
+      `This machine is named ${deps.pinnedMachine} by the machine setting; backups register that name, so join as ${deps.pinnedMachine}`,
     )
   const token = typeof input.token === 'string' ? input.token.trim() : ''
   const snapshotKey = typeof input.snapshotKey === 'string' ? input.snapshotKey.trim() : ''
@@ -103,7 +108,7 @@ export async function joinState(userHome: string): Promise<JoinState> {
       ? settings.cloud
       : {}
   const url = typeof cloud.url === 'string' ? cloud.url : undefined
-  const machine = typeof cloud.machine === 'string' ? cloud.machine : hostname()
+  const machine = await machineName(userHome)
   const missing = [TOKEN, SNAPSHOT_KEY].filter(
     (name) => !stored.some((secret) => secret.name === name),
   )

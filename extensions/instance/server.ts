@@ -178,6 +178,7 @@ export function previewEnv(
             'ULTIMATE_CLOUD_URL',
             'ULTIMATE_CLOUD_TOKEN',
             'ULTIMATE_CLOUD_MACHINE',
+            'ULTIMATE_MACHINE',
             'ULTIMATE_MODEL',
             'ULTIMATE_PREVIEW_BRANCH',
           ].includes(key),

@@ -35,6 +35,13 @@ agent in a preview (`instance start`) runs on, fast tier included; see `extensio
 the bash tool (foreground and background), previews, lander checks and automation scripts when the service runs with a delegated
 cgroup (`Delegate=yes`, `DelegateSubgroup=core`, as `pnpm setup:machine` writes it): each process group gets its own
 cgroup under `work/`, which the kernel kills as a whole when `work/` runs out, so the core keeps running. Read at start.
+`machine` (user settings only, a string) is the name this machine goes by for other Ultimates: `messages` tells
+carry it as their sender, and peers key `remotes` on it, so it must not change when the OS hostname does (a move to
+launchd can). Resolution (`lib/machine.ts`): `ULTIMATE_MACHINE`, then the older `ULTIMATE_CLOUD_MACHINE`, then
+`machine`, then `cloud.machine`, then the OS hostname; cloud backups register the same name. A tell naming any of this
+host's names (the configured ones, the OS hostname, its short form, and on macOS `<LocalHostName>` and
+`<LocalHostName>.local`) resolves here, unless `remotes` names that machine explicitly. With `machine` or
+`ULTIMATE_MACHINE` set, joining cloud backups under another name is refused.
 `remotes` (user settings only, `{ "<machine>": { "<project>": "<url>" } }`) names other machines' Ultimate instances,
 for example `{ "laptop": { "my-app": "https://laptop.tail1234.ts.net:4747" } }`: codemode's `{ project }` reads and
 `tools.tell` reach a project on another machine at that URL (its Tailscale Serve address; the caller's tailnet login
