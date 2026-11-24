@@ -3,7 +3,7 @@ import { AgentDoc } from '@earendil-works/pi-durable'
 import type { ConversationId, EntryDraft, Tx } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { configuredModel, familyDefault, hasLogin } from '../../lib/agents.ts'
-import { Family, Pin } from './api.ts'
+import { BeforeInput, Family, Pin } from './api.ts'
 import type { Fallback } from './refs.ts'
 import { FallbackEntry } from './entries.ts'
 
@@ -37,11 +37,14 @@ export async function fallback(
   const requiresSubscriptionReplacement = providerDeclaresSubscriptionAuth(host, from.provider)
   const preservesSubscriptionBilling = (provider: string) =>
     !requiresSubscriptionReplacement || usesSubscriptionNotPerToken(host, provider)
+  const policy = host.want(BeforeInput)
+  const allowed = (ref: Ref) =>
+    preservesSubscriptionBilling(ref.provider) && (policy?.allowsFallback?.(ref) ?? true)
   const same = fresh.find(
     (model) =>
       model.id === from.modelId &&
       model.provider !== from.provider &&
-      preservesSubscriptionBilling(model.provider),
+      allowed({ provider: model.provider, modelId: model.id }),
   )
   const sameModelThenPinThenDefault: [Ref | undefined, Fallback['reason']][] = [
     [same && { provider: same.provider, modelId: same.id }, 'same'],
@@ -49,7 +52,7 @@ export async function fallback(
     [configuredModel(fresh, host.settings, await familyDefault(host)), 'default'],
   ]
   const eligibleReplacement = sameModelThenPinThenDefault.find(
-    ([ref]) => hasLogin(fresh, ref) && preservesSubscriptionBilling(ref!.provider),
+    ([ref]) => hasLogin(fresh, ref) && allowed(ref!),
   )
   const data: Fallback = eligibleReplacement
     ? { from: name(from), to: name(eligibleReplacement[0]!), reason: eligibleReplacement[1] }
@@ -67,7 +70,7 @@ export async function fallback(
   }
   const content = eligibleReplacement
     ? `Model ${data.from} has no login here; this conversation now runs on ${data.to}.`
-    : `Model ${data.from} has no login here and no subscription login can replace it, so this conversation keeps it until the user logs in to ${from.provider} or picks another model.`
+    : `Model ${data.from} has no login here and no allowed login can replace it, so this conversation keeps it until the user logs in to ${from.provider} or picks another model.`
   return {
     entries: [
       { kind: FallbackEntry.kind, data, model: [{ role: 'user', content, timestamp: Date.now() }] },

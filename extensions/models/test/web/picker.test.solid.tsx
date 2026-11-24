@@ -55,6 +55,7 @@ const catalog: ModelsResponse = {
       authTypes: [{ type: 'api_key', name: 'Faux credentials' }],
       status: { configured: true, source: 'stored' },
       isUsingSubscription: false,
+      billing: 'paid-api',
     },
   ],
   models: ['atlas', 'orion'].map((id) => ({
@@ -133,7 +134,7 @@ async function act(label: string, action: string, ...args: unknown[]) {
 const writes = () =>
   harness.fetch.mock.calls.flatMap(([url, init]) => {
     const path = url as string
-    if (!/\/(configure|setFamily|login|answer|cancel)$/.test(path)) return []
+    if (!/\/(configure|select|setFamily|login|answer|cancel)$/.test(path)) return []
     return [
       {
         path,
@@ -172,7 +173,7 @@ it('keeps the picked effort pending across closing the popover, then shows its f
   expect(page.querySelector('.text-error')?.textContent).toContain('refused')
 })
 
-it('lets an agent pick a model and a family by name, recording both writes as the agent', async () => {
+it('lets an agent pick a model and a family by name, each as one select recorded as the agent', async () => {
   const container = renderSolid(() => (
     <>
       <ModelControl />
@@ -196,23 +197,20 @@ it('lets an agent pick a model and a family by name, recording both writes as th
   expect(await act('Review family', 'press')).toMatchObject({ ok: true })
   expect(writes()).toEqual([
     {
-      path: '/api/conversations/1/configure',
-      body: { model: { provider: 'faux', modelId: 'orion' } },
+      path: '/api/extensions/models/actions/select',
+      body: { args: { model: { provider: 'faux', modelId: 'orion' } }, conversationId: 1 },
       source: 'agent',
     },
     {
-      path: '/api/extensions/models/actions/setFamily',
-      body: { args: { family: null }, conversationId: 1 },
-      source: 'agent',
-    },
-    {
-      path: '/api/conversations/1/configure',
-      body: { model: { provider: 'faux', modelId: 'atlas' }, thinkingLevel: 'high' },
-      source: 'agent',
-    },
-    {
-      path: '/api/extensions/models/actions/setFamily',
-      body: { args: { family: 'Review' }, conversationId: 1 },
+      path: '/api/extensions/models/actions/select',
+      body: {
+        args: {
+          model: { provider: 'faux', modelId: 'atlas' },
+          thinkingLevel: 'high',
+          family: 'Review',
+        },
+        conversationId: 1,
+      },
       source: 'agent',
     },
   ])
@@ -273,13 +271,8 @@ it('targets the side chat from thinking controls and the picker, including after
         source: 'agent',
       },
       {
-        path: '/api/conversations/17/configure',
-        body: { model: { provider: 'faux', modelId: 'atlas' } },
-        source: 'agent',
-      },
-      {
-        path: '/api/extensions/models/actions/setFamily',
-        body: { args: { family: null }, conversationId: 17 },
+        path: '/api/extensions/models/actions/select',
+        body: { args: { model: { provider: 'faux', modelId: 'atlas' } }, conversationId: 17 },
         source: 'agent',
       },
     ])
@@ -354,4 +347,63 @@ it('attributes cancellation to the agent even when login returns its flow id aft
     body: { args: { flowId: 'late' }, conversationId: 1 },
     source: 'agent',
   })
+})
+
+it('puts the Claude Code group before its paid twins and labels each login by its resolved billing', async () => {
+  const twin = (provider: string) => ({ ...catalog.models[0], provider, id: 'claude-opus-5-5' })
+  const login = (id: string, name: string, billing: 'subscription' | 'paid-api' | 'unknown') => ({
+    id,
+    name,
+    authTypes: [],
+    status: { configured: true, source: 'stored' as const },
+    isUsingSubscription: billing === 'subscription',
+    billing,
+  })
+  for (const [billing, label] of [
+    ['paid-api', 'Paid API'],
+    ['subscription', 'Subscription'],
+    ['unknown', 'Unknown'],
+  ] as const) {
+    harness.fetch.mockImplementation(async (url, init) => {
+      const path = url as string
+      const subscription = server.handle(path, init)
+      if (subscription) return subscription
+      if (path === '/api/models')
+        return Response.json({
+          providers: [
+            login('anthropic', 'Anthropic', billing),
+            login('claude-code', 'Claude Code', 'subscription'),
+          ],
+          models: [twin('anthropic'), twin('claude-code')],
+        })
+      return Response.json({ result: null })
+    })
+    await store.refreshModels()
+    await sync()
+    const container = renderSolid(() => (
+      <>
+        <ModelControl />
+        <ModelPicker />
+      </>
+    ))
+    await sync()
+    expect(await act('Model and thinking', 'setOpen', true)).toMatchObject({ ok: true })
+    expect(await act('Pick another model', 'press')).toMatchObject({ ok: true })
+    expect(await act('Search model catalog', 'setQuery', 'claude-opus')).toMatchObject({ ok: true })
+    const headings = [...document.querySelectorAll('span.flex.items-center.gap-2')]
+      .map((heading) => heading.textContent ?? '')
+      .filter((text) => /^(anthropic|claude-code)/.test(text))
+    expect(headings.map((text) => text.split(/(?=Anthropic|Claude)/)[0])).toEqual([
+      'claude-code',
+      'anthropic',
+    ])
+    expect(headings[1]).toContain(`· ${label}`)
+    expect(headings[0]).toContain('· Subscription')
+    const rows = [...document.querySelectorAll('[role="option"]')].map(
+      (row) => row.textContent ?? '',
+    )
+    expect(rows.some((row) => row.includes('claude-opus-5-5'))).toBe(true)
+    expect(rows.some((row) => /paid API/i.test(row))).toBe(false)
+    container.remove()
+  }
 })

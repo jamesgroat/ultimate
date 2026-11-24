@@ -55,7 +55,8 @@ import {
   Tally,
 } from './api.ts'
 import { ConversationsApi, Trees } from '../conversations/api.ts'
-import { Standing, Started } from '../subagents/api.ts'
+import { Profile, Standing, Started } from '../subagents/api.ts'
+import { Family } from '../models/api.ts'
 import { spawn } from 'node:child_process'
 import {
   CompactAction,
@@ -600,6 +601,7 @@ type PromptInput = {
   thinkingLevel?: ModelThinkingLevel
 }
 export type BranchInput = PromptInput & {
+  automaticModel?: true
   from: ConversationId
   at?: EntryId
   deliver?: false
@@ -699,6 +701,10 @@ async function forkBranch(
     caller = `#${input.by}${name ? ` (@${name})` : ''}`
   }
   const fork = await tx.forkConversation(from, at, { ownership: { kind: 'ownerless' } })
+  Object.assign(await tx.doc(Profile, fork.id), {
+    createdAt: Date.now(),
+    ...(input.model && !input.automaticModel ? { explicitModel: true } : {}),
+  })
   const inheritedModelAtForkPoint = (await tx.doc(AgentDoc, fork.id)).model
   const model =
     input.model ??
@@ -710,6 +716,7 @@ async function forkBranch(
     ...(model ? { model } : {}),
     ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
   })
+  if (model) (await tx.doc(Family, fork.id)).name = null
   const branchWithOrdinaryTools = await tx.doc(AgentDoc, fork.id)
   delete branchWithOrdinaryTools.tools
   delete branchWithOrdinaryTools.modelTools

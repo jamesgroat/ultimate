@@ -81,13 +81,17 @@ it('lets Get ready hand focus and pointer input to login and the model picker an
   const row = page.getByRole('option').filter({ hasText: 'faux-2' })
   await row.waitFor({ timeout: 5_000 })
   const [configured] = await Promise.all([
-    page.waitForResponse((response) => response.url().endsWith(`/conversations/${id}/configure`)),
+    page.waitForResponse((response) =>
+      response.url().endsWith('/extensions/models/actions/select'),
+    ),
     row.click(),
   ])
   expect(configured.ok()).toBe(true)
   expect(configured.request().postDataJSON()).toEqual({
-    model: { provider: 'faux', modelId: 'faux-2' },
+    args: { model: { provider: 'faux', modelId: 'faux-2' } },
+    conversationId: id,
   })
+  await ready.getByText('faux-2', { exact: true }).waitFor()
   await ready
     .getByRole('button', { name: 'Change', exact: true })
     .and(focused)

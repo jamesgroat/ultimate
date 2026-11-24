@@ -20,7 +20,7 @@ function explanation(data: Fallback) {
   const { reason } = data
   return reason !== 'none'
     ? `${provider} has no login here, so this conversation now runs on ${switchedTo[reason]}.`
-    : `${provider} has no login here, and no subscription login can take over, so this conversation keeps its model and its requests fail until you log in to ${provider}.`
+    : `${provider} has no login here, and no allowed login can take over, so this conversation keeps its model and its requests fail until you log in to ${provider}.`
 }
 
 export function FellBack(props: SolidEntryProps) {
