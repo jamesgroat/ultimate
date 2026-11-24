@@ -74,7 +74,14 @@ records keep name, optional prompt, schedule and run profile, but no subscribers
 chapter. Schedules without a prompt become recreation to-dos.
 
 On open, dream applies a chapter's seed in one commit with `dream.seed.applied` on conversation 1: memories keep
-their sources, to-dos get fresh ids, questions become user-owned to-dos naming the old chapter and message id, and the
+their sources, to-dos get fresh ids, each open card to the user comes back open in the Inbox as the same card (its
+text, questions, options and picks, never pre-answered; images stay behind), asked by the new chapter's @ultimate
+and marked `carried { chapter, id, from }` with its old message id and asker, since that chapter's conversations do
+not exist here; the Inbox header says "asked by #id in <chapter>". The old chapter's copy stays open there: answering
+both copies runs the work twice, and an answer given in the old chapter is not passed to the new one. A seed prepared
+before cards were carried holds its questions as `{ text, ref }`; those still become user-owned to-dos naming the old
+chapter and message id. A question of neither shape is dropped, not kept as a to-do; the morning text says how many
+were dropped. The
 same commit wakes @ultimate with one `dream.chapter` input (the morning card). Its text names the old
 chapter's read APIs, the three learned lines, the carried counts and the handover, and tells @ultimate to continue
 that work. Reopening does not reapply those documents.

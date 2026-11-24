@@ -42,3 +42,30 @@ it('renders the bold lead link in the heading without title images', () => {
     'https://example.com/pr/1784',
   )
 })
+
+it('names the original asker and chapter on a carried card', () => {
+  const container = renderSolid(() => (
+    <Reading
+      entry={{
+        key: 'message:1',
+        at: 1,
+        message: {
+          id: 1,
+          at: 1,
+          from: 69 as ConversationId,
+          to: 'user',
+          text: 'Keep this?',
+          reply: true,
+          state: 'delivered',
+          carried: { chapter: 'earlier', id: 42, from: 17 as ConversationId },
+        },
+      }}
+      now={1000}
+      onBack={() => {}}
+      phone={false}
+    />
+  ))
+  expect(container.querySelector('[data-inbox-carried]')?.textContent).toBe(
+    'asked by #17 in earlier',
+  )
+})

@@ -2,6 +2,7 @@ import type { ConversationId } from '@earendil-works/pi-durable'
 import type { ConversationSummary } from '../../shared/protocol.ts'
 import type { MemoryItem } from '../lineage/refs.ts'
 import type { Todo } from '../todos/refs.ts'
+import type { Message } from '../messages/refs.ts'
 import type { ModelThinkingLevel } from '@earendil-works/pi-ai'
 import type { CreateArgs, Schedule } from '../automations/refs.ts'
 
@@ -10,7 +11,7 @@ export type Seed = {
   learned: string[]
   memories: Record<string, MemoryItem>
   todos: Pick<Todo, 'text' | 'owner'>[]
-  questions: { text: string; ref: string }[]
+  questions: (CarriedQuestion | SeededAsTextBeforeCardsWereCarried)[]
   automations: {
     name: string
     prompt?: string
@@ -27,6 +28,8 @@ export type Seed = {
     scope?: 'project'
     name: string
     ask: string
+    schedule?: Schedule
+    timeout?: number
     prompt?: string
     agent?: string
     model?: { provider: string; modelId: string }
@@ -43,6 +46,9 @@ export type Seed = {
   builtInPause?: BuiltInSeed | null
   continues: { conversation: ConversationId; handoff: string }
 }
+
+export type CarriedQuestion = Pick<Message, 'id' | 'from' | 'text' | 'at' | 'questions'>
+export type SeededAsTextBeforeCardsWereCarried = { text: string; ref: string }
 
 type BuiltInSeed = { enabled: boolean; condition?: CreateArgs['condition'] }
 

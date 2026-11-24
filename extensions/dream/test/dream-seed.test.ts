@@ -53,7 +53,11 @@ async function fixture() {
     return action === 'list'
       ? [
           ...(result as Automation[]),
-          ...scripts.map(({ ask, ...item }) => ({ ...item, script: { ask } })),
+          ...scripts.map(({ ask, timeout, ...item }) => ({
+            ...item,
+            subscribers: [],
+            script: { ask, ...(timeout !== undefined ? { timeout } : {}) },
+          })),
         ]
       : result
   })
@@ -171,7 +175,17 @@ async function fixture() {
             at: 1,
             reply: true,
             state,
-            questions: [{ text: `Choose ${id}?`, kind: 'confirm' }],
+            questions: [
+              {
+                text: `Choose ${id}?`,
+                kind: 'choice',
+                ref: '1',
+                options: [
+                  { label: 'Keep', key: 'a', recommended: true, detail: 'Why keep' },
+                  { label: 'Drop', key: 'b' },
+                ],
+              },
+            ],
           })
         }
         // Open, asking no questions of its own: the message itself is the question.
@@ -224,9 +238,18 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
     conversation: expect.any(Number),
     handoff: PREPARED.handoff,
   })
+  const asked = {
+    text: 'Choose 100?',
+    kind: 'choice',
+    ref: '1',
+    options: [
+      { label: 'Keep', key: 'a', recommended: true, detail: 'Why keep' },
+      { label: 'Drop', key: 'b' },
+    ],
+  }
   expect(seed.questions).toEqual([
-    { text: 'Choose 100?', ref: '#100' },
-    { text: 'Question 103', ref: '#103' },
+    { id: 100, from: 1, text: 'Question 100', at: 1, questions: [asked] },
+    { id: 103, from: 1, text: 'Question 103', at: 1 },
   ])
   expect(seed.todos).toEqual([{ text: 'Keep this', owner: 'ultimate' }])
   expect(seed.automations).toEqual([
@@ -245,20 +268,44 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
     todos: (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!,
     seed: (await f.harness.snapshot(SeedState, ROOT_CONVERSATION_ID, context))!,
     automations: (await f.harness.snapshot(Automations, context))!,
+    messages: (await f.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!,
   })
   const after = await contents()
   expect(after.memory.memories).toEqual(seed.memories)
   expect((after.memory.memories as typeof seed.memories)['about-daniel'].source).toBe('#123/456')
   expect(after.todos.items.map(({ text, owner }) => ({ text, owner }))).toEqual([
     { text: 'Keep this', owner: 'ultimate' },
-    { text: 'Open question (the-beginning#100): Choose 100?', owner: 'user' },
-    { text: 'Open question (the-beginning#103): Question 103', owner: 'user' },
     {
       text: 'Recreate script A1 (Watch it): Watch the build · prompt: Summarise',
       owner: 'ultimate',
     },
   ])
-  expect(after.todos.next).toBe(5)
+  expect(after.todos.next).toBe(3)
+  const ultimate = (await f.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))!.ultimate
+  expect(after.messages.messages).toEqual([
+    {
+      id: 1,
+      from: ultimate,
+      to: 'user',
+      text: 'Question 100',
+      at: 1,
+      reply: true,
+      state: 'delivered',
+      questions: [asked],
+      carried: { chapter: 'the-beginning', id: 100, from: 1 },
+    },
+    {
+      id: 2,
+      from: ultimate,
+      to: 'user',
+      text: 'Question 103',
+      at: 1,
+      reply: true,
+      state: 'delivered',
+      carried: { chapter: 'the-beginning', id: 103, from: 1 },
+    },
+  ])
+  expect(Object.values(after.automations.automations).map(({ name }) => name)).toEqual(['Daily'])
   expect(after.seed.applied).toBeGreaterThan(0)
   expect(after.seed.automations).toEqual(['Daily'])
   const chapterEntries = async () => {
@@ -316,9 +363,163 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
   const again = await contents()
   expect(again.memory).toEqual(after.memory)
   expect(again.todos).toEqual(after.todos)
+  expect(again.messages).toEqual(after.messages)
   expect(again.seed).toEqual(after.seed)
   expect(again.automations).toEqual(settled.automations)
   expect(await chapterEntries()).toEqual([entry])
+})
+
+it('keeps scheduled checks out of ordinary chapter triggers and retains user recreation timing', async () => {
+  const f = await fixture()
+  await f.source()
+  const schedule = { kind: 'every' as const, ms: 300000 }
+  const project = {
+    id: 'quiet-check',
+    scope: 'project' as const,
+    name: 'Quiet check',
+    ask: 'Inspect once; exit 0 silently when unchanged',
+    schedule,
+    timeout: 60,
+    prompt: 'Handle only FIRE',
+    enabled: true,
+  }
+  const user = {
+    id: 'A1',
+    name: 'User check',
+    ask: 'Inspect once',
+    schedule,
+    timeout: 120,
+    prompt: 'Handle only FIRE',
+    enabled: true,
+  }
+  f.scripts([project, user])
+  const seed = await buildSeed(f.host, PREPARED)
+  expect(seed.automations).toEqual([])
+  expect(seed.scripts).toMatchObject([
+    { id: project.id, scope: 'project', schedule, timeout: 60 },
+    { id: user.id, schedule, timeout: 120 },
+  ])
+  expect(seed.counts).toMatchObject({ automations: 0, scripts: 2 })
+  await writeSeed(join(f.home, 'chapters', 'fresh-roots'), seed)
+  await f.close()
+  await requestChapter(f.home, 'fresh-roots')
+  f.scripts([{ ...project, enabled: false }])
+  f.invoke.mockClear()
+  await f.open()
+  await applySeed(f.host)
+  expect(f.invoke.mock.calls.filter(([, action]) => action === 'create')).toEqual([])
+  expect(
+    await f.harness.commit(
+      async (tx) => Object.keys((await tx.doc(Automations)).automations),
+      context,
+    ),
+  ).toEqual([])
+  const listed = (await f.host.invoke(
+    'automations',
+    'list',
+    null,
+    new AbortController().signal,
+  )) as Automation[]
+  expect(listed).toMatchObject([
+    { id: project.id, enabled: false, schedule, script: { timeout: 60 } },
+  ])
+  const todos = (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!.items
+  expect(todos.filter(({ text }) => text.startsWith('Recreate'))).toMatchObject([
+    {
+      text: 'Recreate scheduled check A1 (User check): Inspect once · schedule: {"kind":"every","ms":300000} · timeout: 120s · prompt: Handle only FIRE',
+      owner: 'ultimate',
+    },
+  ])
+  expect((await f.harness.snapshot(SeedState, ROOT_CONVERSATION_ID, context))!.automations).toEqual(
+    [],
+  )
+})
+
+it('opens a chapter whose earlier seed holds questions as text, carrying them as to-dos once', async () => {
+  const f = await fixture()
+  await f.source()
+  const seed = await buildSeed(f.host, PREPARED)
+  const earlier = {
+    ...seed,
+    questions: [
+      { text: 'Choose 100?', ref: '#100' },
+      { text: 'Question 103', ref: '#103' },
+    ],
+  }
+  await writeSeed(join(f.home, 'chapters', 'fresh-roots'), earlier)
+  await f.close()
+  await requestChapter(f.home, 'fresh-roots')
+  await f.open()
+  const opened = async () => ({
+    todos: (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!.items.map(
+      ({ text, owner }) => ({ text, owner }),
+    ),
+    messages: (await f.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!.messages,
+    applied: (await f.harness.snapshot(SeedState, ROOT_CONVERSATION_ID, context))!.applied,
+  })
+  const after = await opened()
+  expect(after.applied).toBeGreaterThan(0)
+  expect(after.messages).toEqual([])
+  expect(after.todos).toEqual([
+    { text: 'Keep this', owner: 'ultimate' },
+    { text: 'Open question (the-beginning#100): Choose 100?', owner: 'user' },
+    { text: 'Open question (the-beginning#103): Question 103', owner: 'user' },
+  ])
+  await f.close()
+  await f.open()
+  expect(await opened()).toEqual(after)
+})
+
+it('opens a chapter whose seed holds malformed questions, carrying only well-formed ones', async () => {
+  const f = await fixture()
+  await f.source()
+  const seed = await buildSeed(f.host, PREPARED)
+  const card = {
+    id: 100,
+    from: 1,
+    text: 'Question 100',
+    at: 1,
+    questions: [{ text: 'Go?', kind: 'confirm' }],
+  }
+  const malformed = {
+    ...seed,
+    questions: [
+      card,
+      null,
+      'loose text',
+      { id: 101, from: 1, at: 1 },
+      { id: 102, from: 1, text: 'Bad questions', at: 1, questions: 'not a list' },
+      { id: 103, from: 1, text: 'Bad items', at: 1, questions: [null] },
+      { text: 'No ref' },
+      { text: 7, ref: '#104' },
+      { text: 'Kept as text', ref: '#105' },
+    ],
+  } as unknown as Seed
+  await writeSeed(join(f.home, 'chapters', 'fresh-roots'), malformed)
+  await f.close()
+  await requestChapter(f.home, 'fresh-roots')
+  await f.open()
+  const state = await f.harness.snapshot(SeedState, ROOT_CONVERSATION_ID, context)
+  expect(state!.applied).toBeGreaterThan(0)
+  const messages = (await f.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!.messages
+  expect(messages.map((m) => m.carried?.id)).toEqual([100])
+  const todos = (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!.items
+  expect(todos.map(({ text }) => text).filter((text) => text.startsWith('Open question'))).toEqual([
+    'Open question (the-beginning#105): Kept as text',
+  ])
+  const ultimate = (await f.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))!.ultimate
+  const morning = async () =>
+    f.harness.commit(
+      async (tx) =>
+        (await tx.scanEntries({ conversationId: ultimate }, 100)).items.filter(
+          (entry) => entry.kind === 'dream.chapter',
+        ),
+      context,
+    )
+  await until(async () => (await morning()).length === 1)
+  expect(JSON.stringify((await morning())[0].model)).toContain(
+    '7 of the open questions in the seed were malformed and were not carried',
+  )
 })
 
 it.each(['on', 'off'] as const)(
