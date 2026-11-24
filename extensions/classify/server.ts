@@ -11,6 +11,8 @@ import {
 import { typesafeProvider } from '@earendil-works/pi-ai/providers/typesafe'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { readSecret } from '../../lib/secrets.ts'
+import { inProcess } from '../../lib/errors.ts'
+import { HealthApi } from '../health/api.ts'
 import { ClassifyApi } from './api.ts'
 import { Judge } from '../messages/api.ts'
 import { judge } from './judge.ts'
@@ -70,6 +72,23 @@ const rejected: Record<number, string> = {
 
 export default function classify(host: ExtensionHost) {
   let billingOrAuthPause: Pause | undefined
+  const reportToHealth = (status: number) => {
+    const health = host.want(HealthApi)
+    if (health)
+      inProcess(
+        'health persists episodes; the next provider call replaces a lost report',
+        health.report(
+          status >= 200 && status < 300
+            ? { provider: providerId, ok: true }
+            : {
+                provider: providerId,
+                ok: false,
+                failure:
+                  status === 402 ? 'billing' : status === 401 || status === 403 ? 'auth' : 'other',
+              },
+        ),
+      )
+  }
   host.onOpen(async () => {
     billingOrAuthPause ??= (
       await host.harness().snapshot(PauseDoc, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT)
@@ -126,6 +145,7 @@ export default function classify(host: ExtensionHost) {
           const blocked = pausedError(key)
           if (blocked) throw new Error(blocked)
           const response = await requestFetch(input, init)
+          reportToHealth(response.status)
           if (response.ok) return response
           const reason = rejected[response.status]
           if (reason && key) await pause(key, response.status)
@@ -164,6 +184,7 @@ export default function classify(host: ExtensionHost) {
         body: JSON.stringify({ model: modelId, ...request }),
         signal,
       })
+      reportToHealth(response.status)
       if (!response.ok) {
         const error = `TypeSafe ${response.status}: ${(await response.text()).slice(0, 1000)}`
         await pause(key, response.status)
