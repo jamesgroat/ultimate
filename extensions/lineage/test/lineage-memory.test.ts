@@ -147,6 +147,15 @@ it('applies memory ops atomically and holds the cap', async () => {
     [[add('fine'), { ...add('odd'), kind: 'opinion' }], 'kind must be'],
   ] as const)
     await expect(apply(server, [...ops])).rejects.toThrow(error)
+  await expect(
+    apply(server, [
+      add('fine'),
+      add('family', 'x'.repeat(131)),
+      { op: 'update', slug: 'missing', line: 'x' },
+    ]),
+  ).rejects.toThrow(
+    '2 problems; nothing was written:\nOp 2 (family): line is 131 characters; it must be at most 120: shorten it and move detail into the body\nOp 3 (missing): no memory missing',
+  )
   expect(Object.keys(await memories(server))).toEqual(['pnpm'])
   await expect(apply(server, [add('x')], 99)).rejects.toThrow('not a listed root')
 
