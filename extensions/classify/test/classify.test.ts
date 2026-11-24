@@ -26,6 +26,7 @@ import { ClassifyApi } from '../api.ts'
 import type { ClassifyService } from '../api.ts'
 import { Judge } from '../../messages/api.ts'
 import type { JudgeService } from '../../messages/api.ts'
+import type { ProviderReport } from '../../health/api.ts'
 import { writeSecret } from '../../secrets/store.ts'
 import type { ExtensionHost } from '../../../server/extensions.ts'
 import { context } from '../../../server/harness.ts'
@@ -61,10 +62,12 @@ async function fixture(
   })
   const implemented = new Map<string, unknown>()
   const implement = (api: { name: string }, service: unknown) => implemented.set(api.name, service)
+  const report = vi.fn<(report: ProviderReport) => Promise<void>>(async () => {})
   const notice = vi.fn<(message: string) => void>()
   const extension = classify({
     userHome: root,
     implement,
+    want: () => ({ report }),
     modelRuntime,
     notice,
     harness: opened,
@@ -85,6 +88,7 @@ async function fixture(
   expect(extension.name).toBe('classify')
   return {
     root,
+    report,
     notice,
     service: implemented.get(ClassifyApi.name) as ClassifyService,
     judge: implemented.get(Judge.name) as JudgeService,
@@ -315,7 +319,7 @@ it("keeps a provider's response body out of the branch judge's errors, also when
 
 it('stops sending after a 402 until the cooldown ends', async () => {
   vi.useFakeTimers({ toFake: ['Date'] })
-  const { service, notice } = await fixture()
+  const { service, notice, report } = await fixture()
   const fetch = vi
     .fn<typeof globalThis.fetch>()
     .mockResolvedValueOnce(new Response('billing_error', { status: 402 }))
@@ -329,6 +333,10 @@ it('stops sending after a 402 until the cooldown ends', async () => {
   vi.advanceTimersByTime(cooldownMs)
   expect((await service.ask(request, signal)).model).toBe('jev-1.14.0')
   expect(fetch).toHaveBeenCalledTimes(2)
+  expect(report.mock.calls).toEqual([
+    [{ provider: 'typesafe', ok: false, failure: 'billing' }],
+    [{ provider: 'typesafe', ok: true }],
+  ])
 })
 
 it.each([
