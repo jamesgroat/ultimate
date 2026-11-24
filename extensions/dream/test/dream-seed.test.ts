@@ -17,6 +17,7 @@ import { Todos } from '../../todos/server.ts'
 import { Standing, SubagentsApi } from '../../subagents/api.ts'
 import automations, { actions as automationActions, Automations } from '../../automations/server.ts'
 import type { Automation } from '../../automations/types.ts'
+import { AutomationsApi } from '../../automations/api.ts'
 import type { ScriptTransfer } from '../../automations/api.ts'
 import type { Seed } from '../types.ts'
 import dream, { Next } from '../server.ts'
@@ -407,6 +408,8 @@ it('adopts executable user scripts from the seed instead of making recreation to
   f.scripts([{ id: 'A9', name: automation.name, ask: automation.script!.ask, enabled: true }])
   f.transfers([transfer])
   const seed = await buildSeed(f.host, PREPARED)
+  expect(seed.transfers).toBeUndefined()
+  seed.transfers = await f.host.need(AutomationsApi).retireScripts(PREPARED.chapter)
   expect(seed.transfers).toEqual([transfer])
   await writeSeed(join(f.home, 'chapters', 'fresh-roots'), seed)
   await f.close()

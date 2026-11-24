@@ -30,6 +30,7 @@ export type Automation = {
   overrides?: { agent?: boolean; prompt?: boolean; subscribers?: boolean }
   key?: CreateIdempotencyKey
   retiredTo?: string
+  retirementError?: string
   retirementStop?: { pid?: number; scheduler?: TaskId }
   transferPending?: boolean
   name: string

@@ -56,7 +56,7 @@ export const actions = {
       new AbortController().signal,
     )
   const ultimate = (await invoke('standing', null)) as ConversationId
-  const scripts = ['prs.json', 'seen-ids.json']
+  const scripts = ['prs.json', 'seen-ids.json', 'last.json']
   const body = '#!/bin/sh\nwhile :; do sleep 60; done\n'
   for (const [index, file] of scripts.entries()) {
     const id = `A${index + 10}`
@@ -84,7 +84,7 @@ export const actions = {
           state: 'running',
           ...(index === 0 ? { timeout: 42 } : {}),
         },
-        subscribers: [ultimate],
+        subscribers: index === 2 ? [watcher.id] : [ultimate],
         prompt: 'Handle updates',
         model: { provider: 'faux', modelId: 'faux-1' },
         thinking: 'low',
@@ -94,16 +94,64 @@ export const actions = {
     }, context)
   }
   await app.extensions.invoke('automations', 'resume', { id: 'A11' }, new AbortController().signal)
+  const abandoned = (await invoke('retire', 'abandoned')) as ScriptTransfer[]
+  expect(abandoned).toHaveLength(3)
+  expect(abandoned[2].error).toContain('is not a standing agent')
+  const failedIntent = (await app.harness.snapshot(Automations, context))!.automations.A12
+  expect(failedIntent.retirementError).toBe(abandoned[2].error)
+  await app.close()
+  server = undefined
+  app = await open()
   const transfers = (await invoke('retire', 'next')) as ScriptTransfer[]
-  expect(transfers).toHaveLength(2)
-  expect(transfers.map((t) => t.error)).toEqual([undefined, undefined])
+  expect(transfers.map((t) => t.id)).toEqual(abandoned.map((t) => t.id))
+  expect(transfers.map((t) => t.error)).toEqual(abandoned.map((t) => t.error))
+  for (const transfer of transfers)
+    expect(
+      (await app.harness.snapshot(Automations, context))!.automations[transfer.id].retiredTo,
+    ).toBe('next')
   expect(transfers[0].subscribers).toEqual(['@ultimate'])
   await app.close()
   server = undefined
   await requestChapter(home, 'next')
   app = await open()
+  {
+    const transfer = transfers[1]
+    const key = `seed:the-beginning:${transfer.id}`
+    transfer.automation.script.secrets = ['ACTIVATION_TEST']
+    await expect(invoke('adopt', { transfer, key })).rejects.toThrow(
+      'Missing secret ACTIVATION_TEST',
+    )
+    const pending = Object.values(
+      (await app.harness.snapshot(Automations, context))!.automations,
+    ).find((a) => a.key === key)!
+    expect(pending.transferPending).toBe(true)
+    expect(pending.enabled).toBe(false)
+    expect(pending.script!.state).toBe('stopped')
+    const marker = join(
+      userHome,
+      '.ultimate/automations',
+      `${basename(home)}@next`,
+      pending.id,
+      'state',
+      'activation.json',
+    )
+    await writeFile(marker, 'new destination observation\n')
+    await writeFile(
+      join(userHome, '.ultimate/secrets.json'),
+      JSON.stringify({
+        secrets: { ACTIVATION_TEST: { value: 'test-value', updatedAt: 'test' } },
+      }),
+      { mode: 0o600 },
+    )
+    await app.close()
+    server = undefined
+    app = await open()
+    await invoke('adopt', { transfer, key })
+    expect(await readFile(marker, 'utf8')).toBe('new destination observation\n')
+  }
   const adopted: Automation[] = []
   for (const transfer of transfers) {
+    if (transfer.error) continue
     const key = `seed:the-beginning:${transfer.id}`
     const a = (await invoke('adopt', { transfer, key })) as Automation
     adopted.push(a)
@@ -135,6 +183,7 @@ export const actions = {
   server = undefined
   app = await open()
   for (const transfer of transfers) {
+    if (transfer.error) continue
     const a = (await invoke('adopt', {
       transfer,
       key: `seed:the-beginning:${transfer.id}`,
@@ -151,6 +200,7 @@ export const actions = {
   server = undefined
   await requestChapter(home, 'the-beginning')
   app = await open()
+  expect(await invoke('retire', 'third')).toEqual([])
   for (const transfer of transfers) {
     const a = (await app.harness.snapshot(Automations, context))!.automations[transfer.id]
     expect(a.enabled).toBe(false)

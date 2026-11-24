@@ -33,6 +33,7 @@ import {
 import type { Dream, Prepared, Sleep, ToolStats } from './refs.ts'
 import { busyElsewhere } from './types.ts'
 import { applySeed, buildSeed, SeedState, writeSeed } from './seed.ts'
+import { AutomationsApi } from '../automations/api.ts'
 import { BuiltInDoc, builtInOf, DREAM_ASK, ensureAutomation, fired, PauseDoc } from './built-ins.ts'
 
 export const Next = defineDoc<{ prepared?: Prepared; sleep?: Sleep; dream?: Dream }>({
@@ -321,11 +322,12 @@ async function fallAsleep(host: ExtensionHost, input: { name?: unknown }) {
       return detachOverlay(doc.sleep)
     }, context)
   try {
-    const seed = await buildSeed(host, prepared, name)
+    const seed = await buildSeed(host, prepared)
     await progress({ phase: 'backing up' })
     await progress({ backup: await finalBackup(host) })
     requireNoWorkParkedBySwitch(host)
     await progress({ phase: 'switching' })
+    seed.transfers = await host.need(AutomationsApi).retireScripts(name)
     await writeSeed(chapterFiles(host.home, name).dir, seed)
     return await restartChapter(host, name)
   } catch (error) {

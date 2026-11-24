@@ -4,6 +4,7 @@ import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { defineDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { readJson, writeJson } from '../../lib/json-file.ts'
+import { readChapters } from '../../lib/chapters.ts'
 import { openQuestion } from '../../lib/message-state.ts'
 import { Standing, SubagentsApi } from '../subagents/api.ts'
 import type { MemoryItem } from '../lineage/refs.ts'
@@ -66,14 +67,10 @@ async function exportedDocument<T>(
 
 const prototypeFreeMemoryIndex = () => Object.create(null) as Record<string, MemoryItem>
 const detachTransactionOverlays = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
-export async function buildSeed(
-  host: ExtensionHost,
-  prepared: Prepared,
-  chapter = prepared.chapter,
-): Promise<Seed> {
+export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promise<Seed> {
   const signal = new AbortController().signal
   const automations = (await host.invoke('automations', 'list', null, signal)) as Automation[]
-  const transfers = await host.need(AutomationsApi).retireScripts(chapter)
+  const known = new Set((await readChapters(host.home)).chapters.map((item) => item.name))
   return host.harness().commit(async (tx) => {
     const roots = (await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots
     const memories = prototypeFreeMemoryIndex()
@@ -145,8 +142,7 @@ export async function buildSeed(
     }
     const watchers = automations
       .filter(
-        (item) =>
-          item.script && (item.enabled || transfers.some((transfer) => transfer.id === item.id)),
+        (item) => item.script && (item.enabled || (item.retiredTo && !known.has(item.retiredTo))),
       )
       .map(({ id, scope, name, script, schedule, prompt, agent, model, thinking }) => ({
         id,
@@ -167,7 +163,6 @@ export async function buildSeed(
       questions,
       automations: triggers,
       scripts: watchers,
-      transfers,
       counts: {
         memories: Object.keys(memories).length,
         todos: todos.length,

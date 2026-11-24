@@ -29,6 +29,7 @@ import { discoverAgents } from '../../lib/agents.ts'
 import { validateName } from '../../lib/secrets.ts'
 import { groupAlive } from '../../lib/process-group.ts'
 import { writeJson } from '../../lib/json-file.ts'
+import { readChapters } from '../../lib/chapters.ts'
 import { Standing, SubagentsApi } from '../subagents/api.ts'
 import { MessagesApi } from '../messages/api.ts'
 import { WorkspacesApi } from '../workspaces/api.ts'
@@ -883,12 +884,14 @@ function backend(host: ExtensionHost) {
   }
   async function retireScripts(chapter: string): Promise<ScriptTransfer[]> {
     const ledger = await host.harness().snapshot(Automations, BACKGROUND_CONTEXT)
+    const known = new Set((await readChapters(host.home)).chapters.map((item) => item.name))
     const candidates = Object.values(ledger?.automations ?? {}).filter(
       (a) =>
         a.script &&
         a.scope !== 'project' &&
-        (a.retiredTo === chapter ||
-          (a.enabled && ['running', 'investigating'].includes(a.script.state))),
+        (a.retiredTo
+          ? !known.has(a.retiredTo)
+          : a.enabled && ['running', 'investigating'].includes(a.script.state)),
     )
     const result: ScriptTransfer[] = []
     for (const candidate of candidates) {
@@ -901,8 +904,7 @@ function backend(host: ExtensionHost) {
           (!a.retiredTo && (!a.enabled || !['running', 'investigating'].includes(a.script.state)))
         )
           return undefined
-        if (a.retiredTo && a.retiredTo !== chapter)
-          throw new Error(`Automation ${a.id} is retired to ${a.retiredTo}`)
+        if (a.retiredTo && known.has(a.retiredTo)) return undefined
         const source = runPath(a)
         const subscribers = json(a.subscribers)
         const { name, schedule: timing, prompt, agent, model, thinking } = a
@@ -948,6 +950,11 @@ function backend(host: ExtensionHost) {
       } catch (error) {
         transfer.error = String(error)
       }
+      await host.harness().commit(async (tx) => {
+        const a = (await tx.doc(Automations)).automations[candidate.id]
+        if (transfer.error) a.retirementError = transfer.error
+        else delete a.retirementError
+      }, BACKGROUND_CONTEXT)
       result.push(transfer)
     }
     return result
@@ -996,14 +1003,29 @@ function backend(host: ExtensionHost) {
     const active = await host.harness().commit(async (tx) => {
       const a = (await tx.doc(Automations)).automations[record.id]
       if (!a.transferPending) return json(a)
-      delete a.transferPending
       a.enabled = true
       a.script!.state = 'running'
-      if (a.schedule) await planSchedule(tx, a)
+      if (a.schedule && !a.scheduler) await planSchedule(tx, a)
       return json(a)
     }, BACKGROUND_CONTEXT)
-    if (!active.schedule) await scripts.apply({ id: active.id, action: 'resume' })
-    return active
+    try {
+      if (!active.schedule) await scripts.launch(active.id)
+    } catch (error) {
+      await scripts.quiesce(active.id)
+      await host.harness().commit(async (tx) => {
+        const a = (await tx.doc(Automations)).automations[active.id]
+        a.enabled = false
+        a.script!.state = 'stopped'
+        a.script!.error = `Chapter transfer activation failed: ${String(error)}`
+      }, BACKGROUND_CONTEXT)
+      throw error
+    }
+    return host.harness().commit(async (tx) => {
+      const a = (await tx.doc(Automations)).automations[active.id]
+      delete a.transferPending
+      delete a.script!.error
+      return json(a)
+    }, BACKGROUND_CONTEXT)
   }
   return {
     ...schedule,

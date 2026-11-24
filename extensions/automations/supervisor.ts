@@ -1083,6 +1083,7 @@ export function supervisor(
   }
   return {
     ready: () => reloadStableProcessState.ready.promise,
+    launch,
     quiesce,
     Deliver,
     check,
