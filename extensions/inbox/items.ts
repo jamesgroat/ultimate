@@ -162,7 +162,7 @@ export function answeredToday(messages: readonly Message[], now: number): Answer
   return messages
     .filter((m) => m.to === 'user' && (m.state === 'answered' || m.state === 'dismissed'))
     .flatMap((m) => {
-      const reply = messages.find((r) => r.from === 'user' && r.re === m.id)
+      const reply = messages.find((r) => r.from === 'user' && r.re === m.id && !r.clarifies)
       return reply && reply.at >= midnight
         ? [
             {

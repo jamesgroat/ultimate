@@ -1,6 +1,8 @@
 import type { JSX } from '@solidjs/web'
 import { MessageCircleQuestion } from '@lucide/solid'
-import { createMemo, createSignal, For, onSettled, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onSettled, Show } from 'solid-js'
+import { Markdown } from '@/components/markdown/markdown.solid.tsx'
+import type { MarkdownOrigin } from '@/components/markdown/source.ts'
 import { Button } from '@/components/ui/button.solid.tsx'
 import { Form } from '@/components/ui/form.solid.tsx'
 import { Input, Textarea } from '@/components/ui/input.solid.tsx'
@@ -48,6 +50,29 @@ export const CardActions: Point<{ message: Message }, JSX.Element> = {
   point: 'questions.card-actions',
 }
 
+export function useForgetQuestionCards() {
+  const [, setCards] = useUiState<Record<string, CardState>>(CARDS_KEY, {})
+  return (settled: (identity: string) => boolean) => {
+    setCards((old) => {
+      const kept = Object.entries(old).filter(([identity]) => !settled(identity))
+      return kept.length === Object.keys(old).length ? old : Object.fromEntries(kept)
+    })
+  }
+}
+
+export type MessageQuestionsTransport = {
+  answer: (
+    args: Reply & { messageId: number },
+    options?: { keepalive?: boolean },
+  ) => Promise<unknown>
+  dismiss: (args: { messageId: number }) => Promise<unknown>
+}
+
+const localTransport: MessageQuestionsTransport = {
+  answer: (args, options) => api.action(AnswerAction, args, options),
+  dismiss: (args) => api.action(DismissAction, args),
+}
+
 type CardProps = {
   message: Message
   keys?: boolean
@@ -55,6 +80,9 @@ type CardProps = {
   withActions?: boolean
   answerWith?: (answer: Reply, keepalive?: boolean) => Promise<unknown>
   sendLabel?: string
+  transport?: MessageQuestionsTransport
+  identity?: string
+  origin?: MarkdownOrigin
 }
 
 export function MessageQuestions(props: CardProps) {
@@ -75,24 +103,65 @@ const Key = (props: { children: string; class?: string }) => (
   </Kbd>
 )
 
+function Clarifications(props: { message: Message; origin?: MarkdownOrigin }) {
+  const messages = useDocOf(() => ROOT, MessagesDoc)
+  const thread = createMemo(() => {
+    const log = messages()?.messages ?? []
+    return log
+      .filter((m) => m.from === 'user' && m.re === props.message.id && m.clarifies)
+      .flatMap((asked) => [
+        asked,
+        ...log.filter((m) => m.re === asked.id && m.from === props.message.from && !m.questions),
+      ])
+  })
+  return (
+    <Show when={thread().length}>
+      <div class="space-y-1.5 border-b border-border/60 px-3 py-2.5" data-clarifications>
+        <For each={thread()} keyed={(m) => m.id}>
+          {(m) => (
+            <div
+              class={cn(
+                'rounded-md px-3 py-2 text-[13px] leading-relaxed',
+                m().from === 'user'
+                  ? 'ml-8 border border-border/70 bg-secondary/60'
+                  : 'mr-8 bg-background/40',
+              )}
+              data-clarification={m().id}
+            >
+              <div class="pb-0.5 font-mono text-[11px] text-muted-foreground">
+                {m().from === 'user' ? 'You asked' : 'Reply'}
+              </div>
+              <Markdown text={m().text} origin={props.origin} />
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
+  )
+}
+
 function AnswerCard(props: CardProps & { id: number }) {
+  const transport = () => props.transport ?? localTransport
+  const asks = () =>
+    transport() === localTransport && props.identity === undefined && props.answerWith === undefined
   const questions = createMemo(() => openQuestions(props.message))
-  const card = () => cardKey(props.id)
+  const card = () => props.identity ?? cardKey(props.id)
   const [cards, setCards] = useUiState<Record<string, CardState>>(CARDS_KEY, {})
   const state = createMemo(() => cardOf(cards(), card(), questions()))
-  const change = (edit: (old: CardState) => CardState, unrecorded = false) => {
+  const change = (edit: (old: CardState) => CardState, automatic = false, source?: string) => {
     const key = card()
     const list = questions()
     const write = () => setCards((old) => ({ ...old, [key]: edit(cardOf(old, key, list)) }))
-    if (unrecorded) writingAs('app', write)
+    if (automatic || source !== undefined) writingAs(automatic ? 'app' : source, write)
     else write()
   }
   const answerRequest = () => {
     const id = props.id
+    const initialTransport = transport()
     return (
       props.answerWith ??
       ((reply: Reply, keepalive?: boolean) =>
-        api.action(AnswerAction, { messageId: id, ...reply }, { keepalive }))
+        initialTransport.answer({ messageId: id, ...reply }, { keepalive }))
     )
   }
   const [busy, setBusy] = createSignal(false)
@@ -121,7 +190,8 @@ function AnswerCard(props: CardProps & { id: number }) {
         disabled={controls.disabled}
         onClick={() => {
           const messageId = props.id
-          return run(() => api.action(DismissAction, { messageId }))
+          const target = transport()
+          return run(() => target.dismiss({ messageId }))
         }}
         title="Close it without an answer; the agent gets a note"
         class={controls.class}
@@ -141,6 +211,26 @@ function AnswerCard(props: CardProps & { id: number }) {
   const conversation = useConversationId()
   const messages = useDocOf(() => ROOT, MessagesDoc)
   const viewport = useViewport()
+  const lastAsked = createMemo(() => {
+    const id = props.id
+    return asks()
+      ? messages()
+          ?.messages.findLast((m) => m.from === 'user' && m.re === id && m.clarifies)
+          ?.text.trim()
+      : undefined
+  })
+  let reconciledDraftWithThread = false
+  createEffect(
+    () => ({ asked: lastAsked(), note: state().note, key: card(), list: questions() }),
+    ({ asked, note, key, list }) => {
+      if (reconciledDraftWithThread || asked === undefined) return
+      reconciledDraftWithThread = true
+      if (note.trim() === asked)
+        writingAs('app', () =>
+          setCards((old) => ({ ...old, [key]: { ...cardOf(old, key, list), note: '' } })),
+        )
+    },
+  )
   const hints = createMemo(
     () =>
       viewport() !== 'phone' &&
@@ -168,7 +258,9 @@ function AnswerCard(props: CardProps & { id: number }) {
   const sendLabel = () =>
     props.sendLabel ??
     (!ready().length && note().trim()
-      ? 'Send note'
+      ? asks()
+        ? 'Ask'
+        : 'Send note'
       : left() && ready().length
         ? `Send ${ready().length} of ${questions().length}`
         : 'Send')
@@ -238,17 +330,25 @@ function AnswerCard(props: CardProps & { id: number }) {
     const reply = answerRequest()
     committed = true
     advance?.()
-    setHeldDraft({ drafts: drafts(), note: note() })
-    const answer = { answers, ...(extra ? { note: extra } : {}) }
+    const savedNote = note()
+    setHeldDraft({ drafts: drafts(), note: savedNote })
+    const asksWithoutAnswering = asks() && !answers.length
+    const payload =
+      !asks() && !answers.length && extra
+        ? { text: extra }
+        : { answers, ...(extra ? { note: extra } : {}) }
     const outlivesPage =
-      new TextEncoder().encode(JSON.stringify(answer)).byteLength <= KEEPALIVE_BYTES
+      new TextEncoder().encode(JSON.stringify(payload)).byteLength <= KEEPALIVE_BYTES
     const fire = () => {
       waiting = undefined
       setPhase('sending')
       setError(undefined)
-      writingAs(source, () => reply(answer, outlivesPage)).then(
-        () => setPhase('sent'),
+      if (asksWithoutAnswering) change((old) => ({ ...old, note: '' }), false, source)
+      writingAs(source, () => reply(payload, outlivesPage)).then(
+        () => (asksWithoutAnswering ? unlock() : setPhase('sent')),
         (failure: unknown) => {
+          if (asksWithoutAnswering)
+            change((old) => ({ ...old, note: old.note || savedNote }), false, source)
           unlock()
           setError(errorMessage(failure))
         },
@@ -403,6 +503,9 @@ function AnswerCard(props: CardProps & { id: number }) {
             onClick={undo}
           />
         </Show>
+        <Show when={asks()}>
+          <Clarifications message={props.message} origin={props.origin} />
+        </Show>
         <div class="flex items-center gap-2 px-3 pt-2.5 pb-1 font-mono text-[11px] text-muted-foreground">
           <MessageCircleQuestion class="size-3.5 text-brand" />
           <span class="text-foreground">
@@ -447,6 +550,7 @@ function AnswerCard(props: CardProps & { id: number }) {
                   onSelect={(option, pressed) => select(index, option, true, pressed)}
                   onText={(value) => draft(index, (old) => ({ ...old, text: value }), true)}
                   onFieldKey={fieldKey}
+                  origin={props.origin}
                 />
               </div>
             )}
@@ -482,6 +586,31 @@ function AnswerCard(props: CardProps & { id: number }) {
               </Key>
             </Show>
           </div>
+          <Show
+            when={
+              asks() &&
+              props.sendLabel === undefined &&
+              !ready().length &&
+              note().trim() &&
+              !locked()
+            }
+          >
+            <p class="pt-1 text-[11px] text-muted-foreground" data-asks-hint>
+              Asks without answering; the card stays open. To discuss first, use{' '}
+              <Button
+                aria-label={`Talk it through about message ${props.id}`}
+                class="inline h-auto p-0 text-left font-normal whitespace-normal text-brand hover:underline"
+                size={null}
+                variant={null}
+                onClick={() =>
+                  root.querySelector<HTMLButtonElement>('[data-talk-it-through]')?.click()
+                }
+              >
+                Talk it through
+              </Button>
+              .
+            </p>
+          </Show>
         </div>
         <div class="flex flex-wrap items-center gap-2 px-3 pt-2 pb-2.5">
           <Show when={hints() && phase() === 'undo'}>

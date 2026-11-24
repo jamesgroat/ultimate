@@ -18,16 +18,26 @@ export const actions = {
     const data = args as Reply & { messageId: number }
     if (!data || !Number.isSafeInteger(data.messageId)) throw new Error('Invalid answers')
     checkReply(data)
-    const reply = await host.harness().commit(async (tx) => {
+    const { reply, clarify } = await host.harness().commit(async (tx) => {
       const log = await tx.doc(Messages, ROOT_CONVERSATION_ID)
       const message = log.messages.find((m) => m.id === data.messageId)
       if (!message || !open(message)) throw new Error(NOT_OPEN)
-      return replyText(data, message.questions ?? [])
+      const questions = message.questions ?? []
+      const noteAnswersNoQuestion =
+        questions.length > 0 && data.text === undefined && !data.answers?.length
+      return { reply: replyText(data, questions), clarify: noteAnswersNoQuestion }
     }, context)
     return {
       id: await host
         .need(MessagesApi)
-        .answer(data.messageId, reply, withAbortSignal(signal, context), device),
+        .answer(
+          data.messageId,
+          reply,
+          withAbortSignal(signal, context),
+          device,
+          undefined,
+          clarify,
+        ),
     }
   }),
   dismiss: implementAction(DismissAction, async (args, { host, signal, device }) => {

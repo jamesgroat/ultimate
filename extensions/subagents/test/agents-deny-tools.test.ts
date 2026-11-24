@@ -105,7 +105,7 @@ it('denies instance to children with inherited or explicit tools without changin
       expect(tools).not.toContain('subagent')
       expect(tools).toEqual(
         name === 'explicit'
-          ? ['read']
+          ? ['read', 'request']
           : parentTools.filter((tool) => !['instance', 'subagent'].includes(tool)),
       )
       expect((await server.root.agent(context)).tools.map((tool) => tool.name)).toEqual(parentTools)
