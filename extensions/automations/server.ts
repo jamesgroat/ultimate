@@ -55,6 +55,8 @@ import { describeNext, describeSchedule, nextAt, parseSchedule } from './schedul
 import { scheduler } from './scheduler.ts'
 import { triggers, TRIGGER_EVENTS, describeTrigger } from './triggers.ts'
 import { supervisor } from './supervisor.ts'
+import { copyTransfer, transferSubscribers, validateTransfer } from './transfer.ts'
+import type { ScriptTransfer } from './transfer.ts'
 import type { Prepared } from './supervisor.ts'
 import type {
   Args,
@@ -451,6 +453,10 @@ function backend(host: ExtensionHost) {
     const id = validId(args.id)
     const sub = state.automations[id]
     if (!sub) throw new Error(`Unknown automation: ${id}`)
+    if (sub.transferPending && !['log', 'pause', 'delete'].includes(args.action))
+      throw new Error(`Automation ${id} has an unfinished chapter transfer`)
+    if (sub.retiredTo && !['log', 'pause', 'delete'].includes(args.action))
+      throw new Error(`Automation ${id} was retired to chapter ${sub.retiredTo}`)
     if (args.action === 'log') return { result: { text: await tail(id, args.lines) } }
     sub.updatedAt = Date.now()
     if (sub.scope === 'project' && ['subscribe', 'unsubscribe'].includes(args.action)) {
@@ -875,7 +881,141 @@ function backend(host: ExtensionHost) {
       0
     )
   }
-  return { ...schedule, ...scripts, prepare, change, apply, operate, trigger }
+  async function retireScripts(chapter: string): Promise<ScriptTransfer[]> {
+    const ledger = await host.harness().snapshot(Automations, BACKGROUND_CONTEXT)
+    const candidates = Object.values(ledger?.automations ?? {}).filter(
+      (a) =>
+        a.script &&
+        a.scope !== 'project' &&
+        (a.retiredTo === chapter ||
+          (a.enabled && ['running', 'investigating'].includes(a.script.state))),
+    )
+    const result: ScriptTransfer[] = []
+    for (const candidate of candidates) {
+      const receipt = await host.harness().commit(async (tx) => {
+        const a = (await tx.doc(Automations)).automations[candidate.id]
+        if (
+          !a ||
+          !a.script ||
+          a.scope === 'project' ||
+          (!a.retiredTo && (!a.enabled || !['running', 'investigating'].includes(a.script.state)))
+        )
+          return undefined
+        if (a.retiredTo && a.retiredTo !== chapter)
+          throw new Error(`Automation ${a.id} is retired to ${a.retiredTo}`)
+        const source = runPath(a)
+        const subscribers = json(a.subscribers)
+        const { name, schedule: timing, prompt, agent, model, thinking } = a
+        const { ask, once, secrets, timeout } = a.script
+        const automation = json({
+          name,
+          schedule: timing,
+          prompt,
+          agent,
+          model,
+          thinking,
+          script: { ask, once, secrets, timeout },
+        })
+        a.retiredTo = chapter
+        a.retirementStop ??= {
+          ...(a.script.pid ? { pid: a.script.pid } : {}),
+          ...(a.scheduler ? { scheduler: a.scheduler } : {}),
+        }
+        const stopped = json(await changeScript(tx, { action: 'pause', id: a.id }, {}))
+        stopped.effect = { id: a.id, action: 'pause', previousPid: a.retirementStop.pid }
+        stopped.abort = a.retirementStop.scheduler
+        const standing = json(await tx.doc(Standing, ROOT_CONVERSATION_ID))
+        return { change: stopped, automation, standing, source, subscribers }
+      }, BACKGROUND_CONTEXT)
+      if (!receipt) continue
+      await apply(receipt.change)
+      if (receipt.change.stop)
+        await (
+          await host.harness().conversation(receipt.change.stop, BACKGROUND_CONTEXT)
+        )?.waitForIdle(BACKGROUND_CONTEXT)
+      await scripts.quiesce(candidate.id)
+      const source = receipt.source
+      const transfer: ScriptTransfer = {
+        id: candidate.id,
+        name: candidate.name,
+        source,
+        automation: receipt.automation,
+        subscribers: [],
+      }
+      try {
+        transfer.subscribers = transferSubscribers(receipt.subscribers, receipt.standing)
+        await validateTransfer(source)
+      } catch (error) {
+        transfer.error = String(error)
+      }
+      result.push(transfer)
+    }
+    return result
+  }
+  async function adoptScript(transfer: ScriptTransfer, key: string): Promise<Automation> {
+    if (transfer.error) throw new Error(transfer.error)
+    await scripts.ready()
+    const prepared = await agentFor()
+    const record = await host.harness().commit(async (tx) => {
+      const ledger = await tx.doc(Automations)
+      const existing = Object.values(ledger.automations).find((a) => a.key === key)
+      if (existing) return json(existing)
+      const id = `A${ledger.next++}`
+      const source = transfer.automation
+      const conversationId = await agentConversation(tx, prepared, id, source.name)
+      const a: Automation = {
+        id,
+        key,
+        name: source.name,
+        enabled: false,
+        transferPending: true,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        subscribers: transfer.subscribers,
+        ...(source.schedule ? { schedule: source.schedule } : {}),
+        ...(source.prompt ? { prompt: source.prompt } : {}),
+        ...(source.agent ? { agent: source.agent } : {}),
+        ...(source.model ? { model: source.model } : {}),
+        ...(source.thinking ? { thinking: source.thinking } : {}),
+        script: {
+          ask: source.script.ask,
+          once: source.script.once,
+          ...(source.script.secrets ? { secrets: source.script.secrets } : {}),
+          ...(source.script.timeout ? { timeout: source.script.timeout } : {}),
+          conversationId,
+          state: 'stopped',
+        },
+        runs: [],
+        fires: 0,
+      }
+      ledger.automations[id] = a
+      return json(a)
+    }, BACKGROUND_CONTEXT)
+    if (!record.transferPending) return record
+    await copyTransfer(transfer.source, runPath(record))
+    const active = await host.harness().commit(async (tx) => {
+      const a = (await tx.doc(Automations)).automations[record.id]
+      if (!a.transferPending) return json(a)
+      delete a.transferPending
+      a.enabled = true
+      a.script!.state = 'running'
+      if (a.schedule) await planSchedule(tx, a)
+      return json(a)
+    }, BACKGROUND_CONTEXT)
+    if (!active.schedule) await scripts.apply({ id: active.id, action: 'resume' })
+    return active
+  }
+  return {
+    ...schedule,
+    ...scripts,
+    prepare,
+    change,
+    apply,
+    operate,
+    trigger,
+    retireScripts,
+    adoptScript,
+  }
 }
 function input(args: unknown, action: string): Args {
   return { ...(args as Omit<Args, 'action'>), action }
@@ -967,6 +1107,8 @@ export default function automations(host: ExtensionHost) {
   host.need(ConversationsApi)
   const api = backend(host)
   host.implement(AutomationsApi, {
+    retireScripts: api.retireScripts,
+    adoptScript: api.adoptScript,
     create: async (args) => (await api.operate({ ...args, action: 'create' })) as Automation,
     delete: async (id) => void (await api.operate({ action: 'delete', id })),
     resume: async (id) => (await api.operate({ action: 'resume', id }), api.status(id)),

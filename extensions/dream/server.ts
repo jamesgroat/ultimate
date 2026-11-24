@@ -321,7 +321,7 @@ async function fallAsleep(host: ExtensionHost, input: { name?: unknown }) {
       return detachOverlay(doc.sleep)
     }, context)
   try {
-    const seed = await buildSeed(host, prepared)
+    const seed = await buildSeed(host, prepared, name)
     await progress({ phase: 'backing up' })
     await progress({ backup: await finalBackup(host) })
     requireNoWorkParkedBySwitch(host)

@@ -92,6 +92,21 @@ Scripts get `AUTOMATION_ID` and `AUTOMATION_STATE` (the `state/` folder: keep fi
 `secrets` from Secrets; records never hold their values. Script state must survive a restart: open stops leftover
 processes and relaunches enabled running streaming scripts; scheduled checks replay through their scheduler.
 
+### Chapter transfer
+
+Falling asleep retires enabled, runnable user scripts (streaming and scheduled) in the source chapter before
+seeding. Retirement pauses the scheduler, aborts the watcher and drains its script process; reopening the source
+cannot resume or edit the retired record. Files remain archived. Writing or otherwise non-runnable scripts remain
+recreation to-dos. Project manifests keep their existing discovery and shared-state path.
+
+The destination adopts the executable and complete state tree without a writing turn, using a source chapter/id
+key. Only regular files and directories in `state/` and a regular executable `run` are supported; symlinks, hardlinks,
+special files and additional runtime files are rejected. Pids and logs are never copied. State is staged first;
+renaming `run` last is the copy receipt. Interrupted copies can be retried; a published executable prevents stale
+source state from replacing new destination observations. A pending destination record stays paused until copying
+finishes. Subscriber conversation ids must map to standing names; unmappable branches become visible failure
+to-dos, never implicit delivery to Ultimate. Copy failures surface a notice and retry on chapter reopen.
+
 ### Project automations
 
 Commit shared scripts as:

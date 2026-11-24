@@ -214,6 +214,7 @@ export function supervisor(
     ready: Promise.withResolvers<void>(),
   }))
   const { runs, launches, effects } = reloadStableProcessState
+  const launchIds = host.resource('automations.launch-ids', () => new Map<Promise<void>, string>())
   const chapterIsolatedRuntimeRoot = (project = false) =>
     join(
       host.userHome,
@@ -741,10 +742,12 @@ export function supervisor(
   async function launch(id: string, previousPid?: number) {
     const work = launchRun(id, previousPid).then(() => {})
     launches.add(work)
+    launchIds.set(work, id)
     try {
       await work
     } finally {
       launches.delete(work)
+      launchIds.delete(work)
     }
   }
   async function launchRun(
@@ -955,10 +958,12 @@ export function supervisor(
       }
     })()
     launches.add(work)
+    launchIds.set(work, id)
     try {
       await work
     } finally {
       launches.delete(work)
+      launchIds.delete(work)
     }
     if (reloadStableProcessState.ready !== readiness) {
       await awaitWithContext(reloadStableProcessState.ready.promise, ctx)
@@ -1069,7 +1074,16 @@ export function supervisor(
     }
     reloadStableProcessState.ready.resolve()
   }
+  async function quiesce(id: string) {
+    await stopProcess(id, runs.get(id)?.child.pid ?? (await readPid(id)))
+    await Promise.allSettled(
+      [...launchIds].filter(([, automation]) => automation === id).map(([work]) => work),
+    )
+    await stopProcess(id, runs.get(id)?.child.pid ?? (await readPid(id)))
+  }
   return {
+    ready: () => reloadStableProcessState.ready.promise,
+    quiesce,
     Deliver,
     check,
     status,

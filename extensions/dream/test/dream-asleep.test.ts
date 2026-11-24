@@ -73,6 +73,7 @@ async function fixture() {
     home,
     chapter: { name: 'the-beginning', number: 1 },
     want: (api: unknown) => services.get(api),
+    need: () => ({ retireScripts: async () => [] }),
     conversations: () => [],
     resource: (key: string, create: () => unknown) => {
       if (!resources.has(key)) resources.set(key, create())

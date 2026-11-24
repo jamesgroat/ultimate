@@ -29,6 +29,9 @@ export type Automation = {
   manifestPrompt?: string
   overrides?: { agent?: boolean; prompt?: boolean; subscribers?: boolean }
   key?: CreateIdempotencyKey
+  retiredTo?: string
+  retirementStop?: { pid?: number; scheduler?: TaskId }
+  transferPending?: boolean
   name: string
   enabled: boolean
   createdAt: number

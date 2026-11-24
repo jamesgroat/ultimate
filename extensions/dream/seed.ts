@@ -11,19 +11,22 @@ import type { Todo } from '../todos/refs.ts'
 import { Memory, Roots } from '../lineage/api.ts'
 import { Messages } from '../messages/api.ts'
 import type { Automation } from '../automations/types.ts'
+import { AutomationsApi } from '../automations/api.ts'
 import { BuiltInDoc, PauseDoc } from './built-ins.ts'
 import type { Prepared } from './refs.ts'
 import type { CarriedQuestion, SeededAsTextBeforeCardsWereCarried, Seed } from './types.ts'
 
-export const SeedState = defineDoc<{ applied?: number; automations: string[] }>({
-  kind: 'dream.seed',
-  checkpointWhen: () => false,
-  version: 1,
-  scope: 'conversation',
-  history: 'latest',
-  fork: 'initial',
-  initial: () => ({ automations: [] }),
-})
+export const SeedState = defineDoc<{ applied?: number; automations: string[]; scripts?: string[] }>(
+  {
+    kind: 'dream.seed',
+    checkpointWhen: () => false,
+    version: 1,
+    scope: 'conversation',
+    history: 'latest',
+    fork: 'initial',
+    initial: () => ({ automations: [] }),
+  },
+)
 
 const portableTrigger = (item: Seed['automations'][number]) =>
   (!!item.prompt || !!item.subscribers?.length) && !item.condition?.of.startsWith('#')
@@ -63,9 +66,14 @@ async function exportedDocument<T>(
 
 const prototypeFreeMemoryIndex = () => Object.create(null) as Record<string, MemoryItem>
 const detachTransactionOverlays = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
-export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promise<Seed> {
+export async function buildSeed(
+  host: ExtensionHost,
+  prepared: Prepared,
+  chapter = prepared.chapter,
+): Promise<Seed> {
   const signal = new AbortController().signal
   const automations = (await host.invoke('automations', 'list', null, signal)) as Automation[]
+  const transfers = await host.need(AutomationsApi).retireScripts(chapter)
   return host.harness().commit(async (tx) => {
     const roots = (await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots
     const memories = prototypeFreeMemoryIndex()
@@ -136,7 +144,10 @@ export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promis
       names.add(name)
     }
     const watchers = automations
-      .filter((item) => item.enabled && item.script)
+      .filter(
+        (item) =>
+          item.script && (item.enabled || transfers.some((transfer) => transfer.id === item.id)),
+      )
       .map(({ id, scope, name, script, schedule, prompt, agent, model, thinking }) => ({
         id,
         ...(scope ? { scope } : {}),
@@ -156,6 +167,7 @@ export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promis
       questions,
       automations: triggers,
       scripts: watchers,
+      transfers,
       counts: {
         memories: Object.keys(memories).length,
         todos: todos.length,
@@ -249,10 +261,20 @@ export async function applySeed(host: ExtensionHost) {
           text: `Open question (${seed.from.name}${ref}): ${text}`,
         })),
         ...seed.scripts
-          .filter((item) => item.scope !== 'project')
+          .filter(
+            (item) =>
+              item.scope !== 'project' &&
+              !seed.transfers?.some((transfer) => transfer.id === item.id),
+          )
           .map(({ id, name, ask, schedule, timeout, prompt, agent }) => ({
             owner: 'ultimate' as const,
             text: `Recreate ${schedule ? 'scheduled check' : 'script'} ${id} (${name}): ${ask}${schedule ? ` · schedule: ${JSON.stringify(schedule)} · timeout: ${timeout ?? 300}s` : ''}${prompt ? ` · prompt: ${prompt}${agent ? ` (agent ${agent})` : ''}` : ''}`,
+          })),
+        ...(seed.transfers ?? [])
+          .filter((item) => item.error)
+          .map((item) => ({
+            owner: 'ultimate' as const,
+            text: `Chapter transfer failed for ${item.id} (${item.name}): ${item.error}. Source files retained at ${item.source}; source is retired.`,
           })),
         ...seed.automations
           .filter((item) => !portableTrigger(item))
@@ -311,6 +333,24 @@ export async function applySeed(host: ExtensionHost) {
       const saved = await tx.doc(SeedState, ROOT_CONVERSATION_ID)
       if (!saved.automations.includes(automation.name)) saved.automations.push(automation.name)
     }, context)
+  }
+  for (const transfer of seed.transfers ?? []) {
+    if (transfer.error) continue
+    const receipt = await harness.snapshot(SeedState, ROOT_CONVERSATION_ID, context)
+    if (receipt?.scripts?.includes(transfer.id)) continue
+    try {
+      await host.need(AutomationsApi).adoptScript(transfer, `seed:${seed.from.name}:${transfer.id}`)
+      await harness.commit(async (tx) => {
+        const saved = await tx.doc(SeedState, ROOT_CONVERSATION_ID)
+        saved.scripts ??= []
+        if (!saved.scripts.includes(transfer.id)) saved.scripts.push(transfer.id)
+      }, context)
+    } catch (error) {
+      host.notice(
+        `Chapter transfer failed for ${transfer.id} (${transfer.name}): ${String(error)}. Reopen this chapter to retry; source files remain at ${transfer.source}`,
+      )
+      throw error
+    }
   }
   harness.resume()
   return seed
