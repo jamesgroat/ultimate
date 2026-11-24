@@ -4,7 +4,7 @@ import { afterEach, expect, it } from 'vitest'
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { requestChapter } from '../../../../lib/chapters.ts'
 import { context } from '../../../../server/harness.ts'
-import { fauxServer, temp } from '../../../../test/helpers.ts'
+import { fauxServer, temp, until } from '../../../../test/helpers.ts'
 import { Automations } from '../../server.ts'
 import type { Automation } from '../../types.ts'
 import type { ScriptTransfer } from '../../api.ts'
@@ -14,6 +14,122 @@ afterEach(async () => {
   await server?.close()
   server = undefined
 })
+
+it.each(['streaming', 'scheduled'] as const)(
+  'does not rearm a once %s transfer after FIRE commits before the activation receipt',
+  async (mode) => {
+    const root = await temp('ultimate-transfer-once-')
+    const userHome = join(root, 'user')
+    const home = join(root, 'home')
+    const extension = join(root, '.ultimate/extensions/transfer-test')
+    await mkdir(extension, { recursive: true })
+    await writeFile(
+      join(extension, 'server.ts'),
+      `
+import { AutomationsApi } from '${resolve('extensions/automations/api.ts')}'
+import { SubagentsApi } from '${resolve('extensions/subagents/api.ts')}'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+export default function(host) { host.need(AutomationsApi); host.need(SubagentsApi); return { name: 'transfer-test' } }
+export const actions = {
+  standing: (_, {host}) => host.need(SubagentsApi).standing('ultimate', BACKGROUND_CONTEXT),
+  adopt: ({transfer, key}, {host}) => host.need(AutomationsApi).adoptScript(transfer, key),
+}
+`,
+    )
+    const definitions = join(userHome, '.ultimate/agents')
+    await mkdir(definitions, { recursive: true })
+    for (const name of ['ultimate', 'watcher'])
+      await writeFile(
+        join(definitions, `${name}.md`),
+        `---\nname: ${name}\ndescription: Test\nmodel: faux/faux-1\ntools: []\n${name === 'ultimate' ? 'resident: true\n' : ''}---\nTest\n`,
+      )
+    const options = { ultimateRoot: resolve('.'), projectRoot: root, home, userHome }
+    const open = async () => {
+      server = await fauxServer(options)
+      return server
+    }
+    let app = await open()
+    const invoke = (action: string, args: unknown) =>
+      app.extensions.invoke(
+        'transfer-test',
+        action,
+        JSON.parse(JSON.stringify(args)),
+        new AbortController().signal,
+      )
+    await invoke('standing', null)
+    const id = 'A10'
+    const key = 'seed:source:A10'
+    const dir = join(userHome, '.ultimate/automations', basename(home), id)
+    await mkdir(join(dir, 'state'), { recursive: true })
+    await writeFile(
+      join(dir, 'run'),
+      '#!/bin/sh\nprintf "execution\\n" >> "$AUTOMATION_STATE/executions"\nprintf "FIRE one\\n"\n',
+    )
+    await chmod(join(dir, 'run'), 0o700)
+    const transfer: ScriptTransfer = {
+      id,
+      name: 'Once',
+      source: join(root, 'archived/run'),
+      subscribers: ['@ultimate'],
+      automation: {
+        name: 'Once',
+        script: { ask: 'Watch once', once: true },
+        ...(mode === 'scheduled' ? { schedule: { kind: 'every', ms: 86400000 } as const } : {}),
+      },
+    }
+    await app.harness.commit(async (tx) => {
+      const ledger = await tx.doc(Automations)
+      const watcher = await tx.createConversation({ ownership: { kind: 'ownerless' } })
+      ledger.next = 11
+      ledger.automations[id] = {
+        id,
+        key,
+        name: transfer.name,
+        enabled: true,
+        transferPending: true,
+        createdAt: 1,
+        updatedAt: 1,
+        ...(transfer.automation.schedule ? { schedule: transfer.automation.schedule } : {}),
+        script: { ask: 'Watch once', once: true, state: 'running', conversationId: watcher.id },
+        subscribers: ['@ultimate'],
+        runs: [],
+        fires: 0,
+      }
+    }, context)
+    const get = async () => (await app.harness.snapshot(Automations, context))!.automations[id]
+    await app.close()
+    server = undefined
+    app = await open()
+    expect((await get()).fires).toBe(0)
+    expect((await get()).script!.pid).toBeUndefined()
+    const activated = (await invoke('adopt', { transfer, key })) as Automation
+    await app.harness.commit(async (tx) => {
+      ;(await tx.doc(Automations)).automations[id].transferPending = true
+    }, context)
+    const retry = (await invoke('adopt', { transfer, key })) as Automation
+    expect(retry.scheduler).toBe(activated.scheduler)
+    if (mode === 'scheduled')
+      await app.extensions.invoke('automations', 'run', { id }, new AbortController().signal)
+    await until(async () => (await get()).script!.state === 'done' && !(await get()).script!.pid)
+    expect((await get()).fires).toBe(1)
+    await app.harness.commit(async (tx) => {
+      ;(await tx.doc(Automations)).automations[id].transferPending = true
+    }, context)
+    await app.close()
+    server = undefined
+    app = await open()
+    const completed = await get()
+    await invoke('adopt', { transfer, key })
+    await invoke('adopt', { transfer, key })
+    await until(async () => (await get()).script!.state === 'done' && !(await get()).script!.pid)
+    const recovered = await get()
+    expect(recovered.fires).toBe(1)
+    expect(recovered.enabled).toBe(false)
+    expect(recovered.transferPending).toBeUndefined()
+    expect(recovered.scheduler).toBe(completed.scheduler)
+    expect(await readFile(join(dir, 'state/executions'), 'utf8')).toBe('execution\n')
+  },
+)
 
 it('transfers scheduled and continuous scripts with preserved PR and changelog state, without a writing turn or replay on reopen', async () => {
   const root = await temp('ultimate-transfer-')

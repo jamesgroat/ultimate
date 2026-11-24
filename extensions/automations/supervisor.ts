@@ -1064,7 +1064,8 @@ export function supervisor(
       .harness()
       .snapshot(Automations, BACKGROUND_CONTEXT)
     for (const sub of Object.values(restartStateAfterDiscovery?.automations ?? {})) {
-      if (sub.script?.state !== 'running' || !sub.enabled || sub.schedule) continue
+      if (sub.script?.state !== 'running' || !sub.enabled || sub.schedule || sub.transferPending)
+        continue
       try {
         await launch(sub.id)
       } catch (error) {

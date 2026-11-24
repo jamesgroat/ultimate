@@ -1003,13 +1003,17 @@ function backend(host: ExtensionHost) {
     const active = await host.harness().commit(async (tx) => {
       const a = (await tx.doc(Automations)).automations[record.id]
       if (!a.transferPending) return json(a)
-      a.enabled = true
-      a.script!.state = 'running'
-      if (a.schedule && !a.scheduler) await planSchedule(tx, a)
+      if (a.script!.state === 'stopped' && !a.script!.startedAt) {
+        a.enabled = true
+        a.script!.state = 'running'
+      }
+      if (a.enabled && a.script!.state === 'running' && a.schedule && !a.scheduler)
+        await planSchedule(tx, a)
       return json(a)
     }, BACKGROUND_CONTEXT)
     try {
-      if (!active.schedule) await scripts.launch(active.id)
+      if (active.enabled && active.script!.state === 'running' && !active.schedule)
+        await scripts.launch(active.id)
     } catch (error) {
       await scripts.quiesce(active.id)
       await host.harness().commit(async (tx) => {
@@ -1023,7 +1027,6 @@ function backend(host: ExtensionHost) {
     return host.harness().commit(async (tx) => {
       const a = (await tx.doc(Automations)).automations[active.id]
       delete a.transferPending
-      delete a.script!.error
       return json(a)
     }, BACKGROUND_CONTEXT)
   }
