@@ -2,7 +2,7 @@ import { createAgent } from '@ui-sdk/solid/agent'
 import { settle } from '@ui-sdk/core/testing'
 import { flush } from 'solid-js'
 import { beforeEach, expect, it, vi } from 'vitest'
-import { events, ExtensionName } from '@/sdk/solid'
+import { events, ExtensionName, formatTime } from '@/sdk/solid'
 import { parseConversationId } from '../../../../lib/ids.ts'
 import { SOURCE_HEADER, UI_REVISION } from '../../../../shared/protocol.ts'
 import type { UiUpdateRequest } from '../../../../shared/protocol.ts'
@@ -13,6 +13,7 @@ import { ROOT } from '../../../../web/src/sdk/api.ts'
 import { reads, store, uiState } from '../../../../web/src/sdk/client.ts'
 import { Chip } from '../../chip.solid.tsx'
 import { contextCondition } from '../../form-draft.ts'
+import { clock, lookOf, stateLine } from '../../looks.ts'
 import { AutomationsPanel } from '../../panel.solid.tsx'
 import type { AutomationListItem } from '../../refs.ts'
 
@@ -49,6 +50,20 @@ const checks: AutomationListItem = {
   prompt: undefined,
   alive: true,
   script: { ask: 'Watch CI', once: false, conversationId: watcher, state: 'running' },
+}
+const scheduledCheck: AutomationListItem = {
+  ...checks,
+  id: 'A5',
+  name: 'Scheduled checks',
+  schedule: reports.schedule,
+  nextAt: 1_300_000,
+  subscribers: [watcher],
+  script: {
+    ...checks.script!,
+    startedAt: 100_000,
+    timeout: 60,
+    check: { at: 940_000, ms: 2000, result: 'quiet' },
+  },
 }
 const confirmation =
   'Deletes Morning reports (A1). Future runs stop. Its conversations and files are kept.'
@@ -87,7 +102,11 @@ vi.mock('../../../../web/src/sdk/client.ts', async () => {
         return Response.json({ result: harness.list })
       case 'describe':
         return Response.json({
-          result: { description: 'Every 15 minutes', schedule: reports.schedule, next: [] },
+          result: {
+            description: 'Every 15 minutes',
+            schedule: reports.schedule,
+            next: [1_300_000, 2_200_000],
+          },
         })
       case 'log':
         return Response.json({
@@ -100,7 +119,8 @@ vi.mock('../../../../web/src/sdk/client.ts', async () => {
       case 'pause':
       case 'run':
       case 'delete':
-      case 'create': {
+      case 'create':
+      case 'update': {
         const { args } = JSON.parse(init!.body as string)
         harness.actions.push({ name: action, args, source })
         if (action === 'pause')
@@ -147,6 +167,7 @@ const control = (label: string) => {
 }
 const act = (label: string, action: string, ...args: unknown[]) =>
   agent.act({ steps: [{ ref: control(label).ref, action, args }] })
+const refreshList = () => reads.get('automations', 'list', null, ROOT).refetch()
 const panel = () =>
   renderSolid(() => (
     <ExtensionName value="automations">
@@ -329,6 +350,187 @@ it('shows watcher output and safely switches to its durable source pane', async 
   expect((await act('Back to automation list', 'press')).ok).toBe(true)
   flush()
   expect(view.querySelector('[data-automation="A2"]')).not.toBeNull()
+})
+
+it('formats scheduled check results without implying a process stays up between checks', () => {
+  for (const result of ['quiet', 'fired', 'failed', 'running'] as const) {
+    const automation: AutomationListItem = {
+      ...scheduledCheck,
+      enabled: result !== 'failed',
+      script: {
+        ...scheduledCheck.script!,
+        state: result === 'failed' ? 'investigating' : 'running',
+        check: { at: 940_000, result },
+      },
+    }
+    expect(lookOf(automation, 1_000_000)).toBe(
+      result === 'failed' ? 'investigating' : result === 'running' ? 'checking' : 'scheduled',
+    )
+    const line = stateLine(automation, 1_000_000, formatTime)
+    expect(line).not.toContain('up ')
+    expect(line).toContain(result === 'running' ? '1m' : `${result} 1m ago`)
+    expect(line.includes('next in 5m')).toBe(automation.enabled)
+  }
+})
+
+it('checks now from the list, keeps prompt runs separate and disables checks while busy', async () => {
+  harness.list = [scheduledCheck]
+  await refreshList()
+  const view = panel()
+  await settle()
+  expect(view.textContent).not.toContain('up ')
+  expect(view.textContent).not.toContain('0 runs')
+  expect(view.textContent).toContain('Every 15 minutes · Watch CI')
+  expect((await act('Actions for Scheduled checks (A5)', 'press', 'Check now')).ok).toBe(true)
+  expect(harness.actions.at(-1)).toEqual({ name: 'run', args: { id: 'A5' }, source: 'agent' })
+  for (const state of ['running', 'writing'] as const) {
+    harness.list = [
+      {
+        ...scheduledCheck,
+        script: {
+          ...scheduledCheck.script!,
+          state,
+          check: { at: Date.now(), result: state === 'writing' ? 'quiet' : 'running' },
+        },
+      },
+    ]
+    await refreshList()
+    await settle()
+    expect((await act('Actions for Scheduled checks (A5)', 'press', 'Check now')).ok).toBe(false)
+    expect(harness.actions).toHaveLength(1)
+  }
+  harness.list = [{ ...scheduledCheck, prompt: 'Summarise the result.' }]
+  await refreshList()
+  await settle()
+  expect(view.textContent).toContain('0 runs')
+  harness.list = [
+    {
+      ...scheduledCheck,
+      runs: [{ id: 'prompt-run', firedAt: 950_000, status: 'done', answer: 'Build summary' }],
+    },
+  ]
+  await refreshList()
+  await settle()
+  expect((await act('Run history for Scheduled checks (A5)', 'setOpen', true)).ok).toBe(true)
+  flush()
+  expect(view.textContent).toContain('1 run')
+  expect(view.querySelector('[data-run="prompt-run"]')?.textContent).toContain('Build summary')
+})
+
+it('shows bounded check facts and ordinary output in detail, with a guarded Check now', async () => {
+  harness.list = [scheduledCheck]
+  await refreshList()
+  const view = panel()
+  store.show(watcher)
+  await settle()
+  await expectDistinctAgentNames(agent)
+  const detail = () => view.querySelector('[data-automation-script="A5"]')!
+  expect(detail().textContent).not.toContain('up ')
+  expect(detail().textContent).toContain(`last quiet · ${clock(940_000, Date.now(), formatTime)}`)
+  expect(detail().textContent).toContain('took 2.0s')
+  expect(detail().textContent).toContain('timeout 60s')
+  expect(detail().textContent).toContain('next now')
+  expect(detail().textContent).toContain('fired 0')
+  expect(detail().textContent).toContain('checking')
+  expect(detail().textContent).toContain('FIRE build green')
+  expect((await act('Check now for Scheduled checks (A5)', 'press')).ok).toBe(true)
+  expect(harness.actions).toEqual([{ name: 'run', args: { id: 'A5' }, source: 'agent' }])
+  for (const state of ['running', 'writing'] as const) {
+    harness.list = [
+      {
+        ...scheduledCheck,
+        script: {
+          ...scheduledCheck.script!,
+          state,
+          check: { at: 940_000, result: state === 'writing' ? 'quiet' : 'running' },
+        },
+      },
+    ]
+    await refreshList()
+    await settle()
+    expect((await act('Check now for Scheduled checks (A5)', 'press')).ok).toBe(false)
+    expect(harness.actions).toHaveLength(1)
+    expect(detail().textContent).not.toContain('up ')
+    expect(detail().textContent).toContain(
+      `${state === 'running' ? 'started' : 'last quiet ·'} ${clock(940_000, Date.now(), formatTime)}`,
+    )
+  }
+})
+
+it('saves a scheduled script with its locked watch mode, schedule and timeout intact', async () => {
+  harness.list = [scheduledCheck]
+  await refreshList()
+  const view = panel()
+  await settle()
+  expect((await act('Actions for Scheduled checks (A5)', 'press', 'Edit')).ok).toBe(true)
+  await settle()
+  await expectDistinctAgentNames(agent)
+  expect(view.textContent).toContain('How to watch')
+  expect(control('Interval length').value).toBe('15m')
+  expect(control('Timeout (seconds)').value).toBe('60')
+  expect(view.querySelector('button[aria-pressed="true"]')?.textContent).toContain('On a schedule')
+  expect((await act('Streaming', 'setPressed', true)).ok).toBe(false)
+  const timeout = view.querySelector('input[aria-label="Timeout (seconds)"]')!
+  expect(timeout.getAttribute('min')).toBe('1')
+  expect(timeout.getAttribute('max')).toBe('3600')
+  expect((await act('Save changes', 'press')).ok).toBe(true)
+  expect(harness.actions).toEqual([
+    {
+      name: 'update',
+      source: 'agent',
+      args: {
+        id: 'A5',
+        name: 'Scheduled checks',
+        ask: 'Watch CI',
+        once: false,
+        schedule: 'every 15m',
+        timeout: 60,
+      },
+    },
+  ])
+})
+
+it('creates a scheduled check with a default timeout and validates all required fields', async () => {
+  const view = panel()
+  await settle()
+  expect((await act('Add an automation', 'press')).ok).toBe(true)
+  expect((await act('Trigger type', 'setValue', 'script')).ok).toBe(true)
+  expect((await act('Name', 'setValue', 'New check')).ok).toBe(true)
+  expect((await act('Watch for', 'setValue', 'Watch CI')).ok).toBe(true)
+  expect((await act('On a schedule', 'setPressed', true)).ok).toBe(true)
+  await settle()
+  await expectDistinctAgentNames(agent)
+  expect(control('Timeout (seconds)').value).toBe('300')
+  expect((await act('Hourly', 'setPressed', true)).ok).toBe(true)
+  expect((await act('Interval length', 'setValue', '')).ok).toBe(true)
+  expect(view.textContent).toContain('Fill in the schedule to see its next checks.')
+  expect((await act('Create', 'press')).ok).toBe(false)
+  expect((await act('Interval length', 'setValue', '15m')).ok).toBe(true)
+  for (const value of ['', '0', '3601', '1.5']) {
+    expect((await act('Timeout (seconds)', 'setValue', value)).ok).toBe(true)
+    expect((await act('Create', 'press')).ok).toBe(false)
+  }
+  expect((await act('Timeout (seconds)', 'setValue', '300')).ok).toBe(true)
+  expect((await act('Watch for', 'setValue', '')).ok).toBe(true)
+  expect((await act('Create', 'press')).ok).toBe(false)
+  expect((await act('Watch for', 'setValue', 'Watch CI')).ok).toBe(true)
+  expect((await act('Prompt (optional)', 'setValue', 'Summarise changes.')).ok).toBe(true)
+  expect(agent.snapshot().some((entry) => !entry.offPage && entry.label === 'Agent')).toBe(false)
+  expect((await act('Create', 'press')).ok).toBe(true)
+  expect(harness.actions).toEqual([
+    {
+      name: 'create',
+      source: 'agent',
+      args: {
+        name: 'New check',
+        ask: 'Watch CI',
+        once: true,
+        schedule: 'every 15m',
+        timeout: 300,
+        prompt: 'Summarise changes.',
+      },
+    },
+  ])
 })
 
 it('shows the active count and opens Automations from the chip', async () => {
