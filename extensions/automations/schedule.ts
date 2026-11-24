@@ -82,13 +82,20 @@ export function parseSchedule(input: string | Schedule, now = Date.now()): Sched
       expr: match[1],
       tz: match[2] ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     }
-  } else schedule = { kind: 'at', time: input.replace(/^at\s+/, '') }
+  } else {
+    const bareCron = /^(\S+ \S+ \S+ \S+ \S+)(?: (\S+))?$/.exec(input)
+    if (bareCron && !/^(?:at\s+|\d{4}-\d\d-\d\dT)/.test(input))
+      throw new Error(`Did you mean: cron "${bareCron[1]}"${bareCron[2] ? ` ${bareCron[2]}` : ''}?`)
+    schedule = { kind: 'at', time: input.replace(/^at\s+/, '') }
+  }
   if (schedule.kind === 'every') {
     if (!Number.isFinite(schedule.ms) || schedule.ms < 1000)
       throw new Error('Intervals must be at least 1s')
   } else if (schedule.kind === 'at') {
     if (!/^\d{4}-\d\d-\d\dT/.test(schedule.time) || !Number.isFinite(Date.parse(schedule.time)))
-      throw new Error('Use an ISO time')
+      throw new Error(
+        'Use an ISO time. Accepted forms: cron "<5 fields>" [IANA zone], at <ISO time>, in <duration>, every <duration>',
+      )
     schedule.time = new Date(schedule.time).toISOString()
   } else {
     schedule.tz ||= Intl.DateTimeFormat().resolvedOptions().timeZone
