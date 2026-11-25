@@ -84,6 +84,15 @@ export function Reading(props: { entry: Entry; now: number; phone: boolean; onBa
             <span class="shrink-0 rounded border border-border/70 px-1 font-mono text-[10px] leading-4 text-muted-foreground">
               {tagOf(props.entry)}
             </span>
+            <Show when={message()?.carried}>
+              {(carried) => (
+                <span data-inbox-carried>
+                  asked by{' '}
+                  {typeof carried().from === 'number' ? `#${carried().from}` : carried().from} in{' '}
+                  {carried().chapter}
+                </span>
+              )}
+            </Show>
             <span class="ml-auto flex items-center gap-1">
               waited
               <time
