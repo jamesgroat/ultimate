@@ -1,0 +1,359 @@
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { basename, join, resolve } from 'node:path'
+import { afterEach, expect, it } from 'vitest'
+import type { ConversationId } from '@earendil-works/pi-durable'
+import { requestChapter } from '../../../../lib/chapters.ts'
+import { context } from '../../../../server/harness.ts'
+import { fauxServer, temp, until } from '../../../../test/helpers.ts'
+import { Automations } from '../../server.ts'
+import type { Automation } from '../../types.ts'
+import type { ScriptTransfer } from '../../api.ts'
+
+let server: Awaited<ReturnType<typeof fauxServer>> | undefined
+afterEach(async () => {
+  await server?.close()
+  server = undefined
+})
+
+it.each(['streaming', 'scheduled'] as const)(
+  'does not rearm a once %s transfer after FIRE commits before the activation receipt',
+  async (mode) => {
+    const root = await temp('ultimate-transfer-once-')
+    const userHome = join(root, 'user')
+    const home = join(root, 'home')
+    const extension = join(root, '.ultimate/extensions/transfer-test')
+    await mkdir(extension, { recursive: true })
+    await writeFile(
+      join(extension, 'server.ts'),
+      `
+import { AutomationsApi } from '${resolve('extensions/automations/api.ts')}'
+import { SubagentsApi } from '${resolve('extensions/subagents/api.ts')}'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+export default function(host) { host.need(AutomationsApi); host.need(SubagentsApi); return { name: 'transfer-test' } }
+export const actions = {
+  standing: (_, {host}) => host.need(SubagentsApi).standing('ultimate', BACKGROUND_CONTEXT),
+  adopt: ({transfer, key}, {host}) => host.need(AutomationsApi).adoptScript(transfer, key),
+}
+`,
+    )
+    const definitions = join(userHome, '.ultimate/agents')
+    await mkdir(definitions, { recursive: true })
+    for (const name of ['ultimate', 'watcher'])
+      await writeFile(
+        join(definitions, `${name}.md`),
+        `---\nname: ${name}\ndescription: Test\nmodel: faux/faux-1\ntools: []\n${name === 'ultimate' ? 'resident: true\n' : ''}---\nTest\n`,
+      )
+    const options = { ultimateRoot: resolve('.'), projectRoot: root, home, userHome }
+    const open = async () => {
+      server = await fauxServer(options)
+      return server
+    }
+    let app = await open()
+    const invoke = (action: string, args: unknown) =>
+      app.extensions.invoke(
+        'transfer-test',
+        action,
+        JSON.parse(JSON.stringify(args)),
+        new AbortController().signal,
+      )
+    await invoke('standing', null)
+    const id = 'A10'
+    const key = 'seed:source:A10'
+    const dir = join(userHome, '.ultimate/automations', basename(home), id)
+    await mkdir(join(dir, 'state'), { recursive: true })
+    await writeFile(
+      join(dir, 'run'),
+      '#!/bin/sh\nprintf "execution\\n" >> "$AUTOMATION_STATE/executions"\nprintf "FIRE one\\n"\n',
+    )
+    await chmod(join(dir, 'run'), 0o700)
+    const transfer: ScriptTransfer = {
+      id,
+      name: 'Once',
+      source: join(root, 'archived/run'),
+      subscribers: ['@ultimate'],
+      automation: {
+        name: 'Once',
+        script: { ask: 'Watch once', once: true },
+        ...(mode === 'scheduled' ? { schedule: { kind: 'every', ms: 86400000 } as const } : {}),
+      },
+    }
+    await app.harness.commit(async (tx) => {
+      const ledger = await tx.doc(Automations)
+      const watcher = await tx.createConversation({ ownership: { kind: 'ownerless' } })
+      ledger.next = 11
+      ledger.automations[id] = {
+        id,
+        key,
+        name: transfer.name,
+        enabled: true,
+        transferPending: true,
+        createdAt: 1,
+        updatedAt: 1,
+        ...(transfer.automation.schedule ? { schedule: transfer.automation.schedule } : {}),
+        script: { ask: 'Watch once', once: true, state: 'running', conversationId: watcher.id },
+        subscribers: ['@ultimate'],
+        runs: [],
+        fires: 0,
+      }
+    }, context)
+    const get = async () => (await app.harness.snapshot(Automations, context))!.automations[id]
+    await app.close()
+    server = undefined
+    app = await open()
+    expect((await get()).fires).toBe(0)
+    expect((await get()).script!.pid).toBeUndefined()
+    const activated = (await invoke('adopt', { transfer, key })) as Automation
+    await app.harness.commit(async (tx) => {
+      ;(await tx.doc(Automations)).automations[id].transferPending = true
+    }, context)
+    const retry = (await invoke('adopt', { transfer, key })) as Automation
+    expect(retry.scheduler).toBe(activated.scheduler)
+    if (mode === 'scheduled')
+      await app.extensions.invoke('automations', 'run', { id }, new AbortController().signal)
+    await until(async () => (await get()).script!.state === 'done' && !(await get()).script!.pid)
+    expect((await get()).fires).toBe(1)
+    await app.harness.commit(async (tx) => {
+      ;(await tx.doc(Automations)).automations[id].transferPending = true
+    }, context)
+    await app.close()
+    server = undefined
+    app = await open()
+    const completed = await get()
+    await invoke('adopt', { transfer, key })
+    await invoke('adopt', { transfer, key })
+    await until(async () => (await get()).script!.state === 'done' && !(await get()).script!.pid)
+    const recovered = await get()
+    expect(recovered.fires).toBe(1)
+    expect(recovered.enabled).toBe(false)
+    expect(recovered.transferPending).toBeUndefined()
+    expect(recovered.scheduler).toBe(completed.scheduler)
+    expect(await readFile(join(dir, 'state/executions'), 'utf8')).toBe('execution\n')
+  },
+)
+
+it('preserves transfer state and retries missing-secret activation even after a previous start and reopen', async () => {
+  const root = await temp('ultimate-transfer-')
+  const userHome = join(root, 'user')
+  const home = join(root, 'home')
+  const extension = join(root, '.ultimate/extensions/transfer-test')
+  await mkdir(extension, { recursive: true })
+  await writeFile(
+    join(extension, 'server.ts'),
+    `
+import { AutomationsApi } from '${resolve('extensions/automations/api.ts')}'
+import { SubagentsApi } from '${resolve('extensions/subagents/api.ts')}'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+export default function(host) { host.need(AutomationsApi); host.need(SubagentsApi); return { name: 'transfer-test' } }
+export const actions = {
+  standing: (_, {host}) => host.need(SubagentsApi).standing('ultimate', BACKGROUND_CONTEXT),
+  retire: (chapter, {host}) => host.need(AutomationsApi).retireScripts(chapter),
+  adopt: ({transfer, key}, {host}) => host.need(AutomationsApi).adoptScript(transfer, key),
+}
+`,
+  )
+  const definitions = join(userHome, '.ultimate/agents')
+  await mkdir(definitions, { recursive: true })
+  for (const name of ['ultimate', 'watcher'])
+    await writeFile(
+      join(definitions, `${name}.md`),
+      `---\nname: ${name}\ndescription: Test\nmodel: faux/faux-1\ntools: []\n${name === 'ultimate' ? 'resident: true\n' : ''}---\nTest\n`,
+    )
+  const options = { ultimateRoot: resolve('.'), projectRoot: root, home, userHome }
+  const open = async () => {
+    server = await fauxServer(options)
+    return server
+  }
+  let app = await open()
+  const invoke = (action: string, args: unknown) =>
+    app.extensions.invoke(
+      'transfer-test',
+      action,
+      JSON.parse(JSON.stringify(args)),
+      new AbortController().signal,
+    )
+  const ultimate = (await invoke('standing', null)) as ConversationId
+  const scripts = ['prs.json', 'seen-ids.json', 'last.json']
+  const body = '#!/bin/sh\nwhile :; do sleep 60; done\n'
+  for (const [index, file] of scripts.entries()) {
+    const id = `A${index + 10}`
+    const dir = join(userHome, '.ultimate/automations', basename(home), id)
+    await mkdir(join(dir, 'state'), { recursive: true })
+    await writeFile(join(dir, 'run'), body)
+    await chmod(join(dir, 'run'), 0o700)
+    await writeFile(join(dir, 'state', file), '{"already-seen":[290,291]}\n')
+    await app.harness.commit(async (tx) => {
+      const ledger = await tx.doc(Automations)
+      ledger.next = index + 11
+      const watcher = await tx.createConversation({ ownership: { kind: 'ownerless' } })
+      ledger.automations[id] = {
+        id,
+        name: file,
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+        ...(index === 0 ? { schedule: { kind: 'every', ms: 86400000 } as const } : {}),
+        script: {
+          ask: 'Watch updates',
+          once: false,
+          secrets: index === 0 ? ['TEST_SECRET'] : [],
+          conversationId: watcher.id,
+          state: 'running',
+          ...(index === 0 ? { timeout: 42 } : {}),
+        },
+        subscribers: index === 2 ? [watcher.id] : [ultimate],
+        prompt: 'Handle updates',
+        model: { provider: 'faux', modelId: 'faux-1' },
+        thinking: 'low',
+        runs: [],
+        fires: 0,
+      }
+    }, context)
+  }
+  await app.extensions.invoke('automations', 'resume', { id: 'A11' }, new AbortController().signal)
+  const abandoned = (await invoke('retire', 'abandoned')) as ScriptTransfer[]
+  expect(abandoned).toHaveLength(3)
+  expect(abandoned[2].error).toContain('is not a standing agent')
+  const failedIntent = (await app.harness.snapshot(Automations, context))!.automations.A12
+  expect(failedIntent.retirementError).toBe(abandoned[2].error)
+  await app.close()
+  server = undefined
+  app = await open()
+  const transfers = (await invoke('retire', 'next')) as ScriptTransfer[]
+  expect(transfers.map((t) => t.id)).toEqual(abandoned.map((t) => t.id))
+  expect(transfers.map((t) => t.error)).toEqual(abandoned.map((t) => t.error))
+  for (const transfer of transfers)
+    expect(
+      (await app.harness.snapshot(Automations, context))!.automations[transfer.id].retiredTo,
+    ).toBe('next')
+  expect(transfers[0].subscribers).toEqual(['@ultimate'])
+  await app.close()
+  server = undefined
+  await requestChapter(home, 'next')
+  app = await open()
+  {
+    const transfer = transfers[1]
+    const key = `seed:the-beginning:${transfer.id}`
+    transfer.automation.script.secrets = ['ACTIVATION_TEST']
+    await expect(invoke('adopt', { transfer, key })).rejects.toThrow(
+      'Missing secret ACTIVATION_TEST',
+    )
+    const pending = Object.values(
+      (await app.harness.snapshot(Automations, context))!.automations,
+    ).find((a) => a.key === key)!
+    expect(pending.transferPending).toBe(true)
+    expect(pending.enabled).toBe(true)
+    expect(pending.script!.state).toBe('running')
+    expect(pending.script!.error).toContain('Missing secret ACTIVATION_TEST')
+    await app.harness.commit(async (tx) => {
+      ;(await tx.doc(Automations)).automations[pending.id].script!.startedAt = 1
+    }, context)
+    await app.close()
+    server = undefined
+    app = await open()
+    await expect(invoke('adopt', { transfer, key })).rejects.toThrow(
+      'Missing secret ACTIVATION_TEST',
+    )
+    const failedRecovery = (await app.harness.snapshot(Automations, context))!.automations[
+      pending.id
+    ]
+    expect(failedRecovery.transferPending).toBe(true)
+    expect(failedRecovery.enabled).toBe(true)
+    expect(failedRecovery.script!.state).toBe('running')
+    expect(failedRecovery.script!.startedAt).toBe(1)
+    expect(failedRecovery.script!.error).toContain('Missing secret ACTIVATION_TEST')
+    const marker = join(
+      userHome,
+      '.ultimate/automations',
+      `${basename(home)}@next`,
+      pending.id,
+      'state',
+      'activation.json',
+    )
+    await writeFile(marker, 'new destination observation\n')
+    await writeFile(
+      join(userHome, '.ultimate/secrets.json'),
+      JSON.stringify({
+        secrets: { ACTIVATION_TEST: { value: 'test-value', updatedAt: 'test' } },
+      }),
+      { mode: 0o600 },
+    )
+    await app.close()
+    server = undefined
+    app = await open()
+    const recovered = (await invoke('adopt', { transfer, key })) as Automation
+    expect(recovered.transferPending).toBeUndefined()
+    expect(recovered.enabled).toBe(true)
+    expect(recovered.script!.state).toBe('running')
+    expect(recovered.script!.startedAt).toBeGreaterThan(1)
+    expect(recovered.script!.pid).toBeGreaterThan(0)
+    expect(recovered.script!.error).toBeUndefined()
+    await app.harness.commit(async (tx) => {
+      ;(await tx.doc(Automations)).automations[recovered.id].transferPending = true
+    }, context)
+    const alreadyRunning = (await invoke('adopt', { transfer, key })) as Automation
+    expect(alreadyRunning.script!.pid).toBe(recovered.script!.pid)
+    expect(alreadyRunning.transferPending).toBeUndefined()
+    expect(await readFile(marker, 'utf8')).toBe('new destination observation\n')
+  }
+  const adopted: Automation[] = []
+  for (const transfer of transfers) {
+    if (transfer.error) continue
+    const key = `seed:the-beginning:${transfer.id}`
+    const a = (await invoke('adopt', { transfer, key })) as Automation
+    adopted.push(a)
+    expect(a.script!.state).toBe('running')
+    expect(a.prompt).toBe('Handle updates')
+    expect(a.model).toEqual(transfer.automation.model)
+    expect(a.thinking).toBe('low')
+    const dir = join(userHome, '.ultimate/automations', `${basename(home)}@next`, a.id)
+    expect(await readFile(join(dir, 'run'), 'utf8')).toBe(body)
+    expect(await readFile(join(dir, 'state', a.name), 'utf8')).toBe('{"already-seen":[290,291]}\n')
+    const entries = await (await app.harness.conversation(
+      a.script!.conversationId,
+      context,
+    ))!.context(context)
+    expect(entries.entries.filter((e) => e.kind === 'automations.writing')).toEqual([])
+  }
+  expect(adopted[0].script!.timeout).toBe(42)
+  expect(adopted[0].script!.secrets).toEqual(['TEST_SECRET'])
+  const changed = join(
+    userHome,
+    '.ultimate/automations',
+    `${basename(home)}@next`,
+    adopted[1].id,
+    'state',
+    'seen-ids.json',
+  )
+  await writeFile(changed, 'new observation\n')
+  await app.close()
+  server = undefined
+  app = await open()
+  for (const transfer of transfers) {
+    if (transfer.error) continue
+    const a = (await invoke('adopt', {
+      transfer,
+      key: `seed:the-beginning:${transfer.id}`,
+    })) as Automation
+    expect(a.id).toBe(adopted.find((item) => item.name === a.name)!.id)
+  }
+  expect(await readFile(changed, 'utf8')).toBe('new observation\n')
+  expect(
+    Object.values((await app.harness.snapshot(Automations, context))!.automations).filter((a) =>
+      a.key?.startsWith('seed:the-beginning:'),
+    ),
+  ).toHaveLength(2)
+  await app.close()
+  server = undefined
+  await requestChapter(home, 'the-beginning')
+  app = await open()
+  expect(await invoke('retire', 'third')).toEqual([])
+  for (const transfer of transfers) {
+    const a = (await app.harness.snapshot(Automations, context))!.automations[transfer.id]
+    expect(a.enabled).toBe(false)
+    expect(a.retiredTo).toBe('next')
+    await expect(
+      app.extensions.invoke('automations', 'resume', { id: a.id }, new AbortController().signal),
+    ).rejects.toThrow('retired')
+    expect(await readFile(transfer.source, 'utf8')).toBe(body)
+  }
+})

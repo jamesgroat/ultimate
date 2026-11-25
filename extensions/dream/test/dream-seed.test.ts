@@ -17,6 +17,8 @@ import { Todos } from '../../todos/server.ts'
 import { Standing, SubagentsApi } from '../../subagents/api.ts'
 import automations, { actions as automationActions, Automations } from '../../automations/server.ts'
 import type { Automation } from '../../automations/types.ts'
+import { AutomationsApi } from '../../automations/api.ts'
+import type { ScriptTransfer } from '../../automations/api.ts'
 import type { Seed } from '../types.ts'
 import dream, { Next } from '../server.ts'
 import { applySeed, buildSeed, SeedState, writeSeed } from '../seed.ts'
@@ -40,6 +42,8 @@ async function fixture() {
   let opened: OpenHost
   const lifecycle = openers()
   let scripts: (Seed['scripts'][number] & { enabled: boolean })[] = []
+  let transfers: ScriptTransfer[] = []
+  const adopt = vi.fn<(transfer: ScriptTransfer, key: string) => Promise<void>>(async () => {})
   /** A faked `CloudApi`: never the real Worker. */
   let cloud: CloudService | undefined
   const tokens = [...lineageDocs, Messages, Todos, Next]
@@ -81,6 +85,8 @@ async function fixture() {
     notice: () => {},
     want: (api: { name: string }) => (api.name === CloudApi.name ? cloud : undefined),
     need: () => ({
+      retireScripts: async () => transfers,
+      adoptScript: adopt,
       residents: async () => [{ name: 'ultimate', description: '' }],
       standing: async () =>
         opened.harness.commit(async (tx) => {
@@ -125,6 +131,10 @@ async function fixture() {
     },
     get harness() {
       return opened.harness
+    },
+    adopt,
+    transfers: (items: ScriptTransfer[]) => {
+      transfers = items
     },
     scripts: (items: (Seed['scripts'][number] & { enabled: boolean })[]) => {
       scripts = items
@@ -319,6 +329,51 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
   expect(again.seed).toEqual(after.seed)
   expect(again.automations).toEqual(settled.automations)
   expect(await chapterEntries()).toEqual([entry])
+})
+
+it('adopts executable user scripts from the seed instead of making recreation todos', async () => {
+  const f = await fixture()
+  await f.source()
+  const automation: Automation = {
+    id: 'A9',
+    name: 'PR watch',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+    subscribers: ['@ultimate'],
+    script: {
+      ask: 'Watch PRs',
+      once: false,
+      state: 'running',
+      conversationId: 1 as ConversationId,
+    },
+    runs: [],
+    fires: 0,
+  }
+  const transfer: ScriptTransfer = {
+    id: automation.id,
+    name: automation.name,
+    automation: { ...automation, script: automation.script! },
+    source: '/archived/chapter/A9/run',
+    subscribers: ['@ultimate'],
+  }
+  f.scripts([{ id: 'A9', name: automation.name, ask: automation.script!.ask, enabled: true }])
+  f.transfers([transfer])
+  const seed = await buildSeed(f.host, PREPARED)
+  expect(seed.transfers).toBeUndefined()
+  seed.transfers = await f.host.need(AutomationsApi).retireScripts(PREPARED.chapter)
+  expect(seed.transfers).toEqual([transfer])
+  await writeSeed(join(f.home, 'chapters', 'fresh-roots'), seed)
+  await f.close()
+  await requestChapter(f.home, 'fresh-roots')
+  f.scripts([])
+  await f.open()
+  await applySeed(f.host)
+  expect(f.adopt).toHaveBeenCalledWith(transfer, 'seed:the-beginning:A9')
+  await applySeed(f.host)
+  expect(f.adopt).toHaveBeenCalledTimes(1)
+  const todos = (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!.items
+  expect(todos.filter(({ text }) => text.startsWith('Recreate'))).toEqual([])
 })
 
 it.each(['on', 'off'] as const)(
