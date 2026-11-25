@@ -16,6 +16,8 @@ export interface Draft {
   prompt: string
   ask: string
   once: boolean
+  check: boolean
+  timeout: string
   wake: boolean
   mode: Mode
   cron: string
@@ -43,6 +45,8 @@ export function draftOf(automation?: Automation): Draft {
     prompt: automation?.prompt ?? '',
     ask: '',
     once: true,
+    check: false,
+    timeout: '300',
     wake: true,
     mode: 'cron',
     cron: '0 9 * * 1-5',
@@ -69,13 +73,14 @@ export function draftOf(automation?: Automation): Draft {
     }
   }
   if (automation?.script)
-    return {
-      ...draft,
+    Object.assign(draft, {
       trigger: 'script',
       ask: automation.script.ask,
       once: automation.script.once,
       wake: automation.subscribers.length > 0,
-    }
+      check: !!automation.schedule,
+      timeout: String(automation.script.timeout ?? 300),
+    })
   const schedule = automation?.schedule
   if (!schedule) return draft
   if (schedule.kind === 'cron')
@@ -160,7 +165,13 @@ function eventTrigger(draft: Draft) {
 export function triggerOf(draft: Draft) {
   if (draft.trigger === 'script') {
     const ask = draft.ask.trim()
-    return ask ? { ask, once: draft.once } : undefined
+    if (!ask) return undefined
+    if (!draft.check) return { ask, once: draft.once }
+    const schedule = scheduleOf(draft)
+    const timeout = fieldNumber(draft.timeout)
+    return schedule && Number.isInteger(timeout) && timeout >= 1 && timeout <= 3600
+      ? { ask, once: draft.once, schedule, timeout }
+      : undefined
   }
   if (draft.trigger === 'ultimate') {
     if (draft.ultimate === 'event') return eventTrigger(draft)
