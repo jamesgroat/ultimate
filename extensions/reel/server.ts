@@ -149,8 +149,9 @@ async function windowOf(host: ExtensionHost, branch: ConversationId, message: nu
   const log =
     (await host.harness().snapshot(Messages, ROOT_CONVERSATION_ID, context))?.messages ?? []
   const asked = log.find((item) => item.id === message)
-  if (!asked || asked.from !== branch || !asked.call)
-    throw new Error(`#${branch} sent no message ${message}`)
+  if (!asked) return undefined
+  if (asked.from !== branch) throw new Error(`#${branch} sent no message ${message}`)
+  if (asked.carried || !asked.call) return undefined
   const logged = new Set([
     ...log.flatMap((item) =>
       item.from === branch && item.to === 'user' && item.reply && item.call ? [item.call] : [],
@@ -183,7 +184,7 @@ async function windowOf(host: ExtensionHost, branch: ConversationId, message: nu
       if (at > 0) return { from: to, to }
     } else if (sends.length) return { from: entry.id, to }
   }
-  if (to === undefined) throw new Error(`#${branch} holds no call for message ${message}`)
+  if (to === undefined) return undefined
   return { from: 0, to }
 }
 
@@ -207,6 +208,7 @@ export const actions = {
       message === undefined
         ? { from: 0, to: Number.MAX_SAFE_INTEGER }
         : await windowOf(host, branch, message)
+    if (!window) return { frames: [], earlier: 0 }
     const shots = []
     for (const id of treeOf(summaries, branch))
       shots.push(...(await shotsOf(host, id, agentOf(id), window)))

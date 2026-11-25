@@ -49,6 +49,7 @@ import {
 import { deadline } from '../../lib/timers.ts'
 import { QuestionPane } from '../inbox/ui.solid.tsx'
 import { MessagesDoc } from '../messages/refs.ts'
+import type { Message } from '../messages/refs.ts'
 import type { Reply } from '../questions/refs.ts'
 import {
   answered,
@@ -444,14 +445,16 @@ function PinnedQuestion(props: {
   )
 }
 
-function TalkItThrough(props: { message: QuestionMessage }) {
+function TalkItThrough(props: { message: QuestionMessage & Pick<Message, 'call' | 'carried'> }) {
   const questionSides = useDocOf(() => ROOT, QuestionSidesDoc)
   const [, setFront] = useSideChatFront()
   const [opening, setOpening] = createSignal(false)
   const surface = useSurface()
   const shown = useConversationId()
   const asker = () =>
-    typeof props.message.from === 'number' ? (props.message.from as ConversationId) : undefined
+    typeof props.message.from === 'number' && !props.message.carried && props.message.call
+      ? (props.message.from as ConversationId)
+      : undefined
   const open = () => openQuestionSide(questionSides()?.sides, props.message.id)
   const talk = async (from: ConversationId, message: number) => {
     const who = writerNow()

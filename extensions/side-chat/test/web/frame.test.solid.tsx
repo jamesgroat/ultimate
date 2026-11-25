@@ -13,15 +13,23 @@ const harness = vi.hoisted(() => ({
   sources: [] as FakeSource[],
   server: undefined as ReturnType<typeof fakeSubscriptions> | undefined,
   opened: [] as { args: unknown; source: string | null }[],
+  reels: [] as unknown[],
 }))
 vi.mock('../../../../web/src/sdk/client.ts', async () => {
   const { createStore } = await import('../../../../web/src/sdk/store.ts')
   const { createApi } = await import('../../../../web/src/sdk/api.ts')
   const { createUiState } = await import('../../../../web/src/sdk/ui-state.ts')
   const { createRegistry } = await import('../../../../web/src/sdk/registry.ts')
-  const subscriptions = (harness.server = fakeSubscriptions(harness.sources))
-  const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const { createReads } = await import('../../../../web/src/sdk/reads.ts')
+  const subscriptions = (harness.server = fakeSubscriptions(harness.sources, (path, init) =>
+    fetch(path, init),
+  ))
+  const fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const path = input as string
+    if (path === '/api/extensions/reel/actions/frames') {
+      harness.reels.push(JSON.parse(init!.body as string).args)
+      return Response.json({ result: { frames: [], earlier: 0 } })
+    }
     if (path === '/api/extensions/side-chat/actions/open') {
       harness.opened.push({
         args: JSON.parse(init!.body as string).args,
@@ -39,16 +47,22 @@ vi.mock('../../../../web/src/sdk/client.ts', async () => {
     },
     fetch,
   })
+  const api = createApi(store, { fetch })
   return {
     store,
-    api: createApi(store, { fetch }),
+    api,
+    reads: createReads(api, store),
     registry: createRegistry(),
     reportCompact: vi.fn<(extension: string, error: unknown) => void>(),
     uiState: createUiState(undefined),
   }
 })
 
-import { store, uiState } from '../../../../web/src/sdk/client.ts'
+import { registry, store, uiState } from '../../../../web/src/sdk/client.ts'
+import { Answers } from '../../../messages/card-parts.solid.tsx'
+import type { Message } from '../../../messages/refs.ts'
+import questions from '../../../questions/web.solid.tsx'
+import reel from '../../../reel/web.solid.tsx'
 import { ComposerRedirect } from '../../../../web/src/sdk/solid.ts'
 import { ComposerFrame } from '../../frame.solid.tsx'
 import web from '../../web.solid.tsx'
@@ -59,6 +73,7 @@ const main = 44
 beforeEach(async ({ onTestFinished }) => {
   harness.sources.length = 0
   harness.opened.length = 0
+  harness.reels.length = 0
   uiState.receive({})
   store.start()
   onTestFinished(() => store.stop())
@@ -97,6 +112,61 @@ async function mount() {
   flush()
   return container
 }
+
+it.each([true, false])(
+  'keeps a no-call card answerable without replay or forks (carried: %s)',
+  async (carried) => {
+    vi.stubGlobal('matchMedia', () => ({
+      matches: false,
+      addEventListener() {},
+      removeEventListener() {},
+    }))
+    await registry.setLoaders({
+      '/extensions/questions/web.solid.tsx': async () => ({ default: questions }),
+      '/extensions/reel/web.solid.tsx': async () => ({ default: reel }),
+      '/extensions/side-chat/web.solid.tsx': async () => ({ default: web }),
+    })
+    const message: Message = {
+      id: 901,
+      from: parseConversationId(main),
+      to: 'user',
+      at: 0,
+      text: 'Keep the existing approach?',
+      reply: true,
+      state: 'delivered',
+      questions: [{ kind: 'confirm', text: 'Keep it?' }],
+      ...(carried ? { carried: { chapter: 'earlier', id: 8, from: parseConversationId(12) } } : {}),
+    }
+    const container = renderSolid(() => <Answers message={message} />)
+    await settle()
+    flush()
+    expect(harness.reels).toEqual([])
+    expect(harness.server!.reads.some((read) => read.read.extension === 'reel')).toBe(false)
+    expect(container.textContent).not.toContain('failed:')
+    expect(container.querySelector('[data-talk-it-through]')).toBeNull()
+    expect(container.querySelector('[data-reel-chip]')).toBeNull()
+    expect(
+      container.textContent?.includes(
+        'Carried from an earlier chapter; replay and the original side chat aren’t available here.',
+      ),
+    ).toBe(carried)
+    const yes = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) =>
+      button.textContent?.includes('Yes'),
+    )!
+    expect(container.textContent).toContain('Yes')
+    expect(yes).toBeDefined()
+    yes.click()
+    flush()
+    expect(yes.hasAttribute('data-selected')).toBe(true)
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send: answer to message 901"]')
+        ?.disabled,
+    ).toBe(false)
+    await expectDistinctAgentNames(agent)
+    expect(harness.opened).toEqual([])
+    await registry.setLoaders({})
+  },
+)
 
 it('keeps an outer composer redirect while side chat mode is off', async () => {
   const outer = { placeholder: 'Sent elsewhere', send: async () => undefined }

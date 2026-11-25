@@ -104,6 +104,8 @@ function RoundChip(props: { conversation: ConversationId; message: Message }) {
 function RoundExtras(props: { message: Message }) {
   const branch = () =>
     typeof props.message.from === 'number' &&
+    !props.message.carried &&
+    !!props.message.call &&
     props.message.to === 'user' &&
     props.message.reply &&
     props.message.from
