@@ -40,6 +40,8 @@ import { emit } from '../../../server/events.ts'
 import messagesExtension, { actions } from '../server.ts'
 import { sendResult } from '../delivery.ts'
 import { Serving, Started } from '../addresses.ts'
+import { requestTool } from '../request.ts'
+import type { ToolExecutionApi } from '@earendil-works/pi-durable'
 import pauseExtension, { actions as pauseActions } from '../../pause/server.ts'
 import { AskedCalls, Judge, Judgements, Messages, MessageSent } from '../api.ts'
 import type { JudgeService, JudgeState } from '../api.ts'
@@ -49,10 +51,16 @@ import type { MessagesService } from '../api.ts'
 import { BranchReceipts, rootOf, startBranch } from '../../lineage/server.ts'
 import type { BranchInput } from '../../lineage/server.ts'
 import { Branch, Roots, Tally } from '../../lineage/api.ts'
-import { Standing, Subagents } from '../../subagents/api.ts'
+import { Profile, Standing, Subagents } from '../../subagents/api.ts'
+import { Family, Selection } from '../../models/api.ts'
+import { writeFamilies } from '../../../lib/families-settings.ts'
+import { definitionAgent } from '../../../lib/agents.ts'
+import { isOpen } from '../../../lib/message-state.ts'
 import { landingPending, pendingLandingCards, Workspaces } from '../../workspaces/workspaces.ts'
-import { actions as conversationActions } from '../../conversations/server.ts'
 import { concludedIn } from '../../conversations/projection.ts'
+import { Branches, LanderReportEntry } from '../../workspaces/api.ts'
+import type { BranchesService } from '../../workspaces/api.ts'
+import { actions as conversationActions, concludeIn } from '../../conversations/server.ts'
 import { UiState } from '../../../shared/ui-state.ts'
 
 const homes: string[] = []
@@ -142,6 +150,17 @@ async function fixture(
   let opened: OpenHost
   let service!: MessagesService
   let hold = gate()
+  // A synthetic tool call must remain live across reopen until this fixture closes.
+  // Do not reuse reporter: another test resolves its module-global gate.
+  const callHold = gate()
+  const requestCall = defineTask<null, { phase: 'hold' }, null>({
+    name: 'messages-test.request-call',
+    version: 1,
+    initial: () => ({ phase: 'hold' }),
+    phases: { hold: (_task, _runtime, caller) => awaitWithContext(callHold.promise, caller) },
+    abort: (_task, runtime, caller) =>
+      runtime.commit(() => ({ status: 'terminal', outcome: { status: 'aborted' } }), caller),
+  })
   let holding = false
   const events = eventHost(() => opened.harness, 'messages')
   const openers: (() => Promise<void>)[] = []
@@ -177,6 +196,7 @@ async function fixture(
     // Messages also implements workspaces' branches point; the tests call its own service.
     implement: (api: { name: string }, value: MessagesService) => {
       if (api.name === 'messages') service = value
+      else provided.set(api.name, value)
     },
     want: provider,
     need: provider,
@@ -245,8 +265,19 @@ async function fixture(
   prepared.registry.install(
     defineExtension({
       name: 'test-hold',
-      tasks: [anchor, reporter],
+      tasks: [anchor, reporter, requestCall],
       tools: [
+        defineTool({
+          name: 'workspace',
+          description: 'Submission boundary stub, without git or a lander',
+          parameters: obj({}),
+          replay: 'safe',
+          async execute(_input, _api, ctx) {
+            holding = true
+            await awaitWithContext(hold.promise, ctx)
+            return { output: [{ type: 'text', text: 'Submitted' }] }
+          },
+        }),
         defineTool({
           name: 'hold',
           description: 'Hold the current run',
@@ -264,7 +295,7 @@ async function fixture(
   )
   const observed: string[] = []
   const transcripts: string[] = []
-  const route: FauxResponseFactory = (transcript) => {
+  const route: FauxResponseFactory = async (transcript) => {
     prepared.faux!.appendResponses([route])
     transcripts.push(JSON.stringify(transcript.messages))
     const last = transcript.messages.findLast((m) => m.role !== 'system')!
@@ -274,8 +305,20 @@ async function fixture(
         : last.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('')
     observed.push(text)
     const command = text.startsWith('Message from') ? text.split('\n')[1] : text
+    if (last.role === 'user' && command === 'DESIGN_SUBMIT')
+      return fauxAssistantMessage(
+        [
+          fauxText('Design: keep the report durable before concluding.'),
+          fauxToolCall('workspace', {}),
+        ],
+        { stopReason: 'toolUse' },
+      )
     if (last.role === 'user' && command.startsWith('BRANCH '))
       return fauxAssistantMessage([fauxToolCall('branch', JSON.parse(command.slice(7)))], {
+        stopReason: 'toolUse',
+      })
+    if (last.role === 'user' && command.startsWith('REQUEST '))
+      return fauxAssistantMessage([fauxToolCall('request', JSON.parse(command.slice(8)))], {
         stopReason: 'toolUse',
       })
     if (last.role === 'user' && command.startsWith('SEND '))
@@ -288,7 +331,11 @@ async function fixture(
     if (last.role === 'user' && text.startsWith('Message from') && text.includes('REPLYTHENWORK'))
       return fauxAssistantMessage(
         [
-          fauxToolCall('message', { to: '#1', text: 'Built; landing follows' }),
+          fauxToolCall('request', {
+            id: Number(/Request (\d+):/.exec(text)![1]),
+            action: 'reply',
+            text: 'Built; landing follows',
+          }),
           fauxToolCall('hold', {}),
         ],
         { stopReason: 'toolUse' },
@@ -325,7 +372,73 @@ async function fixture(
       return fauxAssistantMessage([])
     if (last.role === 'user' && text.startsWith('Message from') && text.includes('\nASK'))
       return fauxAssistantMessage([fauxText('Scope changed. Proceed?\n1. Yes\n2. No')])
-    return fauxAssistantMessage([fauxText(last.role === 'toolResult' ? 'Done' : `Answer: ${text}`)])
+    const answer = last.role === 'toolResult' ? 'Done' : `Answer: ${text}`
+    const completed = new Set(
+      transcript.messages.flatMap((m) =>
+        m.role === 'assistant'
+          ? m.content.flatMap((p) =>
+              p.type === 'toolCall' && p.name === 'request' && p.arguments.action === 'reply'
+                ? [p.arguments.id]
+                : [],
+            )
+          : [],
+      ),
+    )
+    const inputs = transcript.messages.flatMap((m) => {
+      if (m.role !== 'user') return []
+      const body =
+        typeof m.content === 'string'
+          ? m.content
+          : m.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('')
+      if (!body.startsWith('Message from') || body.startsWith('Message from user')) return []
+      return [...body.matchAll(/\nRequest (\d+):/g)].map((match) => Number(match[1]))
+    })
+    const log = (await opened.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!.messages
+    const to = log.find((m) => m.id === inputs.at(-1))?.to
+    const request = inputs.find(
+      (id) =>
+        !completed.has(id) &&
+        log.some((m) => m.id === id && m.to === to && isOpen(m) && !m.ownerSettled),
+    )
+    if (request !== undefined) {
+      const owner = (await opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[
+        request
+      ]
+      const lastInput = transcript.messages.findLast((m) => m.role === 'user')
+      const inputText =
+        typeof lastInput?.content === 'string'
+          ? lastInput.content
+          : (lastInput?.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('') ?? '')
+      const automationReturned =
+        owner?.owner.kind === 'automation' && inputText.startsWith(`Automation ${owner.owner.id} `)
+      const returned =
+        owner?.pending.length &&
+        (owner.owner.kind !== 'branch' ||
+          (await opened.harness.commit(concludedIn, context)).has(owner.owner.id))
+      if (owner && !returned && !automationReturned) {
+        const acknowledged = transcript.messages.some(
+          (m) =>
+            m.role === 'assistant' &&
+            m.content.some(
+              (p) =>
+                p.type === 'toolCall' &&
+                p.name === 'request' &&
+                p.arguments.id === request &&
+                p.arguments.action === 'work',
+            ),
+        )
+        if (!acknowledged)
+          return fauxAssistantMessage([fauxToolCall('request', { id: request, action: 'work' })], {
+            stopReason: 'toolUse',
+          })
+      } else {
+        return fauxAssistantMessage(
+          [fauxToolCall('request', { id: request, action: 'reply', text: answer })],
+          { stopReason: 'toolUse' },
+        )
+      }
+    }
+    return fauxAssistantMessage([fauxText(answer)])
   }
   prepared.faux!.setResponses([route])
   const open = async () => {
@@ -371,6 +484,7 @@ async function fixture(
   return {
     host,
     provided,
+    faux: prepared.faux!,
     get opened() {
       return opened
     },
@@ -379,6 +493,7 @@ async function fixture(
     log,
     action,
     service: () => service,
+    requestCall,
     open,
     get hold() {
       return hold
@@ -398,6 +513,122 @@ async function replies(f: Awaited<ReturnType<typeof fixture>>) {
   const entries = view.entries.filter((e) => e.kind === 'board.reply')
   return entries
 }
+it('keeps an acknowledgement open and completes exactly one request across replay and restart', async () => {
+  const f = await fixture()
+  const acknowledgement: FauxResponseFactory = () => {
+    f.faux.appendResponses([acknowledgement])
+    return fauxAssistantMessage([fauxText("Noted. I'll wait for vault report")])
+  }
+  f.faux.setResponses([acknowledgement])
+  const first = await sendMessage(
+    f.host,
+    ROOT_CONVERSATION_ID,
+    { to: `#${f.recipient.id}`, text: 'Review first request' },
+    context,
+  )
+  await until(
+    async () => (await f.log())?.messages.find((m) => m.id === first)?.state === 'delivered',
+  )
+  await until(async () => !(await f.opened.harness.snapshot(LiveDoc, f.recipient.id, context))?.run)
+  expect(await replies(f)).toHaveLength(0)
+  expect((await f.log())!.messages).toMatchObject([{ id: first, state: 'delivered' }])
+  const second = await sendMessage(
+    f.host,
+    ROOT_CONVERSATION_ID,
+    { to: `#${f.recipient.id}`, text: 'Unrelated second request' },
+    context,
+  )
+  await until(
+    async () => (await f.log())?.messages.find((m) => m.id === second)?.state === 'delivered',
+  )
+  await until(async () => !(await f.opened.harness.snapshot(LiveDoc, f.recipient.id, context))?.run)
+  const taskId = await f.opened.harness.commit(
+    (tx) =>
+      tx.createTask(f.requestCall, null, {
+        conversationId: f.recipient.id,
+        ownership: { kind: 'conversation' },
+        background: true,
+      }),
+    context,
+  )
+  const api = {
+    conversationId: f.recipient.id,
+    taskId,
+    callId: 'complete-first',
+  } as ToolExecutionApi
+  const complete = () =>
+    requestTool(f.host).execute(
+      { id: first, action: 'reply', text: 'Verified first result' },
+      api,
+      context,
+    )
+  await complete()
+  await until(async () => (await replies(f)).length === 1)
+  await f.opened.close()
+  await f.open()
+  await complete()
+  const recipient = (await f.opened.harness.conversation(f.recipient.id, context))!
+  await (
+    await recipient.submit(
+      { type: 'input', content: 'Final prose after the explicit answer' },
+      context,
+    )
+  ).wait(context)
+  expect(await replies(f)).toHaveLength(1)
+  expect((await replies(f))[0].data).toMatchObject({
+    re: first,
+    text: 'Verified first result',
+    failed: false,
+  })
+  expect((await f.log())!.messages.filter((m) => m.re === first)).toHaveLength(1)
+  expect((await f.log())!.messages.find((m) => m.id === first)?.state).toBe('answered')
+  expect((await f.log())!.messages.find((m) => m.id === second)?.state).toBe('delivered')
+})
+
+it.each(['scout', 'reviewer'])(
+  'lets restricted %s answer natively and refuses an explicit request-tool denial',
+  async (name) => {
+    const f = await fixture()
+    const parent = await f.opened.root.agent(context)
+    const definition = {
+      name,
+      path: `${name}.md`,
+      instructions: '',
+      description: 'Restricted reader',
+      tools: name === 'scout' ? ['read', 'bash'] : ['read', 'bash', 'subagent'],
+    }
+    await f.opened.harness.commit(
+      (tx) =>
+        configure(tx, f.recipient.id, definitionAgent(definition, parent, f.host.modelRuntime)),
+      context,
+    )
+    const tools = (await f.recipient.agent(context)).tools.map((tool) => tool.name)
+    expect(tools).toEqual(['request'])
+    expect(tools).not.toContain('codemode')
+    await f.send(`#${f.recipient.id}`)
+    await until(async () => (await replies(f)).length === 1)
+    expect((await f.log())!.messages[0].state).toBe('answered')
+    await f.opened.harness.commit(
+      (tx) =>
+        configure(
+          tx,
+          f.recipient.id,
+          definitionAgent({ ...definition, denyTools: ['request'] }, parent, f.host.modelRuntime),
+        ),
+      context,
+    )
+    await expect(
+      sendMessage(
+        f.host,
+        ROOT_CONVERSATION_ID,
+        { to: `#${f.recipient.id}`, text: 'Must not strand' },
+        context,
+      ),
+    ).rejects.toThrow('request completion tool is unavailable or denied')
+    expect((await f.log())!.messages).toHaveLength(2)
+  },
+)
+
 it('wakes an idle recipient and returns one typed reply; one-way messages return nothing', async () => {
   const f = await fixture()
   await f.send(`#${f.recipient.id}`)
@@ -548,9 +779,10 @@ async function toolResults(f: Awaited<ReturnType<typeof fixture>>) {
     .map((e) => JSON.stringify(e.model))
   return results
 }
-it('turns a message to a sender it owes an answer into that answer, once, with images', async () => {
+it('forwards images as a one-way update separately from explicit request completion', async () => {
   const f = await fixture()
-  const command = 'SEND ' + JSON.stringify({ to: '#1', text: 'Ready', images: 'latest' })
+  const command =
+    'SEND ' + JSON.stringify({ to: '#1', text: 'Ready', images: 'latest', reply: false })
   await submitWithImages(
     f,
     'SEND ' + JSON.stringify({ to: '@scout', text: command, images: 'latest' }),
@@ -559,25 +791,33 @@ it('turns a message to a sender it owes an answer into that answer, once, with i
   await until(async () => (await replies(f)).length === 1)
   await f.recipient.waitForIdle(context)
   await f.opened.root.waitForIdle(context)
-  const [asked, answer] = (await f.log())!.messages
-  expect((await f.log())!.messages).toHaveLength(2)
+  const [asked, note, answer] = (await f.log())!.messages
+  expect((await f.log())!.messages).toHaveLength(3)
   expect(asked).toMatchObject({ from: 1, to: f.recipient.id, state: 'answered' })
-  expect(answer).toMatchObject({
+  expect(note).toMatchObject({
     from: f.recipient.id,
     to: 1,
     text: 'Ready',
-    re: asked.id,
     reply: false,
     state: 'delivered',
     images: { count: 2 },
   })
+  expect(note.re).toBeUndefined()
+  expect(answer).toMatchObject({
+    from: f.recipient.id,
+    to: 1,
+    text: 'Done',
+    re: asked.id,
+    reply: false,
+    state: 'delivered',
+  })
   const [reply] = await replies(f)
-  expect(reply.data).toMatchObject({ id: answer.id, re: asked.id, text: 'Ready', images: 2 })
-  expect(imagesIn(reply)).toEqual([png(0), png(1)])
-  // The tool result ends the run: no final answer restates it, and delivery sends nothing more.
-  expect((await toolResults(f)).at(-1)).toContain(`Sent as your answer to message ${asked.id}.`)
-  const view = await f.recipient.context(context)
-  expect(view.entries.at(-1)?.kind).toBe('pi.tool-result')
+  expect(reply.data).toMatchObject({ id: answer.id, re: asked.id, text: 'Done' })
+  const noteEntry = (await f.opened.root.context(context)).entries.find(
+    (e) => e.kind === 'board.message',
+  )!
+  expect(imagesIn(noteEntry)).toEqual([png(0), png(1)])
+  expect((await toolResults(f)).at(-1)).toContain(`Request ${asked.id}: answered.`)
   expect(f.observed.filter((t) => t.startsWith('Reply from'))).toHaveLength(1)
 })
 it("turns @ultimate's message to the user it owes an answer into that answer and ends the run", async () => {
@@ -637,30 +877,18 @@ it("never lets the user's queued reply block @ultimate's message to them", async
   expect(assessment.re).toBeUndefined()
   expect(assessment.questions).toHaveLength(1)
 })
-it.each([false, true])('replays a converted answer once (afterMemo: %s)', async (afterMemo) => {
-  const sendGate = { gate: gate(), afterMemo, entered: false, conversation: () => 0 }
-  const f = await fixture(undefined, sendGate)
-  sendGate.conversation = () => f.recipient.id
-  await f.opened.root.submit(
-    {
-      type: 'input',
-      content: 'SEND ' + JSON.stringify({ to: '@scout', text: 'SEND {"to":"#1","text":"Ready"}' }),
-    },
-    context,
-  )
-  await until(() => sendGate.entered)
-  await f.opened.close()
-  await f.open()
-  sendGate.gate.release()
+it('refuses an inferred message reply and directs the agent to the exact request id', async () => {
+  const f = await fixture()
+  await f.send('@scout', 'SEND {"to":"#1","text":"Ready"}')
   await until(async () => (await replies(f)).length === 1)
-  await (await f.opened.harness.conversation(f.recipient.id, context))!.waitForIdle(context)
-  await f.opened.root.waitForIdle(context)
+  expect((await toolResults(f)).join('\n')).toContain(
+    "Use request { id: 1, action: 'reply', text }",
+  )
   expect((await f.log())!.messages).toMatchObject([
     { id: 1, state: 'answered' },
-    { id: 2, re: 1, text: 'Ready', state: 'delivered' },
+    { id: 2, re: 1, text: 'Done', state: 'delivered' },
   ])
   expect((await f.log())!.next).toBe(3)
-  expect(await replies(f)).toHaveLength(1)
 })
 it('lets an agent ask the sender again once its answer went back', async () => {
   const f = await fixture()
@@ -719,15 +947,19 @@ it('lets an ownerless conversation without a parent or starter message the user'
     { from: f.recipient.id, to: 'user', text: 'Design ready', state: 'delivered' },
   ])
 })
-it('resolves a standing address and returns unanswered inputs as failure replies', async () => {
+it('resolves a standing address and leaves an unanswered final yield open', async () => {
   const f = await fixture()
-  await f.send('@scout', 'NOANSWER')
-  await until(async () => (await replies(f)).length === 1)
-  expect((await f.log())!.messages).toMatchObject([
-    { to: f.recipient.id, state: 'failed', error: expect.stringContaining('without an answer') },
-    { from: f.recipient.id, to: 1, re: 1, state: 'failed' },
-  ])
-  expect((await replies(f))[0].data).toMatchObject({ failed: true })
+  const silent: FauxResponseFactory = () => {
+    f.faux.appendResponses([silent])
+    return fauxAssistantMessage([])
+  }
+  await f.send('@scout', 'HOLD')
+  await until(f.holding)
+  f.faux.setResponses([silent])
+  f.hold.release()
+  await f.recipient.waitForIdle(context)
+  expect((await f.log())!.messages).toMatchObject([{ to: f.recipient.id, state: 'delivered' }])
+  expect(await replies(f)).toHaveLength(0)
   await f.opened.harness.commit(async (tx) => {
     ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).scout = f.recipient.id
   }, context)
@@ -832,6 +1064,52 @@ it('answers questions to the user through answer cards or input in the sender co
   await f.opened.close()
   await f.open()
   expect(await state(second.id)).toBe('delivered')
+})
+it('keeps a card open on a clarification, and a new card the asker sends in answer replaces it', async () => {
+  const f = await fixture()
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = f.recipient.id
+  }, context)
+  const questions = [{ text: 'Rotate the SMTP login?', kind: 'confirm' as const }]
+  await (
+    await f.recipient.submit(
+      {
+        type: 'input',
+        content: 'SEND ' + JSON.stringify({ to: 'user', text: 'Rotate?', questions }),
+      },
+      context,
+    )
+  ).wait(context)
+  const asked = (await f.log())!.messages.at(-1)!
+  const state = async (id: number) => (await f.log())!.messages.find((m) => m.id === id)?.state
+
+  f.holdAgain()
+  await f.service().answer(asked.id, 'Why now?\nHOLD', context, undefined, undefined, true)
+  await until(f.holding)
+  expect(await state(asked.id)).toBe('delivered')
+  expect(f.observed).toContainEqual(
+    expect.stringContaining(`Clarification on message ${asked.id} (still open`),
+  )
+  const clarification = (await f.log())!.messages.find((m) => m.re === asked.id)!
+  expect(clarification).toMatchObject({ from: 'user', clarifies: true })
+
+  const again = await sendMessage(
+    f.host,
+    f.recipient.id,
+    { to: 'user', text: 'The provider expires it Friday. Rotate?', questions },
+    context,
+  )
+  f.hold.release()
+  await f.opened.harness.waitForIdle(context)
+  expect((await f.log())!.messages.find((m) => m.id === asked.id)).toMatchObject({
+    state: 'dismissed',
+    replacedBy: again,
+  })
+  expect(await state(again)).toBe('delivered')
+  const inputs = await eventHost(() => f.opened.harness, 'test').eventLog.recent({
+    events: [UserInputEvent],
+  })
+  expect(inputs.map((event) => event.data.kind)).toEqual(['clarify'])
 })
 it("ends @ultimate's run with its message to the user, unless it still owes a reply", async () => {
   const f = await fixture()
@@ -1016,13 +1294,11 @@ it('queues a busy recipient as follow-up, or steers its current run; @ultimate s
     expect(steer ? released === -1 : released < delivered).toBe(true)
   }
 })
-it('delivers one answer to several messages once, and closes each', async () => {
-  // #590386 answered messages 434, 435 and 436 in one run; its answer reached @ultimate three times
-  // (#574726/590616, /590626, /590637), and @ultimate answered each.
+it('requires a separate explicit reply for each request in a burst', async () => {
   const f = await fixture()
   await f.recipient.submit({ type: 'input', content: 'HOLD' }, context)
   await until(f.holding)
-  // Pi places one steer per tool round: the first two keep the run going, so one final answer settles all three.
+  // Pi places one steer per tool round; the fixture explicitly completes each id.
   for (const text of ['First\nHOLD', 'Second\nHOLD', 'Third'])
     await f.send(String(f.recipient.id), text, { reply: true, steer: true })
   await until(
@@ -1045,10 +1321,12 @@ it('delivers one answer to several messages once, and closes each', async () => 
     'answered',
     'answered',
   ])
-  expect(log.filter((m) => m.from === f.recipient.id)).toHaveLength(1)
-  expect(await replies(f)).toHaveLength(1)
+  const answers = log.filter((m) => m.from === f.recipient.id)
+  expect(answers).toHaveLength(3)
+  expect(answers.map((m) => m.re)).toEqual(log.filter((m) => m.from === 1).map((m) => m.id))
+  expect(await replies(f)).toHaveLength(3)
 })
-it('replies once to two requests from the same local asker delegated in one run', async () => {
+it('refuses ambiguous delegation and assigns only the explicitly selected request', async () => {
   const f = await fixture()
   const send = (text: string) =>
     sendMessage(f.host, f.recipient.id, { to: '#1', text, steer: true }, context)
@@ -1064,10 +1342,36 @@ it('replies once to two requests from the same local asker delegated in one run'
   f.holdAgain()
   firstHold.release()
   await until(f.holding)
+  await expect(
+    f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A1'), context),
+  ).rejects.toThrow('Several requests are eligible')
+  const run = (await f.opened.harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, context))!.run!
+  await requestTool(f.host).execute(
+    { id: first, action: 'work' },
+    {
+      conversationId: ROOT_CONVERSATION_ID,
+      taskId: run.taskId,
+      callId: 'select-first',
+    } as ToolExecutionApi,
+    context,
+  )
   await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A1'), context)
   const owners = (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))!.owners
-  expect(Object.keys(owners).map(Number)).toEqual([first, second])
+  expect(Object.keys(owners).map(Number)).toEqual([first])
+  expect(
+    (await f.log())!.messages.filter((m) => m.id === first || m.id === second).map((m) => m.state),
+  ).toEqual(['delivered', 'delivered'])
   f.hold.release()
+  await f.opened.root.waitForIdle(context)
+  await (
+    await f.opened.root.submit(
+      {
+        type: 'input',
+        content: `REQUEST ${JSON.stringify({ id: first, action: 'reply', text: 'First done' })}`,
+      },
+      context,
+    )
+  ).wait(context)
   await until(async () =>
     (await f.opened.harness.inspect(context)).tasks.every(
       ({ record }) => !['board.delivery', 'board.route'].includes(record.kind),
@@ -1079,7 +1383,8 @@ it('replies once to two requests from the same local asker delegated in one run'
   const received = (await f.recipient.context(context)).entries.filter(
     (entry) => entry.kind === 'board.reply',
   )
-  expect(received).toHaveLength(1)
+  expect(received).toHaveLength(2)
+  expect(received.map((entry) => (entry.data as { re: number }).re)).toEqual([first, second])
 })
 
 async function codemodeFixture() {
@@ -1127,6 +1432,55 @@ export default (host) => {
     port: 0,
   })
 }
+it('uses the native request transaction through the codemode alias', async () => {
+  const server = await codemodeFixture()
+  try {
+    const asker = await server.harness.createConversation(
+      { ownership: { kind: 'ownerless' } },
+      context,
+    )
+    await server.harness.commit(async (tx) => {
+      const log = await tx.doc(Messages, ROOT_CONVERSATION_ID)
+      log.messages.push({
+        id: log.next++,
+        from: asker.id,
+        to: server.root.id,
+        text: 'Review',
+        at: 0,
+        reply: true,
+        state: 'delivered',
+      })
+    }, context)
+    server.host.faux!.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall('codemode', {
+            code: "await tools.request({id: 1, action: 'work'}); return await tools.request({id: 1, action: 'reply', text: 'Verified'});",
+          }),
+        ],
+        { stopReason: 'toolUse' },
+      ),
+      fauxAssistantMessage('No duplicate reply'),
+      fauxAssistantMessage('Received'),
+    ])
+    await (
+      await server.root.submit({ type: 'input', content: 'Complete request 1' }, context)
+    ).wait(context)
+    const log = (await server.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!
+    expect(log.messages[0].state).toBe('answered')
+    expect(log.messages.filter((m) => m.re === 1)).toMatchObject([
+      { to: asker.id, text: 'Verified' },
+    ])
+    expect(log.messages.filter((m) => m.re === 1)).toHaveLength(1)
+    expect(JSON.stringify((await server.root.context(context)).entries)).toContain(
+      'Request 1: answered.',
+    )
+  } finally {
+    await server.vite.watcher.close()
+    await server.close()
+  }
+})
+
 it('has no posting action at the installed codemode boundary', async () => {
   const server = await codemodeFixture()
   try {
@@ -1286,6 +1640,8 @@ it.each([false, true])(
     }
     const created = await branches()
     expect(created).toHaveLength(1)
+    const profile = await f.opened.harness.snapshot(Profile, created[0], context)
+    expect(profile).toEqual({ createdAt: expect.any(Number), definition: 'coordinator' })
     expect(pause.taskId).toBeDefined()
     const receipt = await f.opened.harness.snapshot(BranchReceipts, pause.taskId!, context)
     expect(Object.values(receipt!.branches)).toEqual(created)
@@ -1498,6 +1854,46 @@ it("applies the coordinator definition's denied tools to a new branch, for the m
   expect(agent.tools.map((tool) => tool.name)).not.toContain('hold')
   expect(agent.callable.map((tool) => tool.name)).not.toContain('hold')
 })
+it.each([undefined, 'default', 'review'])(
+  'distinguishes an explicit branch family (%s) from automatic coordinator resolution, even on the same model',
+  async (family) => {
+    const f = await fixture()
+    await writeFamilies(f.host.userHome, f.host.projectRoot, {
+      families: { review: { model: 'faux/faux-1', color: 'violet' } },
+    })
+    const tool = (await f.opened.root.agent(context)).deferred.find(
+      (candidate) => candidate.name === 'branch',
+    )!
+    await f.opened.harness.commit(async (tx) => {
+      ;(await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots = [1 as ConversationId]
+      await configure(tx, f.opened.root.id, { modelTools: { add: [tool] } })
+    }, context)
+    const prompt = `Family ${family ?? 'automatic'}`
+    const before = (await replies(f)).length
+    await f.opened.root.submit(
+      { type: 'input', content: 'BRANCH ' + JSON.stringify({ prompt, family, isolated: false }) },
+      context,
+    )
+    await until(async () => (await replies(f)).length === before + 1)
+    await f.opened.root.waitForIdle(context)
+    const id = (await f.log())!.messages.find(
+      (message) => message.from === 1 && message.text === prompt,
+    )!.to as ConversationId
+    expect(await f.opened.harness.snapshot(Profile, id, context)).toEqual({
+      createdAt: expect.any(Number),
+      definition: 'coordinator',
+      ...(family === undefined ? {} : { explicitModel: true }),
+    })
+    expect(await f.opened.harness.snapshot(Family, id, context)).toEqual({
+      name: family ?? 'default',
+    })
+    expect(await f.opened.harness.snapshot(Selection, id, context)).toBeUndefined()
+    expect(
+      (await (await f.opened.harness.conversation(id, context))!.agent(context)).model,
+    ).toEqual({ provider: 'faux', modelId: 'faux-1' })
+  },
+)
+
 it('lets a branch ask the user directly and leaves passive question and answer notes for @ultimate', async () => {
   const f = await fixture()
   const b = await branched(f)
@@ -1579,6 +1975,11 @@ it('points a branch question and its answer at the standing agent that started t
       }),
   )
   const question = (await f.log())!.messages.find((m) => m.from === b.id && m.to === 'user')!
+  await f.service().answer(question.id, 'Why now?', context, undefined, undefined, true)
+  await f.opened.harness.waitForIdle(context)
+  expect(await kinds(triage.id)).not.toContain('board.answered')
+  expect(await kinds(ROOT_CONVERSATION_ID)).not.toContain('board.answered')
+  expect((await f.log())!.messages.find((m) => m.id === question.id)?.state).toBe('delivered')
   await f.service().answer(question.id, 'Q: A?\nA: Yes', context)
   await until(async () => (await kinds(triage.id)).includes('board.answered'))
   expect(await kinds(triage.id)).toContain('board.asked')
@@ -1659,9 +2060,9 @@ it("routes a branch's later final answer to its starter once, waking it when the
   await b.settled()
   expect(await b.from()).toHaveLength(2)
 })
-it("routes a branch's final answer as its report after it answered its starter's request mid-run", async () => {
-  // ultimate-eval 20261115t1854 #106 replied to @ultimate's task and submitted in one round, then stopped later; its
-  // landing card promised a report, and the final answer went nowhere, so @ultimate slept for 9 minutes.
+it('does not duplicate an explicit branch reply as a final-prose report in the same run', async () => {
+  // Explicit completion is the result; later prose in that run must not duplicate it.
+  // Landing cards have their independent reservation and delivery tests below.
   const f = await fixture()
   const started = branched(f, 'Build it, REPLYTHENWORK')
   await until(f.holding)
@@ -1669,7 +2070,6 @@ it("routes a branch's final answer as its report after it answered its starter's
   const b = await started
   expect((await b.from()).filter((m) => m.to === 1).map((m) => [m.text, m.re, m.report])).toEqual([
     ['Built; landing follows', 1, undefined],
-    ['Done', undefined, true],
   ])
 })
 it("leaves a branch's final answer as a note while its work is under way", async () => {
@@ -1790,7 +2190,7 @@ it("lets the judge leave a branch's back-and-forth with the user as a note, and 
   })
   expect(note.message.report).toBeUndefined()
   expect(asked.at(-1)).toEqual({
-    branch_said_before: expect.stringMatching(/^Answer: Message from #1 \(@ultimate\):\nExplore/),
+    branch_said_before: 'Done',
     inputs: [{ from: 'user typed in the branch', text: 'What does + Legacy mean?' }],
     final_answer: 'Answer: What does + Legacy mean?',
   })
@@ -2009,8 +2409,8 @@ it("sends @ultimate's answer to a branch it concluded to the agent whose request
   const log = (await f.log())!.messages
   const asked = log.find((m) => m.from === f.recipient.id && m.to === 1)!
   const id = log.find((m) => m.from === 1 && m.text.startsWith('Research'))!.to as number
-  // @ultimate's early answer settled the request already.
-  expect(log.find((m) => m.re === asked.id)).toMatchObject({ from: 1, to: f.recipient.id })
+  expect(asked.state).toBe('delivered')
+  expect(log.find((m) => m.re === asked.id)).toBeUndefined()
   const reply = (await f.opened.root.context(context)).entries.findLast(
     (e) => e.kind === 'board.reply',
   )!
@@ -2023,14 +2423,12 @@ it("sends @ultimate's answer to a branch it concluded to the agent whose request
   )
   f.hold.release()
   await until(async () =>
-    (await f.log())!.messages.some((m) => m.from === 1 && m.to === f.recipient.id && m.routed),
+    (await f.log())!.messages.some(
+      (m) => m.from === 1 && m.to === f.recipient.id && m.re === asked.id,
+    ),
   )
-  expect((await f.log())!.messages.filter((m) => m.from === 1 && m.routed)).toEqual([
-    expect.objectContaining({
-      to: f.recipient.id,
-      reply: false,
-      text: `Result of #${id}, which worked on your message ${asked.id}:\n\nDone`,
-    }),
+  expect((await f.log())!.messages.filter((m) => m.re === asked.id)).toEqual([
+    expect.objectContaining({ to: f.recipient.id, reply: false, text: 'Done' }),
   ])
 })
 it.each(['automations.fired', 'automations.finished'])(
@@ -2047,12 +2445,10 @@ it.each(['automations.fired', 'automations.finished'])(
     f.hold.release()
     const request = async () =>
       (await f.log())!.messages.find((m) => m.from === f.recipient.id && m.to === 1)
-    // @ultimate's early answer ("started") settles the request.
-    await until(async () => {
-      const id = (await request())?.id
-      return id !== undefined && (await f.log())!.messages.some((m) => m.re === id)
-    })
+    await f.opened.root.waitForIdle(context)
     const asked = (await request())!
+    expect(asked.state).toBe('delivered')
+    expect((await f.log())!.messages.some((m) => m.re === asked.id)).toBe(false)
     const fired = (tellUser = false) =>
       f.opened.root.submit(
         {
@@ -2071,17 +2467,11 @@ it.each(['automations.fired', 'automations.finished'])(
         context,
       )
     await (await fired(true)).wait(context)
-    await until(async () =>
-      (await f.log())!.messages.some((m) => m.from === 1 && m.to === f.recipient.id && m.routed),
-    )
+    await until(async () => (await f.log())!.messages.some((m) => m.re === asked.id))
     await (await fired()).wait(context)
     await f.opened.root.waitForIdle(context)
-    expect((await f.log())!.messages.filter((m) => m.from === 1 && m.routed)).toEqual([
-      expect.objectContaining({
-        to: f.recipient.id,
-        reply: false,
-        text: `Result of automation A8 "ab done", which worked on your message ${asked.id}:\n\nDone`,
-      }),
+    expect((await f.log())!.messages.filter((m) => m.re === asked.id)).toEqual([
+      expect.objectContaining({ to: f.recipient.id, reply: false, text: 'Done' }),
     ])
   },
 )
@@ -2545,6 +2935,115 @@ it('takes a late answer after the log dropped its message, and keys named like o
   expect(typeof id).toBe('number')
   expect((await f.log())!.messages.find((m) => m.id === id)).toMatchObject({ from: 'remote' })
 })
+it('replays an explicit remote answer after restart mid-delivery without answering its sibling', async () => {
+  const sink = await otherUltimate(() => [200, { result: 41 }])
+  const receiver = await remoteFixture(sink.url)
+  for (const text of ['Selected request', 'Sibling request'])
+    await receiver.service().tell(ROOT_CONVERSATION_ID, { project: 'poe2-rust', text }, context)
+  const keys = sink.posted.map((post) => (post.body as { key: string }).key)
+  const acknowledgments = gate()
+  const attempts: { key: string; text: string; failed: boolean }[] = []
+  const receipts: unknown[] = []
+  const transport = createServer(async (request, response) => {
+    let raw = ''
+    for await (const chunk of request) raw += String(chunk)
+    const { args } = JSON.parse(raw) as { args: { key: string; text: string; failed: boolean } }
+    attempts.push(args)
+    // Apply through the real receiver, but lose the acknowledgment when the sender closes.
+    const receipt = await actions.remoteReply(args, receiver.action())
+    receipts.push(receipt)
+    await acknowledgments.promise
+    response
+      .writeHead(200, { 'Content-Type': 'application/json' })
+      .end(JSON.stringify({ result: receipt }))
+  })
+  await new Promise<void>((done) => transport.listen(0, '127.0.0.1', done))
+  servers.push(transport)
+  const f = await remoteFixture(`http://127.0.0.1:${(transport.address() as AddressInfo).port}`)
+  const prose: FauxResponseFactory = () => {
+    f.faux.appendResponses([prose])
+    return fauxAssistantMessage([fauxText('Noted. Ordinary final prose is not a reply.')])
+  }
+  f.faux.setResponses([prose])
+  const ids: number[] = []
+  for (const [index, key] of keys.entries()) {
+    ids.push(await actions.remote({ key, text: `Request ${index}`, reply: true, from }, f.action()))
+    await f.opened.root.waitForIdle(context)
+  }
+  await until(async () => {
+    const log = await f.log()
+    return ids.every(
+      (id) => log?.messages.find((message) => message.id === id)?.state === 'delivered',
+    )
+  })
+  await f.opened.root.waitForIdle(context)
+  const taskId = await f.opened.harness.commit(
+    (tx) =>
+      tx.createTask(f.requestCall, null, {
+        conversationId: ROOT_CONVERSATION_ID,
+        ownership: { kind: 'conversation' },
+        background: true,
+      }),
+    context,
+  )
+  const api = {
+    conversationId: ROOT_CONVERSATION_ID,
+    taskId,
+    callId: 'explicit-mid-delivery',
+  } as ToolExecutionApi
+  const complete = () =>
+    requestTool(f.host).execute(
+      { id: ids[0], action: 'reply', text: 'Selected result' },
+      api,
+      context,
+    )
+  await complete()
+  await until(() => receipts.length === 1)
+  const outbound = () =>
+    f
+      .log()
+      .then((log) =>
+        log!.messages.filter((message) => message.to === 'remote' && message.re === ids[0]),
+      )
+  expect(await outbound()).toMatchObject([{ state: 'sent', remote: { key: keys[0] } }])
+  expect((await f.log())!.messages.find((message) => message.id === ids[1])?.state).toBe(
+    'delivered',
+  )
+  await f.opened.close()
+  await f.open()
+  f.opened.harness.resume()
+  await complete() // Same persisted tool-call receipt: do not queue a second result.
+  await until(() => receipts.length === 2)
+  expect(await outbound()).toHaveLength(1)
+  expect((await outbound())[0].state).toBe('sent') // Still awaiting the transport acknowledgment.
+  acknowledgments.release()
+  await until(async () => (await outbound())[0].state === 'delivered')
+  await (
+    await f.opened.root.submit(
+      { type: 'input', content: 'Ordinary final prose after restart' },
+      context,
+    )
+  ).wait(context)
+  await receiver.opened.root.waitForIdle(context)
+  expect(attempts).toEqual([
+    { key: keys[0], text: 'Selected result', failed: false },
+    { key: keys[0], text: 'Selected result', failed: false },
+  ])
+  expect(receipts[1]).toBe(receipts[0])
+  expect(await replies(receiver)).toHaveLength(1)
+  expect((await replies(receiver))[0].data).toMatchObject({
+    text: 'Selected result',
+    failed: false,
+  })
+  expect(
+    (await receiver.log())!.messages.find((message) => message.remote?.key === keys[1])?.state,
+  ).toBe('delivered')
+  expect((await f.log())!.messages.find((message) => message.id === ids[1])?.state).toBe(
+    'delivered',
+  )
+  expect(await outbound()).toHaveLength(1)
+})
+
 it('posts a tell a crash cut off once, after the restart, and settles it delivered', async () => {
   // Before the post was a task, a crash between logging and posting left the message `sent` with nothing to post it.
   const keys: string[] = []
@@ -2616,11 +3115,46 @@ it('refuses telling back an Ultimate whose question is open, and only @ultimate 
   await actions.remote({ key: 'q', text: 'Proceed?', reply: true, from }, f.action())
   await expect(
     f.service().tell(ROOT_CONVERSATION_ID, { project: 'poe2-rust', text: 'Yes' }, context),
-  ).rejects.toThrow('is sent back automatically')
+  ).rejects.toThrow('Use request { id:')
+  await expect(
+    f
+      .service()
+      .tell(ROOT_CONVERSATION_ID, { project: 'poe2-rust', text: 'Yes', reply: true }, context),
+  ).rejects.toThrow('Use request { id:')
   f.hold.release()
   await expect(
     f.service().tell(f.recipient.id, { project: 'poe2-rust', text: 'Hi' }, context),
   ).rejects.toThrow("Only @ultimate tells another project's Ultimate")
+})
+it('allows a one-way tell while the target’s question stays open', async () => {
+  const other = await otherUltimate(() => [200, { result: 7 }])
+  const f = await remoteFixture(other.url)
+  await f.opened.root.submit({ type: 'input', content: 'HOLD' }, context)
+  await until(f.holding)
+  const question = await actions.remote(
+    { key: 'open-question', text: 'Proceed?', reply: true, from },
+    f.action(),
+  )
+  const before = (await f.log())!.messages.find((m) => m.id === question)
+  const serving = await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context)
+  const receipt = await f
+    .service()
+    .tell(
+      ROOT_CONVERSATION_ID,
+      { project: 'poe2-rust', text: 'Progress only', reply: false },
+      context,
+    )
+  expect(receipt.delivered).toBe(7)
+  expect(other.posted.map(({ body }) => body)).toEqual([
+    expect.objectContaining({ text: 'Progress only', reply: false }),
+  ])
+  expect((await f.log())!.messages.find((m) => m.id === receipt.message)).toMatchObject({
+    reply: false,
+    state: 'delivered',
+  })
+  expect((await f.log())!.messages.find((m) => m.id === question)).toEqual(before)
+  expect(await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context)).toEqual(serving)
+  f.hold.release()
 })
 it('names the project when another Ultimate cannot be reached, and marks the message failed', async () => {
   const closed = await otherUltimate(() => [200, {}])
@@ -2635,6 +3169,123 @@ it('names the project when another Ultimate cannot be reached, and marks the mes
     stopped.service().tell(ROOT_CONVERSATION_ID, { project: 'poe2-rust', text: 'Hi' }, context),
   ).rejects.toThrow('poe2-rust is not running on this machine')
 })
+it('baseline boundary: design and submit share an assistant entry before landing concludes', async () => {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  await enableBranch(f)
+  const request = await actions.remote(
+    {
+      key: 'design-submit',
+      text: 'BRANCH ' + JSON.stringify({ prompt: 'DESIGN_SUBMIT', isolated: false }),
+      reply: true,
+      from,
+    },
+    f.action(),
+  )
+  await until(f.holding)
+  const branch = (await f.log())!.messages.find((m) => m.text === 'DESIGN_SUBMIT')!
+    .to as ConversationId
+  const view = await (await f.opened.harness.conversation(branch, context))!.context(context)
+  const entry = view.entries.find(
+    (e) => e.kind === 'pi.assistant' && JSON.stringify(e).includes('Design:'),
+  )
+  expect(JSON.stringify(entry)).toContain('workspace')
+  await f.opened.harness.commit((tx) => concludeIn(f.host, tx, [branch], 'landing'), context)
+  await until(f.reactorsSettled)
+  expect(
+    (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[request]
+      ?.owner,
+  ).toEqual({ kind: 'branch', id: branch })
+  expect((await f.log())!.messages.some((m) => m.state === 'failed')).toBe(false)
+  f.hold.release()
+})
+
+async function unreportedBranch(reserveLanding = false) {
+  const other = await otherUltimate(() => [200, { result: 1 }])
+  const f = await remoteFixture(other.url)
+  await enableBranch(f)
+  const request = await actions.remote(
+    {
+      key: 'unsafe-conclude',
+      text: 'BRANCH ' + JSON.stringify({ prompt: 'Progress STALL', isolated: false }),
+      reply: true,
+      from,
+    },
+    f.action(),
+  )
+  await until(f.holding)
+  expect(other.posted).toHaveLength(0)
+  const branch = (await f.log())!.messages.find((m) => m.text === 'Progress STALL')!
+    .to as ConversationId
+  f.hold.release()
+  await until(async () => {
+    const owner = (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[
+      request
+    ]
+    return owner?.owner.kind === 'branch' && owner.owner.id === branch && owner.pending.length === 0
+  })
+  const branches = f.provided.get(Branches.name) as BranchesService
+  await f.opened.harness.commit(async (tx) => {
+    await concludeIn(f.host, tx, [branch], 'landing')
+    if (reserveLanding) await branches.reserveLanding(tx, branch, 'result-1')
+  }, context)
+  await until(f.reactorsSettled)
+  return { f, other, request, branch, branches }
+}
+
+it('delivers a reserved landing through the existing output route', async () => {
+  const { f, other, request, branch, branches } = await unreportedBranch(true)
+  expect(other.posted).toHaveLength(0)
+  expect(
+    (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[request]
+      ?.pending,
+  ).toEqual(['landing:result-1'])
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).results['result-1'] = {
+      conversationId: branch,
+    } as never
+    await branches.submitLanding(
+      tx,
+      f.opened.root,
+      {
+        type: 'input',
+        content: 'Landed the reviewed change',
+        entry: { kind: LanderReportEntry.kind, data: { id: 'result-1' } },
+        requestId: 'lander:result-1',
+      },
+      branch,
+      'result-1',
+    )
+  }, context)
+  await until(() => other.posted.length === 1)
+  expect(other.posted[0].body).toMatchObject({
+    failed: false,
+    text: expect.stringContaining('Landed the reviewed change'),
+  })
+  expect(
+    (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))?.owners[request],
+  ).toBeUndefined()
+})
+
+it('refuses unsafe agent conclusion after landing but preserves user conclusion and lost-output failure', async () => {
+  const { f, other, branch } = await unreportedBranch()
+  await expect(
+    conversationActions.conclude(
+      { ids: [branch] },
+      { ...f.action(), conversationId: ROOT_CONVERSATION_ID },
+    ),
+  ).rejects.toThrow('Queue its report before concluding')
+  await until(f.reactorsSettled)
+  expect(other.posted).toHaveLength(0)
+  await conversationActions.conclude({ ids: [branch] }, f.action())
+  await until(() => other.posted.length === 1)
+  expect(other.posted[0].body).toMatchObject({
+    key: 'unsafe-conclude',
+    failed: true,
+    text: expect.stringContaining('was concluded without reporting'),
+  })
+})
+
 it('hands a concluded branch’s remote request to the automation created while reading its reply', async () => {
   const other = await otherUltimate(() => [200, { result: 1 }])
   const f = await remoteFixture(other.url)
@@ -2650,8 +3301,7 @@ it('hands a concluded branch’s remote request to the automation created while 
     f.action(),
   )
   await until(f.holding)
-  await until(() => other.posted.length === 1)
-  expect(other.posted[0].body).toMatchObject({ key, interim: expect.any(Number) })
+  expect(other.posted).toHaveLength(0)
   const id = (await f.log())!.messages.find((m) => m.from === 1 && m.text === 'Inspect STALL')!.to
   await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A2'), context)
   await conversationActions.conclude(
@@ -2659,16 +3309,17 @@ it('hands a concluded branch’s remote request to the automation created while 
     { ...f.action(), conversationId: ROOT_CONVERSATION_ID },
   )
   f.hold.release()
-  await until(() => other.posted.length === 2)
-  expect(other.posted[1].body).toMatchObject({ key, interim: expect.any(Number) })
+  await f.opened.root.waitForIdle(context)
+  expect(other.posted).toHaveLength(0)
+  expect((await f.log())!.messages.find((m) => m.id === request)?.state).toBe('delivered')
   await fireAutomation(f, 'A2', 'matrix complete')
-  await until(() => other.posted.length === 3)
-  expect(other.posted[2].body).toMatchObject({
+  await until(() => other.posted.length === 1)
+  expect(other.posted[0].body).toMatchObject({
     key,
     failed: false,
-    text: expect.stringContaining(`worked on your message ${request}`),
+    text: expect.stringContaining('matrix complete'),
   })
-  expect(other.posted[2].body).not.toHaveProperty('interim')
+  expect(other.posted[0].body).not.toHaveProperty('interim')
 })
 
 async function fireAutomation(
@@ -2730,7 +3381,7 @@ it('sends only the final result when a tell replies in the original request’s 
     expect.objectContaining({
       key,
       failed: false,
-      text: expect.stringMatching(/Result of tell[\s\S]*Fast result/),
+      text: expect.stringContaining('Fast result'),
     }),
   ])
   expect(asker.posted[0].body).not.toHaveProperty('interim')
@@ -2747,7 +3398,8 @@ it('a cancelled queued fire does not fail the request while the first fire can a
   await until(f.holding)
   await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A1'), context)
   f.hold.release()
-  await until(() => other.posted.length === 1)
+  await f.opened.root.waitForIdle(context)
+  expect(other.posted).toHaveLength(0)
   f.holdAgain()
   const first = await fireAutomation(f, 'A1', 'First result\nHOLD')
   await until(f.holding)
@@ -2760,21 +3412,17 @@ it('a cancelled queued fire does not fail the request while the first fire can a
     ]
     return owner?.pending.length === 1 && owner.pending[0] === first.id
   })
-  expect(other.posted).toHaveLength(1)
+  expect(other.posted).toHaveLength(0)
   f.hold.release()
-  await until(() => other.posted.length === 2)
-  expect(other.posted[1].body).toMatchObject({
-    key,
-    failed: false,
-    text: expect.stringContaining('Result of automation A1'),
-  })
-  expect(other.posted[1].body).not.toHaveProperty('interim')
+  await until(() => other.posted.length === 1)
+  expect(other.posted[0].body).toMatchObject({ key, failed: false, text: 'Done' })
+  expect(other.posted[0].body).not.toHaveProperty('interim')
   expect(
     (await f.log())!.messages.filter((m) => m.remote?.key === key && m.state === 'failed'),
   ).toEqual([])
 })
 
-it('fails an owned request once when a message tool terminates the run that read the fire', async () => {
+it('leaves an owned request open when the run replies explicitly to a different local request', async () => {
   const other = await otherUltimate(() => [200, { result: 1 }])
   const f = await remoteFixture(other.url)
   const key = 'tool-terminated'
@@ -2782,7 +3430,8 @@ it('fails an owned request once when a message tool terminates the run that read
   await until(f.holding)
   await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A1'), context)
   f.hold.release()
-  await until(() => other.posted.length === 1)
+  await f.opened.root.waitForIdle(context)
+  expect(other.posted).toHaveLength(0)
   f.holdAgain()
   const local = await sendMessage(
     f.host,
@@ -2792,20 +3441,28 @@ it('fails an owned request once when a message tool terminates the run that read
   )
   await until(f.holding)
   const fire = await fireAutomation(f, 'A1', 'REPLYLOCAL', 'steer')
+  let completed = false
+  const replyLocal: FauxResponseFactory = () => {
+    f.faux.appendResponses([replyLocal])
+    if (completed) return fauxAssistantMessage([fauxText('Noted; work continues')])
+    completed = true
+    return fauxAssistantMessage(
+      [fauxToolCall('request', { id: local, action: 'reply', text: 'Approved' })],
+      { stopReason: 'toolUse' },
+    )
+  }
+  f.faux.setResponses([replyLocal])
   f.hold.release()
   expect(await fire.wait(context)).toMatchObject({ status: 'done' })
-  await until(() => other.posted.length === 2)
+  await f.opened.root.waitForIdle(context)
   expect((await f.log())!.messages).toContainEqual(
     expect.objectContaining({ re: local, text: 'Approved' }),
   )
-  expect(other.posted[1].body).toMatchObject({
-    key,
-    failed: true,
-    text: expect.stringContaining('ended without an answer'),
-  })
+  expect(other.posted).toHaveLength(0)
+  expect((await f.log())!.messages.find((m) => m.remote?.key === key)?.state).toBe('delivered')
   expect(
     (await f.log())!.messages.filter((m) => m.remote?.key === key && m.state === 'failed'),
-  ).toHaveLength(1)
+  ).toHaveLength(0)
 })
 
 it('lets a pending branch report settle a concluded branch without failing on earlier progress', async () => {
@@ -2823,7 +3480,7 @@ it('lets a pending branch report settle a concluded branch without failing on ea
     f.action(),
   )
   await until(f.holding)
-  await until(() => other.posted.length === 1)
+  expect(other.posted).toHaveLength(0)
   const branch = (await f.log())!.messages.find((m) => m.from === 1 && m.text === 'Progress STALL')!
     .to as ConversationId
   f.hold.release()
@@ -2833,7 +3490,7 @@ it('lets a pending branch report settle a concluded branch without failing on ea
     ]
     return owner?.owner.kind === 'branch' && owner.owner.id === branch && !owner.pending.length
   })
-  expect(other.posted).toHaveLength(1)
+  expect(other.posted).toHaveLength(0)
   f.holdAgain()
   await sendMessage(
     f.host,
@@ -2843,20 +3500,19 @@ it('lets a pending branch report settle a concluded branch without failing on ea
     { report: true, note: false },
   )
   await until(f.holding)
-  await conversationActions.conclude({ ids: [branch] }, f.action())
+  await conversationActions.conclude(
+    { ids: [branch] },
+    { ...f.action(), conversationId: ROOT_CONVERSATION_ID },
+  )
   await until(f.reactorsSettled)
-  expect(other.posted).toHaveLength(1)
+  expect(other.posted).toHaveLength(0)
   f.hold.release()
-  await until(() => other.posted.length === 2)
-  expect(other.posted[1].body).toMatchObject({
-    key,
-    failed: false,
-    text: expect.stringContaining(`Result of #${branch}`),
-  })
-  expect(other.posted[1].body).not.toHaveProperty('interim')
+  await until(() => other.posted.length === 1)
+  expect(other.posted[0].body).toMatchObject({ key, failed: false, text: 'Done' })
+  expect(other.posted[0].body).not.toHaveProperty('interim')
 })
 
-it('a one-way update from the remote asker gives its request to the replacement automation', async () => {
+it('a one-way update cannot replace an owner without explicit request selection', async () => {
   const other = await otherUltimate(() => [200, { result: 1 }])
   const f = await remoteFixture(other.url)
   const key = 'replace-matrix'
@@ -2866,7 +3522,10 @@ it('a one-way update from the remote asker gives its request to the replacement 
     f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, id), context)
   await create('A1')
   f.hold.release()
-  await until(() => other.posted.length === 1)
+  await f.opened.root.waitForIdle(context)
+  expect(other.posted).toHaveLength(0)
+  const serving = await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context)
+  const request = (await f.log())!.messages.find((m) => m.remote?.key === key)
   f.holdAgain()
   await actions.remote(
     {
@@ -2878,26 +3537,38 @@ it('a one-way update from the remote asker gives its request to the replacement 
     f.action(),
   )
   await until(f.holding)
+  expect(await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context)).toEqual(serving)
+  expect((await f.log())!.messages.find((m) => m.remote?.key === key)).toEqual(request)
+  await create('A2')
+  expect(await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context)).toEqual(serving)
+  const run = (await f.opened.harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, context))!.run!
+  await requestTool(f.host).execute(
+    { id: request!.id, action: 'work' },
+    {
+      conversationId: ROOT_CONVERSATION_ID,
+      taskId: run.taskId,
+      callId: 'select-replacement',
+    } as ToolExecutionApi,
+    context,
+  )
   await create('A2')
   f.hold.release()
-  await until(() => other.posted.length === 2)
+  await f.opened.root.waitForIdle(context)
   await (await fireAutomation(f, 'A1', 'old matrix stopped')).wait(context)
   await until(async () =>
     (await f.opened.harness.inspect(context)).tasks.every(
       (t) => !['board.route', 'board.delivery'].includes(t.record.kind),
     ),
   )
-  expect(other.posted.map((p) => p.body)).toEqual(
-    Array(2).fill(expect.objectContaining({ key, interim: expect.any(Number) })),
-  )
+  expect(other.posted).toHaveLength(0)
   await fireAutomation(f, 'A2', 'new matrix complete')
-  await until(() => other.posted.length === 3)
-  expect(other.posted[2].body).toMatchObject({
+  await until(() => other.posted.length === 1)
+  expect(other.posted[0].body).toMatchObject({
     key,
     failed: false,
     text: expect.stringContaining('new matrix complete'),
   })
-  expect(other.posted[2].body).not.toHaveProperty('interim')
+  expect(other.posted[0].body).not.toHaveProperty('interim')
 })
 
 async function startRelay() {
@@ -2921,7 +3592,8 @@ async function startRelay() {
   f.hold.release()
   await ask.wait(context)
   await b.settled()
-  expect((await f.log())!.messages.find((m) => m.re === request.id)).toMatchObject({ to: b.id })
+  expect((await f.log())!.messages.find((m) => m.re === request.id)).toBeUndefined()
+  expect((await f.log())!.messages.find((m) => m.id === request.id)?.state).toBe('delivered')
   return { f, b, key, request }
 }
 
@@ -2931,14 +3603,9 @@ it('relays a tell’s final result to the branch through its reply-expected requ
   await actions.remoteReply({ key, text, failed: false }, f.action())
   await until(() => f.observed.some((s) => s.includes(text)))
   await b.settled()
-  expect((await f.log())!.messages.filter((m) => m.routed && m.to === b.id)).toContainEqual(
-    expect.objectContaining({
-      reply: false,
-      text: expect.stringMatching(
-        `Result of .+, which worked on your message ${request.id}:[\\s\\S]+${text}`,
-      ),
-    }),
-  )
+  expect((await f.log())!.messages.filter((m) => m.re === request.id && m.to === b.id)).toEqual([
+    expect.objectContaining({ reply: false, text: expect.stringContaining(text) }),
+  ])
 })
 
 it('fails a tell-owned branch request once, even when the remote failure is replayed', async () => {
@@ -2959,7 +3626,7 @@ it('fails a tell-owned branch request once, even when the remote failure is repl
   ])
 })
 
-it("keeps another Ultimate's request open through interim answers and closes it with the served result", async () => {
+it("keeps another Ultimate's request open through acknowledged work and completes only with the result", async () => {
   // ultimate-eval #53: "I've started the A/B" used up the reply, and the result 14 min later reached no one.
   const other = await otherUltimate(() => [200, { result: 1 }])
   const f = await remoteFixture(other.url)
@@ -2973,12 +3640,8 @@ it("keeps another Ultimate's request open through interim answers and closes it 
   await handOn('A8')
   f.hold.release()
   const posted = (n: number) => until(() => other.posted.length === n)
-  await posted(1)
-  expect(other.posted[0].body).toMatchObject({
-    key: 'ab',
-    failed: false,
-    interim: expect.any(Number),
-  })
+  await f.opened.root.waitForIdle(context)
+  expect(other.posted).toHaveLength(0)
   const fire = async (id: string, text: string) => {
     const fired = await f.opened.root.submit(
       {
@@ -2993,23 +3656,25 @@ it("keeps another Ultimate's request open through interim answers and closes it 
     )
     return fired
   }
-  // A fire that finds the job still running hands the request on to a new check-back: still interim.
+  // A fire that finds the job still running hands the request on without completing it.
   f.holdAgain()
   await fire('A8', 'still running\nHOLD')
   await until(f.holding)
   await handOn('A9')
   f.hold.release()
-  await posted(2)
-  expect(other.posted[1].body).toMatchObject({ key: 'ab', interim: expect.any(Number) })
-  await fire('A9', 'done')
-  await posted(3)
-  expect(other.posted[2].body).toMatchObject({ key: 'ab', failed: false })
-  expect(other.posted[2].body).not.toHaveProperty('interim')
-  expect((other.posted[2].body as { text: string }).text).toContain(
-    `Result of automation A9 "ab", which worked on your message ${request}`,
-  )
   await f.opened.root.waitForIdle(context)
-  expect(other.posted).toHaveLength(3)
+  expect(other.posted).toHaveLength(0)
+  expect((await f.log())!.messages.find((m) => m.id === request)?.state).toBe('delivered')
+  await fire('A9', 'done')
+  await posted(1)
+  expect(other.posted[0].body).toMatchObject({
+    key: 'ab',
+    failed: false,
+    text: expect.stringContaining('done'),
+  })
+  expect(other.posted[0].body).not.toHaveProperty('interim')
+  await f.opened.root.waitForIdle(context)
+  expect(other.posted).toHaveLength(1)
 })
 it('takes interim replies as notes and wakes the asker once, with the result', async () => {
   const other = await otherUltimate(() => [200, { result: 9 }])
@@ -3049,7 +3714,7 @@ it('wakes @ultimate with the cause when its answer cannot reach the other Ultima
   expect(JSON.stringify(loud.model)).toContain('The reply did not reach @ultimate@poe2-rust')
   expect(f.observed.some((text) => text.includes('The reply did not reach'))).toBe(true)
 })
-it("keeps the answering run's early answer interim when the served result goes out first", async () => {
+it('does not send final prose after a served result has already completed the request', async () => {
   // Review of 70a00e62: the result cleared the served mark, so a later "started" answer went out as the final reply.
   const other = await otherUltimate(() => [200, { result: 1 }])
   const f = await remoteFixture(other.url)
@@ -3068,8 +3733,9 @@ it("keeps the answering run's early answer interim when the served result goes o
   await until(() => other.posted.length === 1)
   expect(other.posted[0].body).not.toHaveProperty('interim')
   f.hold.release()
-  await until(() => other.posted.length === 2)
-  expect(other.posted[1].body).toMatchObject({ key: 'race', interim: expect.any(Number) })
+  await f.opened.root.waitForIdle(context)
+  expect(other.posted).toHaveLength(1)
+  expect(other.posted[0].body).toMatchObject({ key: 'race', text: 'Result', failed: false })
 })
 it('serves nothing for work that never answers back, and fails a served request whose work ended', async () => {
   const other = await otherUltimate(() => [200, { result: 1 }])
@@ -3083,18 +3749,18 @@ it('serves nothing for work that never answers back, and fails a served request 
     await f.service().owed(tx, ROOT_CONVERSATION_ID, 'A8')
   }, context)
   f.hold.release()
-  await until(() => other.posted.length === 1)
-  expect(other.posted[0].body).toMatchObject({ interim: expect.any(Number) })
+  await f.opened.root.waitForIdle(context)
+  expect(other.posted).toHaveLength(0)
   // The run its fire woke was stopped: the asker gets a failed final at once, and only one.
   for (const _ of [1, 2])
     await f.opened.harness.commit(
       (tx) => f.service().dropped(tx, 'A8', 'Automation A8,', 'was deleted'),
       context,
     )
-  await until(() => other.posted.length === 2)
+  await until(() => other.posted.length === 1)
   await f.opened.root.waitForIdle(context)
-  expect(other.posted).toHaveLength(2)
-  expect(other.posted[1].body).toMatchObject({
+  expect(other.posted).toHaveLength(1)
+  expect(other.posted[0].body).toMatchObject({
     key: 'job',
     failed: true,
     text: expect.stringContaining('was deleted'),
@@ -3113,7 +3779,7 @@ it('does not give a failed request another owner in its answering run', async ()
   )
   await f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, 'A2'), context)
   f.hold.release()
-  await until(() => other.posted.length === 2)
+  await until(() => other.posted.length === 1)
   await (await fireAutomation(f, 'A2', 'done')).wait(context)
   await until(async () =>
     (await f.opened.harness.inspect(context)).tasks.every(
@@ -3122,7 +3788,6 @@ it('does not give a failed request another owner in its answering run', async ()
   )
   expect(other.posted.map(({ body }) => body)).toEqual([
     expect.objectContaining({ key, failed: true }),
-    expect.objectContaining({ key, failed: false, interim: expect.any(Number) }),
   ])
 })
 
@@ -3136,7 +3801,8 @@ it('keeps a request open when a late failure report names a fire whose run hande
     f.opened.harness.commit((tx) => f.service().owed(tx, ROOT_CONVERSATION_ID, id), context)
   await handOn('A8')
   f.hold.release()
-  await until(() => other.posted.length === 1)
+  await f.opened.root.waitForIdle(context)
+  expect(other.posted).toHaveLength(0)
   const fireThatHandsOn = async (id: string, next: string) => {
     f.holdAgain()
     const fired = await f.opened.root.submit(
@@ -3157,7 +3823,7 @@ it('keeps a request open when a late failure report names a fire whose run hande
   }
   await fireThatHandsOn('A8', 'A9')
   await fireThatHandsOn('A9', 'A10')
-  await until(() => other.posted.length === 3)
+  await f.opened.root.waitForIdle(context)
   await f.opened.harness.commit(
     (tx) => f.service().dropped(tx, 'A8', 'The run Automation A8 woke', 'was stopped'),
     context,
@@ -3166,8 +3832,12 @@ it('keeps a request open when a late failure report names a fire whose run hande
   expect(
     (await f.log())!.messages.filter((m) => m.to === 'remote' && m.state === 'failed'),
   ).toEqual([])
-  expect(other.posted).toHaveLength(3)
+  expect(other.posted).toHaveLength(0)
   expect(other.posted.some((p) => (p.body as { failed: boolean }).failed)).toBe(false)
+  const owners = (await f.opened.harness.snapshot(Serving, ROOT_CONVERSATION_ID, context))!.owners
+  expect(Object.values(owners).map((item) => item.owner)).toEqual([
+    { kind: 'automation', id: 'A10' },
+  ])
 })
 it('fails a tell at once when the other Ultimate has no route back for its answer', async () => {
   // An asker on one machine told an Ultimate on another that had no route back: both answers failed there and the

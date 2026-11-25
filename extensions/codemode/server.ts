@@ -485,7 +485,7 @@ export default function codemode(host: ExtensionHost) {
   const tellTool = defineTool({
     name: 'tell',
     description:
-      "Message another project's @ultimate (only @ultimate reaches it, as a message from you, never the user), as @ultimate only; with reply (default true) its answer returns to you as a reply. machine picks one instance when the project runs on several.",
+      "Message another project's @ultimate (only @ultimate reaches it, as a message from you, never the user), as @ultimate only; with reply (default true) its answer returns to you as a reply. Answer an incoming agent request with tools.request({id, action: 'reply', text}), never final prose. A reply-enabled tell is refused while that peer's request is open; reply: false sends a one-way update without closing it. machine picks one instance when the project runs on several.",
     parameters: obj({
       project: str({ minLength: 1 }),
       text: str({ minLength: 1 }),

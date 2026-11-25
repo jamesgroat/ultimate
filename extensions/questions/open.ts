@@ -35,7 +35,9 @@ export function forgetSettled(cards: Record<string, CardState>, messages: readon
   const open = new Set(
     messages.flatMap((message) => (waitsOnUser(message) ? [cardKey(message.id)] : [])),
   )
-  const kept = Object.entries(cards).filter(([card]) => open.has(card))
+  const kept = Object.entries(cards).filter(
+    ([card]) => !card.startsWith('message:') || open.has(card),
+  )
   const keepStoreIdentityWhenNothingSettled = kept.length === Object.keys(cards).length
   return keepStoreIdentityWhenNothingSettled ? cards : Object.fromEntries(kept)
 }

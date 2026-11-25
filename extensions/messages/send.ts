@@ -13,7 +13,15 @@ import type { Device } from '../../shared/events.ts'
 import { resolveImages } from './images.ts'
 import type { ImagesRef } from './images.ts'
 import { append } from './log.ts'
-import { parentOf, resolveRecipient, senderName, serve, starterOf } from './addresses.ts'
+import {
+  parentOf,
+  requireRequestTool,
+  refreshStandingDefinition,
+  resolveRecipient,
+  senderName,
+  serve,
+  starterOf,
+} from './addresses.ts'
 import { delivery } from './delivery.ts'
 
 const AtomicallyCommittedCallReceipts = defineDoc<{ ids: Record<string, number> }>({
@@ -62,6 +70,7 @@ export async function send(
     images?: ImagesRef
     imagesFrom?: ConversationId
     dismiss?: boolean
+    clarify?: boolean
     questions?: Question[]
   },
   ctx: Context,
@@ -111,6 +120,10 @@ export async function send(
       `Subagents report to the conversation that started them: message only #${parent}. Your final answer reaches it anyway.`,
     )
   const to = await resolveRecipient(host, input.to, from, ctx)
+  if (from !== 'user' && typeof to === 'number' && input.reply !== false) {
+    if (!input.to.startsWith('@')) await refreshStandingDefinition(host, to, ctx)
+    await requireRequestTool(host, to, ctx)
+  }
   const fromLabel = via
     ? `user (settled for them by @ultimate, from what they said in its chat)`
     : await senderName(host, from, ctx)
@@ -148,7 +161,8 @@ export async function send(
 
     if (from === 'user' && input.re !== undefined)
       for (const m of (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages)
-        if (openQuestion(m) && m.id === input.re) m.state = input.dismiss ? 'dismissed' : 'answered'
+        if (openQuestion(m) && m.id === input.re && !input.clarify)
+          m.state = input.dismiss ? 'dismissed' : 'answered'
     let re = input.re
     if (from !== 'user' && input.reply !== false) {
       const log = await tx.doc(Messages, ROOT_CONVERSATION_ID)
@@ -161,36 +175,9 @@ export async function send(
         readMessageOwedToRecipient.state = 'answered'
         re = readMessageOwedToRecipient.id
       } else if (readMessageOwedToRecipient) {
-        readMessageOwedToRecipient.state = 'answered'
-        const response = await append(tx, {
-          from,
-          to,
-          text: input.text,
-          reply: false,
-          re: readMessageOwedToRecipient.id,
-          state: 'sent',
-          ...(callId === undefined ? {} : { call: callId }),
-          ...(images ? { images } : {}),
-        })
-        await tx.createTask(
-          delivery(host),
-          {
-            message: readMessageOwedToRecipient,
-            steer: false,
-            note: false,
-            fromLabel: toLabel,
-            toLabel: fromLabel,
-            reply: { message: response, failed: false },
-          },
-          {
-            conversationId: ROOT_CONVERSATION_ID,
-            ownership: { kind: 'conversation' },
-            background: true,
-          },
+        throw new Error(
+          `Use request { id: ${readMessageOwedToRecipient.id}, action: 'reply', text } to answer; reply: false sends only a note`,
         )
-        if (receipt && callId !== undefined) receipt.ids[callId] = response.id
-        if (requests && requestId !== undefined) requests.ids[requestId] = response.id
-        return response.id
       }
     }
     if (options.serveBranch && typeof from === 'number' && typeof to === 'number')
@@ -215,13 +202,27 @@ export async function send(
       ...(options.echo ? { echo: true as const } : {}),
       ...(options.judged ? { judged: options.judged } : {}),
       ...(via ? { via } : {}),
+      ...(from === 'user' && input.clarify ? { clarifies: true as const } : {}),
     })
     if (to === 'user' && message.reply && typeof from === 'number' && callId !== undefined)
       (await tx.doc(AskedCalls, from)).calls.push(callId)
+    if (questions && re !== undefined) {
+      const { messages } = await tx.doc(Messages, ROOT_CONVERSATION_ID)
+      const clarification = messages.find((m) => m.id === re && m.clarifies)
+      const replaced = messages.find((m) => m.id === clarification?.re)
+      if (replaced && openQuestion(replaced) && replaced.from === from) {
+        replaced.state = 'dismissed'
+        replaced.replacedBy = message.id
+      }
+    }
     if (watcherId !== undefined) {
       const asked = to === 'user' && message.reply && from !== watcherId && typeof from === 'number'
       const answered =
-        from === 'user' && answerId !== undefined && typeof to === 'number' && to !== watcherId
+        from === 'user' &&
+        answerId !== undefined &&
+        !input.clarify &&
+        typeof to === 'number' &&
+        to !== watcherId
       const notification = asked
         ? {
             kind: 'board.asked' as const,
@@ -277,7 +278,7 @@ export async function send(
     if (userAnswerNotAlreadyCountedInChat)
       await host.emit(tx, UserInputEvent, {
         conversation: to,
-        kind: input.dismiss ? 'dismiss' : 'answer',
+        kind: input.dismiss ? 'dismiss' : input.clarify ? 'clarify' : 'answer',
         message: message.id,
         length: input.dismiss ? 0 : input.text.length,
         ...device,

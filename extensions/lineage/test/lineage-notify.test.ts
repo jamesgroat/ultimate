@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { expect, it } from 'vitest'
 import { leaveNote, Notified } from '../server.ts'
+import { Messages } from '../../messages/api.ts'
 import { context } from '../../../server/harness.ts'
 import { until } from '../../../test/helpers.ts'
 import {
@@ -100,6 +101,35 @@ it('re-armed on an idle target, waits for its next answer instead of repeating o
 
 it('does not repeat an answer the caller already received as a reply', async () => {
   const { server } = await notifyFixture()
+  const route: FauxResponseFactory = (transcript) => {
+    server.host.faux!.appendResponses([route])
+    const last = transcript.messages.findLast((message) => message.role !== 'system')!
+    const text = textOf(last.content)
+    if (last.role === 'user') {
+      for (const [prefix, name] of [
+        ['SEND ', 'message'],
+        ['NOTIFY ', 'notify'],
+      ])
+        if (text.startsWith(prefix))
+          return fauxAssistantMessage([fauxToolCall(name, JSON.parse(text.slice(prefix.length)))], {
+            stopReason: 'toolUse',
+          })
+      const request = text.startsWith('Message from') ? /\nRequest (\d+):/.exec(text) : undefined
+      if (request)
+        return fauxAssistantMessage(
+          [
+            fauxToolCall('request', {
+              id: Number(request[1]),
+              action: 'reply',
+              text: `echo ${text}`,
+            }),
+          ],
+          { stopReason: 'toolUse' },
+        )
+    }
+    return fauxAssistantMessage(`echo ${text}`)
+  }
+  server.host.faux!.setResponses([route])
   const other = await second(server)
   await ask(
     server,
@@ -109,6 +139,14 @@ it('does not repeat an answer the caller already received as a reply', async () 
   await until(async () => (await kinds(server, ROOT_CONVERSATION_ID)).includes('board.reply'))
   await other.waitForIdle(context)
   await server.root.waitForIdle(context)
+  const reply = (await server.harness.snapshot(
+    Messages,
+    ROOT_CONVERSATION_ID,
+    context,
+  ))!.messages.find((message) => message.from === other.id && message.re !== undefined)!
+  expect(reply.replyRun).toBeDefined()
+  expect(reply.answer).toBeUndefined() // The final prose was not sent as the reply.
+  expect(reply.text).toContain('Dry run')
 
   await ask(server, ROOT_CONVERSATION_ID, `NOTIFY ${JSON.stringify({ id: other.id })}`)
   await server.root.waitForIdle(context)

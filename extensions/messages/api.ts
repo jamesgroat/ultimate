@@ -16,7 +16,7 @@ import { defineDoc } from '@earendil-works/pi-durable'
 import { defineApi } from '../../shared/extension-api.ts'
 import type { Device } from '../../shared/events.ts'
 import { JudgementsDoc, MessagesDoc } from './refs.ts'
-import type { Judged, Question, Remote, Via } from './refs.ts'
+import type { Carried, Judged, Question, Remote, Via } from './refs.ts'
 
 /** One message as the log stores it. */
 export type Message = {
@@ -31,6 +31,8 @@ export type Message = {
   state: 'sent' | 'delivered' | 'answered' | 'dismissed' | 'failed' | 'stopped'
   entry?: EntryId
   answer?: EntryId
+  /** Local run input during which this explicit reply was sent; final prose was not sent as the reply. */
+  replyRun?: SubmissionId
   error?: string
   /** The tool call that sent it: `message`'s or `branch`'s own id, `<script>/<n>` for a nested codemode call. */
   call?: string
@@ -54,6 +56,12 @@ export type Message = {
   via?: Via
   /** How the judge weighed this branch's final answer before it went to the starter. */
   judged?: Judged
+  /** A user note on an open card that answers none of its questions: the card stays open. */
+  clarifies?: true
+  /** The card the asker sent in answer to a clarification, which closed this one. */
+  replacedBy?: number
+  /** An open card carried over from an earlier chapter: that chapter, its message id there and who asked it. */
+  carried?: Carried
 }
 /**
  * The tool call ids of every reply-expected question a conversation asked the user, oldest first, on that
@@ -83,7 +91,8 @@ export type MessagesService = {
   /**
    * Reply `text` from the user to open message `messageId`, from browser `device`; returns the reply's message
    * id. Records a `user.input` event. With `call` (a tool call), a receipt commits with the reply, and a replay of
-   * that call returns the same id even though the question is closed by then.
+   * that call returns the same id even though the question is closed by then. With `clarify`, the reply asks about
+   * the questions instead of answering them: the message stays open.
    */
   answer(
     messageId: number,
@@ -91,6 +100,7 @@ export type MessagesService = {
     ctx: Context,
     device?: Device,
     call?: { taskId: TaskId; callId: string },
+    clarify?: boolean,
   ): Promise<number>
   /**
    * The messages that wait on the user's answer, oldest first: each one's id, the conversation that asked, when, and its
@@ -143,7 +153,7 @@ export type MessagesService = {
   dropped(tx: Tx, automation: string, source: string, why: string): Promise<void>
 }
 export { MessageSent } from './refs.ts'
-export type { Question, Serves } from './refs.ts'
+export type { Carried, Question, Serves } from './refs.ts'
 /** The judge's verdict on each of a branch's final answers, by answer entry, on the branch; never trimmed. */
 export const Judgements = defineDoc<{ answers: Record<number, Judged> }>({
   kind: JudgementsDoc.kind,

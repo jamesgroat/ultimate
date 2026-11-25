@@ -690,6 +690,31 @@ it('composes read and bash with private nested results and final JSON details', 
   expect(failed.data.isError).toBe(true)
 })
 
+it('exposes native request through Pi tools without an obsolete ultimate global', async () => {
+  const { server } = await fixture()
+  const calls: unknown[] = []
+  server.host.registry.install(
+    defineExtension({
+      name: 'requests',
+      tools: [
+        defineTool({
+          name: 'request',
+          description: 'Complete a request',
+          parameters: obj({}),
+          execute: async (input) => {
+            calls.push(input)
+            return { output: [{ type: 'text', text: 'answered' }] }
+          },
+        }),
+      ],
+    }),
+  )
+  const result = await run(server, 'await tools.request({}); return "request" in ultimate')
+  expect(result.value).toBe(false)
+  expect(calls).toEqual([{}])
+  expect(result.data.details.calls.some((call) => call.name === 'request')).toBe(true)
+})
+
 it('runs tool hooks on nested calls, so a beforeTool block stops a script call', async () => {
   const { server } = await fixture()
   let executions = 0

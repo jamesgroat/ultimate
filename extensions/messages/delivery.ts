@@ -1,4 +1,3 @@
-import type { Context } from '@earendil-works/chord/context'
 import { awaitWithContext } from '@earendil-works/chord/context'
 import {
   AssistantEntry,
@@ -21,13 +20,21 @@ import { scanNonterminalTasks } from './tasks.ts'
 import { isOpen } from '../../lib/message-state.ts'
 import type { LandingOutput, Owner, Serves } from './addresses.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
-import { Standing, SubagentsApi } from '../subagents/api.ts'
+import { Standing } from '../subagents/api.ts'
 import { locate, postAction } from '../../lib/remote.ts'
 import { Messages, MessageSent } from './api.ts'
 import type { Message } from './api.ts'
 import { imagesOf } from '../../lib/entries.ts'
 import { append, terminal } from './log.ts'
-import { EarlyReplies, remoteLabel, sameOwner, Serving, servesLine } from './addresses.ts'
+import {
+  EarlyReplies,
+  hasRequestTool,
+  refreshStandingDefinition,
+  remoteLabel,
+  sameOwner,
+  Serving,
+  servesLine,
+} from './addresses.ts'
 import { MessageEntry, ReplyEntry } from '../entries/api.ts'
 import { asleepUntilSettled, notify, settledSubmission, signalSettled } from '../../lib/settled.ts'
 
@@ -39,17 +46,6 @@ function retainOneWayAnswer(message: Message | undefined, answer: Message['answe
 }
 
 export function delivery(host: ExtensionHost) {
-  const refreshActiveStandingDefinition = async (id: number, ctx: Context) => {
-    const index = await host.harness().snapshot(Standing, ROOT_CONVERSATION_ID, ctx)
-    const name = Object.keys(index ?? {}).find((candidate) => index![candidate] === id)
-    if (name === undefined) return
-    const service = host.need(SubagentsApi)
-
-    const standingDefinitionStillExists = (await service.residents(ctx)).some(
-      (agent) => agent.name === name,
-    )
-    if (standingDefinitionStillExists) await service.standing(name, ctx)
-  }
   return defineTask<
     {
       message: Message
@@ -77,7 +73,31 @@ export function delivery(host: ExtensionHost) {
       deliver: async (task, runtime, ctx) => {
         const m = task.input.message
         if (typeof m.to !== 'number') throw new Error('Only conversations take a delivery')
-        await refreshActiveStandingDefinition(m.to, ctx)
+        await refreshStandingDefinition(host, m.to, ctx)
+        if (m.reply && m.from !== 'user' && !(await hasRequestTool(host, m.to, ctx))) {
+          const from = m.from
+          const to = m.to
+          await runtime.commit(async (tx) => {
+            const original = (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.find(
+              (item) => item.id === m.id,
+            )
+            if (original && isOpen(original) && !original.ownerSettled) {
+              const error = `Not delivered to #${to}: its request completion tool is unavailable or denied`
+              original.error = error
+              await sendResult(
+                host,
+                tx,
+                to,
+                { message: m.id, from, ...(m.remote ? { remote: m.remote } : {}) },
+                error,
+                { failed: true, reply: true },
+              )
+              delete (await tx.doc(Serving, ROOT_CONVERSATION_ID)).owners[m.id]
+            }
+            return terminal
+          }, ctx)
+          return
+        }
         const recipient = await host.harness().conversation(m.to, ctx)
         if (!recipient) throw new Error(`Unknown conversation #${m.to}`)
 
@@ -104,10 +124,14 @@ export function delivery(host: ExtensionHost) {
         const serves = await host.harness().commit((tx) => servesLine(tx, m.from, m.to), ctx)
 
         const answeredQuestionLabel =
-          m.from === 'user' && m.re !== undefined ? `Answer to message ${m.re}:\n` : ''
+          m.from !== 'user' || m.re === undefined
+            ? ''
+            : m.clarifies
+              ? `Clarification on message ${m.re} (still open: this answers none of its questions; answer here, and a message to the user with questions replaces that card):\n`
+              : `Answer to message ${m.re}:\n`
         const body = task.input.note
           ? `Note from ${task.input.fromLabel} (one-way update, no answer goes back):\n${m.text}${serves}`
-          : `Message from ${task.input.fromLabel}${m.from === 'remote' ? " (another project's Ultimate, not the user)" : ''}:\n${answeredQuestionLabel}${m.text}${m.reply ? `\nAnswer here; your answer is sent to ${task.input.fromLabel} automatically. Do not use message to reply.` : `\nOne-way message: ${task.input.fromLabel} expects no answer, and your answer here is not sent to it. If it needs to hear from you, message it.`}${serves}`
+          : `Message from ${task.input.fromLabel}${m.from === 'remote' ? " (another project's Ultimate, not the user)" : ''}:\n${answeredQuestionLabel}${m.text}${m.reply ? (m.from === 'user' ? '\nAnswer the user here.' : `\nRequest ${m.id}: use request { id: ${m.id}, action: 'reply', text } to answer, or action: 'work' to continue working. Final prose does not answer this request.`) : `\nOne-way message: ${task.input.fromLabel} expects no answer, and your answer here is not sent to it. If it needs to hear from you, message it.`}${serves}`
         const content = replayStableImages.length
           ? [{ type: 'text' as const, text: body }, ...replayStableImages]
           : body
@@ -235,6 +259,8 @@ export function delivery(host: ExtensionHost) {
             retainOneWayAnswer(original, answer)
             return terminal
           }
+
+          if (m.from !== 'user' && answer !== undefined) return terminal
 
           const { pending } = await tx.doc(EarlyReplies, ROOT_CONVERSATION_ID)
           const early = pending[m.id]
@@ -390,7 +416,7 @@ export function delivery(host: ExtensionHost) {
           return
         }
         if (m.to !== 'user') {
-          await refreshActiveStandingDefinition(m.to, ctx)
+          await refreshStandingDefinition(host, m.to, ctx)
           const sender = await runtime.conversation(m.to, ctx)
 
           const replayStableImages = m.images
@@ -409,7 +435,10 @@ export function delivery(host: ExtensionHost) {
               ...(m.remote ? { remote: m.remote } : {}),
             },
           }
-          const body = `Reply from ${task.input.toLabel} to your message ${m.re}${stopped ? ' (stopped)' : failed ? ' (failed)' : ''}:\n${m.text}${task.state.checkpoint.serves ?? ''}`
+          const serves =
+            task.state.checkpoint.serves ??
+            (await host.harness().commit((tx) => servesLine(tx, m.from, m.to), ctx))
+          const body = `Reply from ${task.input.toLabel} to your message ${m.re}${stopped ? ' (stopped)' : failed ? ' (failed)' : ''}:\n${m.text}${serves}`
           const content = replayStableImages.length
             ? [{ type: 'text' as const, text: body }, ...replayStableImages]
             : body
@@ -605,6 +634,12 @@ export function settle(host: ExtensionHost) {
             await runtime.waitForTask(route, ctx)
         }
         await runtime.commit(async (tx) => {
+          if (outcome?.status === 'done') {
+            const { owners } = await tx.doc(Serving, ROOT_CONVERSATION_ID)
+            for (const record of Object.values(owners))
+              record.pending = record.pending.filter((id) => id !== submission)
+            return terminal
+          }
           await retireOutput(
             host,
             tx,
@@ -627,7 +662,19 @@ export async function sendResult(
   from: ConversationId,
   request: Serves,
   text: string,
-  { answer, interim, failed }: { answer?: EntryId; interim?: boolean; failed?: boolean },
+  {
+    answer,
+    interim,
+    failed,
+    reply,
+    replyRun,
+  }: {
+    answer?: EntryId
+    interim?: boolean
+    failed?: boolean
+    reply?: boolean
+    replyRun?: SubmissionId
+  },
 ) {
   const { messages } = await tx.doc(Messages, ROOT_CONVERSATION_ID)
   if (answer !== undefined && !interim && !failed) {
@@ -644,13 +691,17 @@ export async function sendResult(
     state: failed ? 'failed' : 'sent',
     re: request.message,
     ...(answer === undefined ? {} : { answer, routed: answer }),
+    ...(replyRun === undefined ? {} : { replyRun }),
     ...(interim ? { interim: true } : {}),
     ...(failed ? { error: text } : {}),
     ...(remote ? { remote } : {}),
   })
   const original = messages.find((m) => m.id === request.message)
-  if (!interim && original && isOpen(original)) original.ownerSettled = true
-  if (!remote)
+  if (!interim && original && isOpen(original)) {
+    original.ownerSettled = true
+    original.state = failed ? 'failed' : 'answered'
+  }
+  if (!remote && !reply)
     await host.emit(tx, MessageSent, {
       message: message.id,
       from,
@@ -658,15 +709,19 @@ export async function sendResult(
       reply: false,
       steer: true,
     })
+  const standing = Object.entries(await tx.doc(Standing, ROOT_CONVERSATION_ID)).find(
+    ([, id]) => id === from,
+  )?.[0]
+  const fromLabel = `#${from}${standing ? ` (@${standing})` : ''}`
   await tx.createTask(
     delivery(host),
     {
       message: remote ? (original ?? message) : message,
       steer: true,
       note: false,
-      fromLabel: `#${from} (@ultimate)`,
-      toLabel: remote ? remoteLabel(remote) : `#${request.from}`,
-      ...(remote ? { reply: { message, failed: failed ?? false } } : {}),
+      fromLabel,
+      toLabel: remote ? remoteLabel(remote) : reply ? fromLabel : `#${request.from}`,
+      ...(remote || reply ? { reply: { message, failed: failed ?? false } } : {}),
     },
     { conversationId: ROOT_CONVERSATION_ID, ownership: { kind: 'conversation' }, background: true },
   )
