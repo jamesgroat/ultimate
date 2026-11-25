@@ -9,6 +9,8 @@ import remarkRehype from 'remark-rehype'
 import remend from 'remend'
 import { unified } from 'unified'
 import { remarkMentions } from '../ai/mentions.ts'
+import { scopeToSource } from './source.ts'
+import type { MarkdownOrigin } from './source.ts'
 
 export const incompleteLink = 'streamdown:incomplete-link'
 
@@ -74,6 +76,7 @@ const toHast = unified()
   .use(rehypeRaw)
   .use(rehypeSanitize, schema)
   .use(harden, hardening)
+const remoteToHast = unified().use(remarkRehype).use(rehypeSanitize, schema).use(harden, hardening)
 
 const continuation = 'C1STREAMPROBE'
 
@@ -94,7 +97,10 @@ function descendants(node: MdastNodes): MdastNodes[] {
   return 'children' in node ? node.children.flatMap((child) => [child, ...descendants(child)]) : []
 }
 
-export function parse(markdown: string): { nodes: ElementContent[]; openFences: number[] } {
+export function parse(
+  markdown: string,
+  origin?: MarkdownOrigin,
+): { nodes: ElementContent[]; openFences: number[] } {
   const mdast = markdownTree.parse(markdown)
   const last = descendants(mdast).findLast((node): node is Code => node.type === 'code')
   const start = last?.position!.start.offset
@@ -102,7 +108,11 @@ export function parse(markdown: string): { nodes: ElementContent[]; openFences: 
     start !== undefined && last?.data?.fence === 'open' && stillExtends(markdown, start)
       ? [start]
       : []
-  const tree = toHast.runSync(mdast, markdown)
+  if (origin) {
+    remarkMentions()(mdast)
+    scopeToSource(mdast, origin)
+  }
+  const tree = (origin ? remoteToHast : toHast).runSync(mdast, markdown)
   return { nodes: tree.children.filter((node) => node.type !== 'doctype'), openFences }
 }
 

@@ -40,6 +40,7 @@ import {
   parse,
 } from './parse.ts'
 import type { Element, ElementContent } from './parse.ts'
+import type { MarkdownOrigin } from './source.ts'
 import { mentionHref, parseMention, splitMentions } from '../ai/mentions.ts'
 
 type Rendered = { extension: string; version: number; component: Component<never> }
@@ -91,8 +92,11 @@ function Anchor(props: {
   text?: string
   children: JSX.Element
   attributes: Record<string, unknown>
+  local?: boolean
 }) {
-  const renderers = createMemo(() => linkRenderers(useExtensions()()) as Rendered[])
+  const renderers = createMemo(() =>
+    props.local === false ? [] : (linkRenderers(useExtensions()()) as Rendered[]),
+  )
   const core = () =>
     parseMention(props.href) ? (
       props.children
@@ -183,8 +187,15 @@ function ConfirmedLink(props: {
 const omitHref = (attributes: Record<string, unknown>) =>
   Object.fromEntries(Object.entries(attributes).filter(([name]) => name !== 'href'))
 
-function InlineCode(props: { code: string; inLink: boolean; attributes: Record<string, unknown> }) {
-  const renderers = createMemo(() => inlineCodeRenderers(useExtensions()()) as Rendered[])
+function InlineCode(props: {
+  code: string
+  inLink: boolean
+  attributes: Record<string, unknown>
+  local: boolean
+}) {
+  const renderers = createMemo(() =>
+    props.local ? (inlineCodeRenderers(useExtensions()()) as Rendered[]) : [],
+  )
   return (
     <Contributed<Parameters<InlineCodeRenderer>[0]>
       core={() => <code {...props.attributes}>{props.code}</code>}
@@ -250,9 +261,15 @@ export function HighlightedCode(props: { code: string; language: string; lineNum
   )
 }
 
-function CodeBlock(props: { code: string; language: string; incomplete: boolean; at: string }) {
-  const renderers = createMemo(
-    () => codeBlockRenderers(useExtensions()(), props.language) as Rendered[],
+function CodeBlock(props: {
+  code: string
+  language: string
+  incomplete: boolean
+  at: string
+  local: boolean
+}) {
+  const renderers = createMemo(() =>
+    props.local ? (codeBlockRenderers(useExtensions()(), props.language) as Rendered[]) : [],
   )
   const core = () => (
     <div
@@ -302,6 +319,7 @@ type Context = {
   without?: readonly string[]
   place: string
   inLink?: boolean
+  origin?: MarkdownOrigin
 }
 
 const fenceIncomplete = (node: Element, context: Context) =>
@@ -324,6 +342,9 @@ function Nodes(props: { nodes: ElementContent[]; context: Context; inLink?: bool
             },
             get inLink() {
               return props.inLink || props.context.inLink
+            },
+            get origin() {
+              return props.context.origin
             },
           }}
           node={node()}
@@ -386,6 +407,7 @@ function ElementNode(props: { node: Element; context: Context }): JSX.Element {
             code={block().code}
             incomplete={fenceIncomplete(props.node, props.context)}
             language={block().language}
+            local={!props.context.origin}
           />
         )}
       </Match>
@@ -395,6 +417,7 @@ function ElementNode(props: { node: Element; context: Context }): JSX.Element {
           attributes={attributes()}
           href={hrefOf(props.node)}
           text={textOf(props.node)}
+          local={!props.context.origin}
         >
           {children(true)}
         </Anchor>
@@ -404,6 +427,7 @@ function ElementNode(props: { node: Element; context: Context }): JSX.Element {
           attributes={attributes()}
           code={textOf(props.node)}
           inLink={!!props.context.inLink}
+          local={!props.context.origin}
         />
       </Match>
       <Match when={props.node.tagName === 'table'}>
@@ -429,11 +453,12 @@ function Block(props: {
   index: number
   markdown: number
   without?: readonly string[]
+  origin?: MarkdownOrigin
 }) {
   const source = createMemo(() => (props.streaming ? closeUnfinished(props.source) : props.source))
   const tree = createProjection<{ nodes: ElementContent[]; openFences: number[] }>(
     (draft) => {
-      const parsed = parse(source())
+      const parsed = parse(source(), props.origin)
       draft.nodes = parsed.nodes
       draft.openFences = props.streaming ? parsed.openFences : []
     },
@@ -452,6 +477,9 @@ function Block(props: {
         get place() {
           return `${props.markdown}.${props.index}`
         },
+        get origin() {
+          return props.origin
+        },
       }}
       nodes={tree.nodes}
     />
@@ -465,6 +493,7 @@ export function Markdown(props: {
   streaming?: boolean
   without?: readonly string[]
   class?: string
+  origin?: MarkdownOrigin
 }) {
   const markdown = ++markdowns
   const split = blockSplitterKeepingFinishedBlocks()
@@ -479,6 +508,7 @@ export function Markdown(props: {
             source={source()}
             streaming={!!props.streaming && index === blocks().length - 1}
             without={props.without}
+            origin={props.origin}
           />
         )}
       </For>
