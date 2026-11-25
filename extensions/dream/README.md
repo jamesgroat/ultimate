@@ -118,5 +118,9 @@ restart never returns: the new host opens the requested chapter.
 
 `refs.ts` holds the document and actions: `start`, `ready`, `dismiss`, `asleep`, `switch` (user-only), `prepare`,
 `chapters`, and `stats`,
-which reads tool calls from `<home>/trace.sqlite` read-only: calls, failures and mean duration per tool, the 20 most
-frequent errors (each with its two newest calls as `#<conversation>/<entry>`), and enabled tools never called in the trace's window (7 days or 200k rows).
+which reads the chapter's `trace.sqlite` read-only: calls, failures and mean duration per tool, the 20 most
+frequent errors (each with its two newest calls as `#<conversation>/<entry>` and a terminal error excerpt), enabled
+tools never called, and service/action counts by caller and callee. `stats {since?, until?}` accepts inclusive ISO
+times with Z/offset, or dates at UTC midnight; omitted bounds cover the retained trace (7 days or 200k rows).
+Returned `since`/`until` are the first/last tool call in that window. Errors group by the `Script error:` cause when
+present, not leading script output. Long tool failures retain a bounded prefix and terminal cause in the trace.

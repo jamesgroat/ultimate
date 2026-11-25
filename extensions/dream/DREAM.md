@@ -116,9 +116,10 @@ tally, `ultimate.entries(<root>)`) are the cheap way in; open a conversation onl
   and evidence (the memory review in extensions/lineage/README.md). Never drop or weaken the memory about the user.
 - **failures** — what failed often: `watchdog.failure` cards, tool and action errors in the trace, retries, reactor
   failures, lander rejections, runs the user had to stop. Group by cause; for the top ones propose a fix.
-- **tools** — `stats` gives calls, failures, mean duration and enabled tools never called. Explain the numbers: why a
-  tool fails, which are slow, which unused ones should be taught or removed, what agents did by hand that a tool
-  should do.
+- **tools** — `stats {since?, until?}` gives tool calls, failures, mean duration and enabled tools never called,
+  plus service and action counts by caller and callee. Bounds are inclusive ISO times with Z/offset or dates at UTC
+  midnight; omitted bounds cover the chapter's retained trace. Explain why tools fail, which are slow, which unused
+  ones should be taught or removed, and what agents did by hand that a tool should do.
 - **corrections** — what the user had to say more than once, corrections of the agents' work, and the wishes: what
   Ultimate itself would like to have or be able to do, from friction seen in old conversations.
 - **codify** — memories that should stop depending on being remembered and become how the harness works. For each

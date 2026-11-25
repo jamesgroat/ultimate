@@ -20,7 +20,7 @@ import { ContextUsageDoc } from '../../conversations/api.ts'
 import { SubmitAfter, submitAfter } from '../../conversations/submit.ts'
 import automations, { actions as automationActions, Automations } from '../../automations/server.ts'
 import { Hold } from '../../automations/api.ts'
-import dream, { actions, branched, Next, toolStats, userActions } from '../server.ts'
+import dream, { actions, branched, Next, statsWindow, toolStats, userActions } from '../server.ts'
 import { buildSeed } from '../seed.ts'
 import {
   AUTOMATION_NAME,
@@ -382,13 +382,81 @@ it("marks the branch a dream request's turn started as the dream, and asks @ulti
   expect(await f.requests()).toEqual([{ requestId: `dream.ready:${asked}`, type: 'input' }])
 })
 
+it('counts calls and failures by caller and callee within inclusive time bounds', async () => {
+  const file = join(await temp(), 'trace.sqlite')
+  const db = new DatabaseSync(file)
+  db.exec(
+    'CREATE TABLE calls (at REAL, ms REAL, caller TEXT, callee TEXT, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER)',
+  )
+  const insert = db.prepare('INSERT INTO calls VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 7, 42)')
+  insert.run(100, 'agent', 'read', 'tool', 'read', 1, null, 'secret-arg')
+  insert.run(200, 'phase', 'classify', 'service', 'classify.ask', 0, 'credit', 'secret-arg')
+  insert.run(210, 'phase', 'classify', 'service', 'classify.ask', 1, null, null)
+  insert.run(220, 'phase', 'plan', 'service', 'plan.open', 1, null, null)
+  insert.run(230, 'keep-warm', 'pause', 'service', 'pause.paused', 1, null, null)
+  insert.run(240, 'ui', 'codemode', 'action', 'codemode/read', 0, 'nope', 'secret-arg')
+  insert.run(241, 'phase', 'classify', 'service', 'classify.ask', 0, 'late', null)
+  insert.run(200, 'agent', 'read', 'tool', 'read', 0, 'early', null)
+  insert.run(240, 'agent', 'edit', 'tool', 'edit', 0, 'late', null)
+  insert.run(241, 'agent', 'edit', 'tool', 'edit', 0, 'excluded', null)
+  db.close()
+  const stats = toolStats(
+    file,
+    ['read', 'edit'],
+    statsWindow({
+      since: '1970-01-01T00:00:00.200Z',
+      until: '1970-01-01T00:00:00.240Z',
+    }),
+  )
+  expect(stats).toMatchObject({
+    since: 200,
+    until: 240,
+    calls: 2,
+    tools: [
+      { name: 'edit', calls: 1, failed: 1, avgMs: 1 },
+      { name: 'read', calls: 1, failed: 1, avgMs: 1 },
+    ],
+    unused: [],
+    services: {
+      byCaller: [
+        { name: 'phase', calls: 3, failed: 1 },
+        { name: 'keep-warm', calls: 1, failed: 0 },
+      ],
+      byCallee: [
+        { name: 'classify', calls: 2, failed: 1 },
+        { name: 'pause', calls: 1, failed: 0 },
+        { name: 'plan', calls: 1, failed: 0 },
+      ],
+    },
+    actions: {
+      byCaller: [{ name: 'ui', calls: 1, failed: 1 }],
+      byCallee: [{ name: 'codemode', calls: 1, failed: 1 }],
+    },
+  })
+  expect(stats.errors.map((group) => group.error)).toEqual(['late', 'early'])
+  expect(JSON.stringify(stats)).not.toMatch(/args|secret-arg|excluded/)
+  expect(toolStats(file, []).calls).toBe(4)
+})
+
+it('accepts only real ISO dates and zone-qualified times for stats', () => {
+  expect(statsWindow(null)).toEqual({})
+  expect(statsWindow({ since: '2026-11-19', until: '2026-11-19T06:30:00-07:00' })).toEqual({
+    since: Date.parse('2026-11-19'),
+    until: Date.parse('2026-11-19T13:30:00Z'),
+  })
+  for (const since of ['10/11/2026', '2026-02-30T00:00:00Z', '2026-11-19T03:00:00', '', 5])
+    expect(() => statsWindow({ since })).toThrow('since must be an ISO date or an ISO time with')
+})
+
 it('reads tool numbers from the trace, with unused tools and frequent errors', async () => {
   const file = join(await temp(), 'trace.sqlite')
   const db = new DatabaseSync(file)
   db.exec(
-    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER)',
+    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER, caller TEXT, callee TEXT)',
   )
-  const insert = db.prepare('INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+  const insert = db.prepare(
+    'INSERT INTO calls (id, at, ms, kind, name, ok, error, args, conversation, entry) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  )
   insert.run('1', 100, 10, 'tool', 'edit', 1, null, null, null, null)
   insert.run(
     '2',
@@ -421,6 +489,12 @@ it('reads tool numbers from the trace, with unused tools and frequent errors', a
   db.close()
   expect(toolStats(file, ['edit', 'read', 'notify'])).toEqual({
     since: 100,
+    until: 400,
+    services: { byCaller: [], byCallee: [] },
+    actions: {
+      byCaller: [{ name: null, calls: 1, failed: 0 }],
+      byCallee: [{ name: null, calls: 1, failed: 0 }],
+    },
     calls: 4,
     tools: [
       { name: 'edit', calls: 2, failed: 1, avgMs: 20 },
@@ -433,13 +507,13 @@ it('reads tool numbers from the trace, with unused tools and frequent errors', a
         name: 'codemode',
         error: `Script error:\n${cause}`,
         count: 1,
-        examples: [{ at: '#8/43' }],
+        examples: [{ at: '#8/43', error: cause }],
       },
       {
         name: 'edit',
         error: 'Could not find the exact text',
         count: 1,
-        examples: [{ at: '#7/42' }],
+        examples: [{ at: '#7/42', error: 'Could not find the exact text' }],
       },
     ],
   })
