@@ -619,6 +619,119 @@ it('discovers a committed project automation by slug only in a chosen project, a
   expect(await list(app)).toEqual([])
 })
 
+it('discovers a paused handler default and sends FIRE only through its prompt run', async () => {
+  const { root, app, userHome } = await fixture()
+  await writeFile(
+    join(userHome, '.ultimate/agents/handler.md'),
+    '---\nname: handler\ndescription: Handle events\nmodel: faux/faux-1\ntools: []\n---\nHandle the payload.\n',
+  )
+  await committed(root, 'handler', 'echo FIRE payload')
+  const dir = join(root, '.ultimate/automations/handler')
+  await writeFile(join(dir, 'handler.md'), 'Process the event')
+  await writeFile(
+    join(dir, 'automation.json'),
+    JSON.stringify({
+      ask: 'Watch events',
+      once: true,
+      agent: 'handler',
+      promptFile: 'handler.md',
+      subscribers: [],
+    }),
+  )
+  const [found] = await list(app)
+  expect(found).toMatchObject({
+    enabled: false,
+    agent: 'handler',
+    prompt: 'Process the event',
+    subscribers: [],
+    script: { state: 'stopped' },
+  })
+  const watcher = (await app.harness.conversation(found.script!.conversationId, context))!
+  expect((await watcher.context(context)).entries.filter((e) => e.kind === 'pi.user')).toEqual([])
+  app.host.faux!.setResponses([() => fauxAssistantMessage('Handled')])
+  await call(app, 'resume', 'handler')
+  const record = async () => (await app.harness.snapshot(Automations, context))!.automations.handler
+  await until(async () => (await record()).runs[0]?.status === 'done')
+  const saved = await record()
+  expect(saved).toMatchObject({ fires: 1, subscribers: [], enabled: false })
+  const child = (await app.harness.conversation(saved.runs[0].conversationId!, context))!
+  const entries = (await child.context(context)).entries.filter(
+    (e) => e.conversationId === child.id,
+  )
+  expect(entries.find((e) => e.kind === 'pi.user')!.model![0].content).toContain(
+    'Process the event\n\nFired: payload',
+  )
+  expect((await child.agent(context)).instructions).toContain('Handle the payload.')
+  expect(
+    (await watcher.context(context)).entries.filter(
+      (e) => e.kind.startsWith('automations.fired') || e.kind.startsWith('automations.finished'),
+    ),
+  ).toEqual([])
+  const path = join(dir, 'automation.json')
+  const defaults = JSON.parse(await readFile(path, 'utf8'))
+  await writeFile(path, JSON.stringify({ ...defaults, subscribers: ['@ultimate'] }))
+  await list(app)
+  await app.extensions.invoke(
+    'automations',
+    'update',
+    { id: 'handler', prompt: '' },
+    new AbortController().signal,
+  )
+  await writeFile(path, JSON.stringify(defaults))
+  await list(app)
+  expect(await record()).toMatchObject({
+    enabled: false,
+    subscribers: [],
+    overrides: { prompt: true },
+  })
+  expect((await record()).prompt).toBeUndefined()
+  for (const action of ['resume', 'run']) {
+    await expect(call(app, action, 'handler')).rejects.toThrow(
+      'At least one of prompt or subscribers is required',
+    )
+    expect(await record()).toMatchObject({ enabled: false, fires: 1, script: { state: 'stopped' } })
+  }
+})
+
+it('does not restore a removed subscriber when an unrelated manifest changes, and preserves runtime profiles', async () => {
+  const { root, app } = await fixture()
+  await committed(root, 'first', 'echo DONE')
+  await committed(root, 'other', 'echo DONE')
+  const original = (await list(app)).find((a) => a.id === 'first')!
+  const invoke = (action: string, args: JsonValue) =>
+    app.extensions.invoke('automations', action, args, new AbortController().signal)
+  await invoke('update', { id: 'first', prompt: 'Runtime prompt', agent: 'watcher' })
+  await invoke('unsubscribe', { id: 'first', to: '@ultimate' })
+  await writeFile(
+    join(root, '.ultimate/automations/other/automation.json'),
+    JSON.stringify({ ask: 'Changed unrelated trigger' }),
+  )
+  let saved = (await list(app)).find((a) => a.id === 'first')!
+  expect(saved).toMatchObject({
+    prompt: 'Runtime prompt',
+    agent: 'watcher',
+    subscribers: [],
+    overrides: { prompt: true, agent: true, subscribers: true },
+  })
+  expect(saved.script!.conversationId).toBe(original.script!.conversationId)
+  await writeFile(
+    join(root, '.ultimate/automations/first/automation.json'),
+    JSON.stringify({
+      ask: 'Changed own trigger',
+      prompt: 'New default',
+      agent: 'ultimate',
+      subscribers: ['@ultimate'],
+    }),
+  )
+  saved = (await list(app)).find((a) => a.id === 'first')!
+  expect(saved).toMatchObject({
+    prompt: 'Runtime prompt',
+    agent: 'watcher',
+    subscribers: [],
+    script: { ask: 'Changed own trigger' },
+  })
+})
+
 it('shares a project script runtime and its state across chapters', async () => {
   const first = await fixture()
   await committed(
