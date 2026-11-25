@@ -7,6 +7,7 @@ import { openQuestion as open } from '../../lib/message-state.ts'
 import { checkReply, replyText } from '../../lib/question-answers.ts'
 import { AnswerAction, DismissAction } from './refs.ts'
 import type { Reply } from '../../lib/question-answers.ts'
+import { finalAskNudge } from './nudge.ts'
 
 export { answerText } from '../../lib/question-answers.ts'
 
@@ -53,5 +54,5 @@ export const actions = {
 
 export default function questionsExtension(host: ExtensionHost) {
   host.need(MessagesApi)
-  return defineExtension({ name: 'questions' })
+  return defineExtension({ name: 'questions', hooks: [finalAskNudge(host)] })
 }
