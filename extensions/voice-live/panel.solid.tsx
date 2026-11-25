@@ -74,7 +74,6 @@ import {
 } from './dock.solid.tsx'
 import { createTalk } from './talk.ts'
 import { ModelAction, StatusAction, VoiceForkDoc, VoiceSessionDoc } from './refs.ts'
-import { VOICES } from './voices.ts'
 import { estimate } from './speech.ts'
 
 import { Session, Voicing, Waveform } from './turns.solid.tsx'
@@ -428,49 +427,14 @@ function Settings(props: { model?: boolean }) {
 }
 
 function SpeechVoice() {
-  const keyed = () => dock.keyed() === true
-  const voiceNote = () => {
-    const needsKey = dock.keyed() === false && 'OpenAI voice needs OPENAI_API_KEY in ⌘K → Secrets'
-    if (dock.voiced()) return needsKey
-    if (needsKey) return `No system voices in this browser. ${needsKey}`
-    return keyed() && 'No system voices in this browser · speaking with OpenAI'
-  }
   return (
     <div class="flex flex-col gap-2">
       <div class="flex items-center justify-between gap-3">
-        Voice
-        <SegmentedControl
-          aria-label="Speech voice"
-          bind={[() => (dock.openaiOn() ? 'openai' : 'system'), dock.setVoice]}
-        >
-          <SegmentedControlItem disabled={!dock.voiced()} value="system">
-            System
-          </SegmentedControlItem>
-          <SegmentedControlItem disabled={!keyed()} value="openai">
-            OpenAI
-          </SegmentedControlItem>
-        </SegmentedControl>
+        Voice <span>Local Kokoro</span>
       </div>
-      <Show when={voiceNote()}>
-        {(note) => (
-          <span class="text-[10.5px] leading-snug text-muted-foreground/70">{note()}</span>
-        )}
-      </Show>
-      <Show when={dock.openaiOn()}>
-        <SegmentedControl
-          aria-label="OpenAI voice"
-          bind={[dock.openaiVoice, dock.setOpenaiVoice]}
-          class="grid grid-cols-5"
-        >
-          <For each={VOICES}>
-            {(name) => (
-              <SegmentedControlItem class="justify-center" value={name}>
-                {name}
-              </SegmentedControlItem>
-            )}
-          </For>
-        </SegmentedControl>
-      </Show>
+      <span class="text-[10.5px] leading-snug text-muted-foreground/70">
+        Requires the speak extension on this machine. No paid or browser voice fallback.
+      </span>
     </div>
   )
 }
@@ -744,12 +708,6 @@ export function VoicePanel() {
   createEffect(id, (open) => {
     composeIn(open)
   })
-  createEffect(
-    () => status.data()?.transcribes,
-    (known) => {
-      if (known !== undefined) dock.setKeyed(known)
-    },
-  )
   createEffect(
     () => [surface(), shown(), summary()?.title] as const,
     ([on, conversation, title]) => {

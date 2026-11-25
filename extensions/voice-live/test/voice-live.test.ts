@@ -23,7 +23,35 @@ beforeAll(async () => {
   ultimateRoot = await sourceCopy(await temp())
   await writeFile(
     join(ultimateRoot, '.ultimate/settings.json'),
-    JSON.stringify({ extensions: { enable: ['voice-live', 'classify'] } }),
+    JSON.stringify({ extensions: { enable: ['voice-live', 'classify', 'speak'] } }),
+  )
+  await writeFile(
+    join(ultimateRoot, 'extensions/voice-live/local.ts'),
+    `
+    export async function localTranscript(host, recording, signal) {
+      const result = await host.invoke('speak', 'transcribe', { pcm: recording.data, turn: false }, signal)
+      return result.text.trim()
+    }
+    export async function localSpeech(host, text, signal) {
+      return host.invoke('speak', 'render', { text, engine: 'mlx' }, signal)
+    }
+    `,
+  )
+  await mkdir(join(ultimateRoot, 'extensions/speak'), { recursive: true })
+  await writeFile(
+    join(ultimateRoot, 'extensions/speak/server.ts'),
+    `
+    export default { name: 'speak' }
+    export const actions = {
+      sttStatus: async () => ({ ready: true }),
+      transcribe: async ({ pcm, turn }) => {
+        if (!pcm || turn !== false) throw new Error('Expected PCM without endpoint prediction')
+        const result = await fetch('https://local.test/transcribe')
+        if (!result.ok) throw new Error('Local worker failed (HTTP ' + result.status + ')')
+        return result.json()
+      },
+    }
+    `,
   )
 })
 afterEach(async () => {
@@ -33,23 +61,29 @@ afterEach(async () => {
 
 const audio = Buffer.from('voice recording bytes').toString('base64')
 
-async function fixture() {
+it('defaults local voice to subscription Codex Luna without explicit model settings', async () => {
+  const f = await fixture(true)
+  const status = await f.action('status', null)
+  expect(status.status).toBe(200)
+  expect(status.data.result.model).toBe('openai-codex/gpt-6-luna')
+})
+
+async function fixture(defaultModel = false) {
   const home = await temp('ultimate-voice-')
   await mkdir(join(home, '.ultimate'), { recursive: true })
   await writeFile(
     join(home, '.ultimate/settings.json'),
-    JSON.stringify({ voice: { model: 'faux/gemini-faux' } }),
+    JSON.stringify(defaultModel ? {} : { voice: { model: 'faux/gemini-faux' } }),
   )
   await writeFile(
     join(home, '.ultimate/model-families.json'),
     JSON.stringify({ recent: { families: { default: { model: 'faux/main-faux' } } } }),
   )
-  await writeSecret(home, 'OPENAI_API_KEY', 'sk-test')
   const realFetch = globalThis.fetch
   const transcribed: string[] = []
   vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : input.toString()
-    if (url !== 'https://api.openai.com/v1/audio/transcriptions') return realFetch(input, init)
+    if (url !== 'https://local.test/transcribe') return realFetch(input, init)
     const text = transcribed.shift()
     return Promise.resolve(
       text === undefined

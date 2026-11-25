@@ -1,14 +1,21 @@
-import { flush } from 'solid-js'
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-const harness = vi.hoisted(() => ({ spoken: [] as string[], said: [] as string[] }))
+const harness = vi.hoisted(() => ({
+  spoken: [] as string[],
+  said: [] as string[],
+  fail: false,
+  sources: [] as string[],
+}))
 vi.mock('@/sdk/solid', async () => {
   const { createSignal } = await import('solid-js')
   return {
     api: {
-      action: (ref: { name: string }, args: { text?: string }) => {
-        if (ref.name === 'speak' && args.text) harness.spoken.push(args.text)
-        return new Promise(() => undefined)
+      action: (ref: { name: string }, args: { text: string }) => {
+        if (ref.name !== 'speak') throw new Error(`Unexpected action: ${ref.name}`)
+        harness.spoken.push(args.text)
+        return harness.fail
+          ? Promise.reject(new Error('Local worker unavailable'))
+          : Promise.resolve({ audio: 'AQACAA==', mimeType: 'audio/mp4' })
       },
     },
     errorMessage: String,
@@ -19,60 +26,48 @@ vi.mock('@/sdk/solid', async () => {
   }
 })
 
-class FakeSynth extends EventTarget {
-  voices: unknown[] = []
-  getVoices = () => this.voices
-  cancel() {}
-  speak(utterance: { text: string }) {
-    harness.said.push(utterance.text)
-  }
-}
-
 beforeEach(() => {
   vi.resetModules()
   harness.spoken.length = 0
   harness.said.length = 0
+  harness.sources.length = 0
+  harness.fail = false
+  vi.stubGlobal('speechSynthesis', {
+    getVoices: () => [{ name: 'Available system voice' }],
+    speak: () => harness.said.push('browser fallback'),
+  })
   vi.stubGlobal(
-    'SpeechSynthesisUtterance',
-    class {
-      text: string
-      constructor(text: string) {
-        this.text = text
+    'Audio',
+    class extends EventTarget {
+      src = ''
+      duration = 1
+      playbackRate = 1
+      pause() {}
+      play() {
+        harness.sources.push(this.src)
+        this.dispatchEvent(new Event('playing'))
+        return Promise.resolve()
       }
-      addEventListener() {}
     },
   )
+  vi.stubGlobal('requestAnimationFrame', () => 1)
+  vi.stubGlobal('cancelAnimationFrame', () => {})
 })
+afterEach(() => vi.unstubAllGlobals())
 
-const speakWith = async (synth: FakeSynth) => {
-  vi.stubGlobal('speechSynthesis', synth)
+it('plays local MIME-aware audio even with system voices available, and fails explicitly without fallback', async () => {
   const { dock } = await import('../../dock.solid.tsx')
   const { splitSentences } = await import('../../speech.ts')
-  dock.setKeyed(true)
-  flush()
   const say = () => {
     dock.player.load('reply', [], true)
     dock.player.push('reply', splitSentences('Hello there.', true).sentences[0])
   }
-  return { dock, say }
-}
-
-it('speaks with OpenAI when the browser has no system voices and a key is set', async () => {
-  const { dock, say } = await speakWith(new FakeSynth())
-  expect(dock.voice()).toBe('system')
   say()
-  await vi.waitFor(() => expect(harness.spoken).toEqual(['Hello there.']))
+  await vi.waitFor(() => expect(harness.sources).toEqual(['data:audio/mp4;base64,AQACAA==']))
+  dock.player.stop()
+  harness.fail = true
+  say()
+  await vi.waitFor(() => expect(dock.error()).toContain('Local worker unavailable'))
   expect(harness.said).toEqual([])
-})
-
-it('keeps the system voice when the browser has voices, including ones that load late', async () => {
-  const synth = new FakeSynth()
-  const { dock, say } = await speakWith(synth)
-  synth.voices = [{ name: 'Late voice' }]
-  synth.dispatchEvent(new Event('voiceschanged'))
-  flush()
-  expect(dock.openaiOn()).toBe(false)
-  say()
-  expect(harness.said).toEqual(['Hello there.'])
-  expect(harness.spoken).toEqual([])
+  expect(dock.player.state.get().playing).toBe(false)
 })

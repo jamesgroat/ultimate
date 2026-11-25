@@ -3,7 +3,6 @@ import type { AssistantMessage } from '@earendil-works/pi-ai'
 import { createEffect, createMemo, createRoot, createSignal } from 'solid-js'
 import { api, composerDraft, errorMessage, ROOT, useConversation, useUiState } from '@/sdk/solid'
 import { every } from '../../lib/timers.ts'
-import { inProcess, overshadowed } from '../../lib/errors.ts'
 import { createCues } from './cues.ts'
 import { base64, createMic, micFailure, unsupported } from './recorder.ts'
 import type { Recorded } from './recorder.ts'
@@ -17,15 +16,8 @@ import {
   StopAction,
   TurnAction,
 } from './refs.ts'
-import type { OpenAiVoice, VoiceClip, VoiceDelivery, VoiceFork, VoiceTurn } from './refs.ts'
-import {
-  createPlayer,
-  fetchedVoice,
-  splitReply,
-  splitSentences,
-  systemVoice,
-  systemVoices,
-} from './speech.ts'
+import type { VoiceClip, VoiceDelivery, VoiceFork, VoiceTurn } from './refs.ts'
+import { createPlayer, fetchedVoice, splitReply, splitSentences } from './speech.ts'
 import type { Player } from './speech.ts'
 import { createTrace } from './trace.ts'
 import type { Trace } from './trace.ts'
@@ -69,27 +61,19 @@ export const dock = createRoot(() => {
   const [pending, setPending] = createSignal<string | undefined>()
   const cues = createCues(cuesOn)
   const mic = createMic(frame)
-  const [voice, setVoice] = useUiState<'system' | 'openai'>('ext.voice-live.voice', 'system')
-  const [openaiVoice, setOpenaiVoice] = useUiState('ext.voice-live.openai-voice', 'cedar')
-  const [keyed, setKeyed] = createSignal<boolean | undefined>()
-  const voices = systemVoices()
-  const [voiced, setVoiced] = createSignal(voices.some())
-  voices.subscribe(() => setVoiced(voices.some()))
-  const openaiOn = () => keyed() === true && (voice() === 'openai' || !voiced())
-  const system = systemVoice()
-  const openai = fetchedVoice({
+  const kokoro = fetchedVoice({
     load: async (text, signal) => {
-      const { audio } = await api.action(
+      const { audio, mimeType } = await api.action(
         SpeakAction,
-        { voice: openaiVoice() as OpenAiVoice, text },
+        { text },
         { conversationId: ROOT, signal },
       )
-      return `data:audio/wav;base64,${audio}`
+      return `data:${mimeType};base64,${audio}`
     },
     audio: () => new Audio(),
     failed: (failure) => {
       player.stop()
-      setError(`OpenAI voice: ${errorMessage(failure)}`)
+      setError(`Local Kokoro voice: ${errorMessage(failure)}`)
     },
   })
   const player: Player = createPlayer({
@@ -97,9 +81,8 @@ export const dock = createRoot(() => {
     enabled: speak,
     listening: mic.recording,
     frame,
-    engine: () => (openaiOn() ? openai : system),
+    engine: () => kokoro,
   })
-  createEffect(openaiOn, () => player.switched())
   let held: { busy: boolean } | undefined
   let stopPulse: (() => void) | undefined
   return {
@@ -109,14 +92,6 @@ export const dock = createRoot(() => {
     setCuesOn,
     rate,
     setRate,
-    voice,
-    setVoice,
-    keyed,
-    setKeyed,
-    voiced,
-    openaiOn,
-    openaiVoice,
-    setOpenaiVoice,
     holdKeys,
     setHoldKeys,
     collect,
@@ -479,13 +454,6 @@ async function sendTurn(input: {
   const cancelled = () => {
     if (input.fromComposer) throw signal.reason
   }
-  if (dock.openaiOn() && dock.speak())
-    inProcess(
-      'opening the voice connection early only saves this page time',
-      api
-        .action(SpeakAction, { voice: dock.openaiVoice() as OpenAiVoice }, { conversationId: ROOT })
-        .catch(overshadowed),
-    )
   const cut = input.interrupted ? markCut() : undefined
   const sentBySaying =
     input.spokenSend === true
@@ -563,7 +531,6 @@ async function sendTurn(input: {
     if (input.recorded || clips.length) trace.record('mic', seconds * 1000)
     try {
       const status = await api.action(StatusAction, null, { signal })
-      dock.setKeyed(status.transcribes)
       trace.label('model', status.model.split('/')[0])
       const audio = input.recorded ? await base64(input.recorded.blob) : undefined
       const mimeType = input.recorded?.blob.type ?? ''

@@ -2,11 +2,12 @@ Voice mode: hold to talk, and a fork of @ultimate thinks it through with you, sp
 back to @ultimate when you agree.
 
 It is off by default. Enable it with `"extensions": { "enable": ["voice-live"] }` in your user or project
-`.ultimate/settings.json`. It needs the voice model's login (by default Claude Code's, for
-`claude-code/claude-opus-5-5`) and an OpenAI API key for transcription (`OPENAI_API_KEY` in ⌘K → Secrets, the key
-dictation uses). Pick another model with `"voice": { "model": "provider/model" }` in `~/.ultimate/settings.json`.
+`.ultimate/settings.json`. It needs the voice model's login (by default Codex's, for
+`openai-codex/gpt-6-luna`) and the local speak extension with its Parakeet and Kokoro workers, plus ffmpeg.
+Transcription and sentence audio never fall back to paid services or browser speech. Local failures are explicit.
+Project routing enforces subscription billing independently; explicit model settings may override the default. Pick another model with `"voice": { "model": "provider/model" }` in `~/.ultimate/settings.json`.
 
-The empty voice panel shows this setup as a checklist from `status`: the voice model's login, OpenAI transcription (required) and Jev for hands-free send in
+The empty voice panel shows this setup as a checklist from `status`: the voice model's login, local Parakeet transcription (required) and Jev for hands-free send in
 collect mode (optional), each with what to do when it is missing.
 
 ## Flow
@@ -24,7 +25,7 @@ collect mode (optional), each with what to do when it is missing.
    - A model that hears audio (any Gemini model you configure) gets the turn at once: `turn` submits the transcript placeholder as the input,
      and a `beforeRequest` hook adds the recording to that request only. Stored history stays text, so compaction,
      renderers and other models never see audio. The transcript arrives in parallel and shows as your message.
-   - Any other model, the default Claude Opus included, waits for that transcript; the trace shows the transcribe stage on the critical path.
+   - Any other model, the default Codex Luna included, waits for that transcript; the trace shows the transcribe stage on the critical path.
    - Typed text, pasted text and pasted or dropped screenshots go through the same `turn`, with Enter in the prompt box.
      A video in the box (pasted, or recorded with its screen-record button) goes with the next spoken or typed turn as its
      `Attached video` line once it is ready, so the fork can ask about it and name its id in a handoff.
@@ -38,13 +39,10 @@ collect mode (optional), each with what to do when it is missing.
    input carries a short digest of what @ultimate did since the last turn, and every turn says which surface and
    conversation are on screen. The session stays hot until it hands off or End: after a handoff the next turn
    concludes it and forks @ultimate afresh; End concludes it and deletes the session's recordings.
-5. **Replies** stream from the fork's live partial. Each finished sentence is spoken by the browser's
-   `speechSynthesis` at the chosen speed, and the sentence being read is highlighted: word timing from the browser's
-   voices is too unreliable to follow word by word. Voice settings → Voice switches to OpenAI (UI state
-   `ext.voice-live.voice`, the voice in `ext.voice-live.openai-voice`, cedar by default; it needs `OPENAI_API_KEY`).
-   Then `speak` reads each sentence on the server through one Realtime connection to `gpt-realtime-2.1-mini`, which
-   the first turn opens early, and returns WAV the page plays at the chosen speed. While one sentence plays the next
-   is already being read; a cut-in pauses the audio and aborts every request in flight, which cancels its response. Folded, the talk bar shows the whole paragraph being read with that
+5. **Replies** stream from the fork's live partial. Each finished sentence is rendered locally by Kokoro through
+   the speak extension and played by the upstream fetched-audio engine at the chosen speed. The local worker's MIME
+   type travels with the audio. Sentence queuing, prefetch, pause, reset and interruption use the upstream player.
+   No browser or paid speech fallback is selected. Folded, the talk bar shows the whole paragraph being read with that
    sentence highlighted, and grows to fit it. The playback bar shows the paragraph, sentence and time left, and skips by sentence or paragraph; any
    sentence plays on click and each reply has replay. Thinking shows open while the model thinks, with a token count
    in the trace, and folds once the reply has played.

@@ -20,7 +20,7 @@ import { arr, lit, num, obj, opt, str, union, unknown } from '@earendil-works/pi
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { defineEffect } from '../../lib/effect.ts'
-import { openaiSecretOrNonOAuthKey, openaiTranscribe } from '../../lib/openai.ts'
+import { localSpeech, localTranscript } from './local.ts'
 import { readSecret } from '../../lib/secrets.ts'
 import { imagesOf, isInput } from '../../lib/entries.ts'
 import { offsetEntryId } from '../../lib/ids.ts'
@@ -51,7 +51,6 @@ import {
   UiClaimAction,
 } from './refs.ts'
 import type {
-  OpenAiVoice,
   VoiceDelivery,
   VoiceFork,
   VoiceHandoff,
@@ -61,13 +60,12 @@ import type {
   VoiceUi,
 } from './refs.ts'
 import { voicePrompt } from './prompt.ts'
-import { createRealtimeVoice } from './openai-voice.ts'
-import { MAX_SPOKEN, VOICES } from './voices.ts'
+import { MAX_SPOKEN } from './voices.ts'
 
-const DEFAULT_MODEL = { provider: 'claude-code', modelId: 'claude-opus-5-5' }
+const DEFAULT_MODEL = { provider: 'openai-codex', modelId: 'gpt-6-luna' }
 const MAX_AUDIO_BYTES = 8 * 1024 * 1024
 const PLACEHOLDER = '(no transcript yet)'
-const TRANSCRIBE_TIMEOUT_MS = 65_000
+const TRANSCRIBE_TIMEOUT_MS = 150_000
 const MAX_WORDS = 6_000
 const UNHEARD = '(still being transcribed)'
 const VOICE_TOOLS = [
@@ -172,19 +170,11 @@ const transcribeEffect = (host: ExtensionHost) =>
   defineEffect<{ session: ConversationId; audio: string }, string>(
     'voice-live.transcribe',
     async ({ session, audio }, { signal }) => {
-      const key = await openaiSecretOrNonOAuthKey(host, signal)
-      if (!key) throw new Error('Transcription needs an OpenAI API key in ⌘K → Secrets')
-      const { data, mimeType } = await readRecording(host, session, audio)
-      const answer = await openaiTranscribe(
-        key,
-        new Blob([Buffer.from(data, 'base64')], { type: mimeType }),
+      const heard = await localTranscript(
+        host,
+        await readRecording(host, session, audio),
         AbortSignal.any([signal, AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS)]),
       )
-      if (answer.text === undefined)
-        throw new Error(
-          `Transcription failed (HTTP ${answer.status})${answer.detail ? `: ${answer.detail}` : ''}`,
-        )
-      const heard = answer.text.trim()
       if (!heard) await dropSilentTurn(host, session, audio)
       return heard
     },
@@ -406,19 +396,6 @@ async function wordsOf(tx: Tx, session: ConversationId, fork: VoiceFork) {
   return { words: said.slice(said.length - kept), earlier: said.length - kept }
 }
 
-const voices = new WeakMap<ExtensionHost, ReturnType<typeof createRealtimeVoice>>()
-const realtimeVoice = (host: ExtensionHost) => {
-  const known = voices.get(host)
-  if (known) return known
-  const made = createRealtimeVoice()
-  voices.set(host, made)
-  host.onClose(async () => {
-    voices.delete(host)
-    made.close()
-  })
-  return made
-}
-
 const unwrap = <T extends object>(args: unknown) =>
   (args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as Partial<T>
 
@@ -434,7 +411,18 @@ export const actions = {
       .getAvailableSnapshot()
       .some((listed) => listed.provider === model.provider && listed.id === model.modelId)
     const name = `${model.provider}/${model.modelId}`
-    const transcribes = !!(await openaiSecretOrNonOAuthKey(host))
+    let local: { ready?: boolean; hint?: string }
+    try {
+      local = (await host.invoke(
+        'speak',
+        'sttStatus',
+        null,
+        AbortSignal.timeout(10_000),
+      )) as typeof local
+    } catch (error) {
+      local = { ready: false, hint: String(error) }
+    }
+    const transcribes = local?.ready === true
     const classifies =
       !!host.want(ClassifyApi) && !!(await readSecret(host.userHome, 'TYPESAFE_API_KEY'))
     return {
@@ -458,12 +446,14 @@ export const actions = {
         transcription: transcribes
           ? {
               ready: true,
-              detail: 'OpenAI transcription: your words show as text and reach any model',
+              detail: 'Local Parakeet transcription through speak (ffmpeg required)',
             }
           : {
               ready: false,
-              detail: 'OpenAI transcription is missing',
-              fix: 'Required: add OPENAI_API_KEY in ⌘K → Secrets.',
+              detail: 'Local Parakeet transcription is unavailable',
+              fix:
+                local?.hint ??
+                'Install the speak extension and its local worker; ffmpeg is required.',
             },
         handsFree: classifies
           ? { ready: true, detail: 'Jev: "send it" sends a collected message hands-free' }
@@ -673,20 +663,14 @@ export const actions = {
     return {}
   }),
   speak: implementAction(SpeakAction, async (args, { host, signal }) => {
-    const { voice, text } = unwrap<{ voice: unknown; text: unknown }>(args)
-    if (!VOICES.includes(voice as OpenAiVoice)) throw new Error(`Unknown voice: ${String(voice)}`)
-    if (
-      text !== undefined &&
-      (typeof text !== 'string' || !text.trim() || text.length > MAX_SPOKEN)
-    )
+    const { text } = unwrap<{ text: unknown }>(args)
+    if (typeof text !== 'string' || !text.trim() || text.length > MAX_SPOKEN)
       throw new Error(`Expected text of at most ${MAX_SPOKEN} characters`)
-    const key = await openaiSecretOrNonOAuthKey(host, signal)
-    if (!key) throw new Error('OpenAI voice needs OPENAI_API_KEY in ⌘K → Secrets')
-    const realtime = realtimeVoice(host)
-    const bounded = AbortSignal.any([signal, AbortSignal.timeout(SPEAK_TIMEOUT_MS)])
-    if (text === undefined) return await realtime.connect(key, bounded).then(() => ({}))
-    const wav = await realtime.speak(key, text, voice as OpenAiVoice, bounded)
-    return { audio: wav.toString('base64') }
+    return await localSpeech(
+      host,
+      text,
+      AbortSignal.any([signal, AbortSignal.timeout(SPEAK_TIMEOUT_MS)]),
+    )
   }),
   intent: implementAction(IntentAction, async (args, { host, signal }) => {
     const { audio } = unwrap<{ audio: unknown }>(args)

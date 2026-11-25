@@ -205,11 +205,8 @@ export type OpenAiVoice =
   | 'shimmer'
   | 'verse'
 
-/**
- * `{ voice, text }` → `{ audio }`, the text read aloud by that OpenAI voice as base64 WAV; aborting the request cancels
- * it. Without text it only opens the connection, so the first sentence starts sooner.
- */
-export const SpeakAction = actionRef<{ voice: OpenAiVoice; text?: string }, { audio?: string }>(
+/** Render a sentence locally through Kokoro; audio is base64 with its supplied MIME type. */
+export const SpeakAction = actionRef<{ text: string }, { audio: string; mimeType: string }>(
   'voice-live',
   'speak',
 )
