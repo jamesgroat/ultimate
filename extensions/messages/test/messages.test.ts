@@ -633,6 +633,11 @@ it('wakes an idle recipient and returns one typed reply; one-way messages return
   const f = await fixture()
   await f.send(`#${f.recipient.id}`)
   await until(async () => (await replies(f)).length === 1)
+  expect(f.observed).toContainEqual(
+    expect.stringContaining(
+      "Request 1: answer with request { id: 1, action: 'reply', text: '…' } or codemode tools.request({id: 1, action: 'reply', text: '…'}). Use action: 'work' to continue working. A message to the asker does not complete this request; neither does final prose.",
+    ),
+  )
   expect((await f.log())!.messages.map((m) => [m.from, m.to, m.state])).toEqual([
     [1, f.recipient.id, 'answered'],
     [f.recipient.id, 1, 'delivered'],

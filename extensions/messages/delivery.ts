@@ -131,7 +131,7 @@ export function delivery(host: ExtensionHost) {
               : `Answer to message ${m.re}:\n`
         const body = task.input.note
           ? `Note from ${task.input.fromLabel} (one-way update, no answer goes back):\n${m.text}${serves}`
-          : `Message from ${task.input.fromLabel}${m.from === 'remote' ? " (another project's Ultimate, not the user)" : ''}:\n${answeredQuestionLabel}${m.text}${m.reply ? (m.from === 'user' ? '\nAnswer the user here.' : `\nRequest ${m.id}: use request { id: ${m.id}, action: 'reply', text } to answer, or action: 'work' to continue working. Final prose does not answer this request.`) : `\nOne-way message: ${task.input.fromLabel} expects no answer, and your answer here is not sent to it. If it needs to hear from you, message it.`}${serves}`
+          : `Message from ${task.input.fromLabel}${m.from === 'remote' ? " (another project's Ultimate, not the user)" : ''}:\n${answeredQuestionLabel}${m.text}${m.reply ? (m.from === 'user' ? '\nAnswer the user here.' : `\nRequest ${m.id}: answer with request { id: ${m.id}, action: 'reply', text: '…' } or codemode tools.request({id: ${m.id}, action: 'reply', text: '…'}). Use action: 'work' to continue working. A message to the asker does not complete this request; neither does final prose.`) : `\nOne-way message: ${task.input.fromLabel} expects no answer, and your answer here is not sent to it. If it needs to hear from you, message it.`}${serves}`
         const content = replayStableImages.length
           ? [{ type: 'text' as const, text: body }, ...replayStableImages]
           : body
