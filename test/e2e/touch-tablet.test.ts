@@ -2,8 +2,8 @@
 // sidebar leaves the conversation too narrow to read on it: there the sidebar docks and the panel overlays. A
 // touch-screen laptop is driven by its trackpad, so its primary pointer is fine and it keeps the desktop layout.
 import { join, resolve } from 'node:path'
-import { chromium } from 'playwright-core'
 import type { Browser } from 'playwright-core'
+import { launchChromium } from '../chromium.ts'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { browserBinary } from '../../extensions/browser/server.ts'
 import { fauxServer, removeTemp, temp } from '../helpers.ts'
@@ -23,7 +23,7 @@ beforeAll(async () => {
     port: 0,
   })
   const launch = async (args: string[]) =>
-    chromium.launch({
+    launchChromium({
       executablePath: await browserBinary(),
       headless: true,
       args,
