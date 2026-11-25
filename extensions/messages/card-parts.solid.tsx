@@ -29,11 +29,6 @@ export function Body(props: { text: string; pending?: string; class?: string }) 
 export function Answers(props: { message: Message }) {
   return (
     <>
-      <Show when={props.message.carried}>
-        <p class="px-3 py-2 font-mono text-[11px] text-muted-foreground">
-          Carried from an earlier chapter; replay and the original side chat aren’t available here.
-        </p>
-      </Show>
       <Provided input={{ message: props.message }} point={MessageExtras} />
       <Provided input={{ message: props.message }} last point={MessageAnswers} />
     </>

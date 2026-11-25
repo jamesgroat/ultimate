@@ -145,11 +145,6 @@ it.each([true, false])(
     expect(container.textContent).not.toContain('failed:')
     expect(container.querySelector('[data-talk-it-through]')).toBeNull()
     expect(container.querySelector('[data-reel-chip]')).toBeNull()
-    expect(
-      container.textContent?.includes(
-        'Carried from an earlier chapter; replay and the original side chat aren’t available here.',
-      ),
-    ).toBe(carried)
     const yes = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) =>
       button.textContent?.includes('Yes'),
     )!

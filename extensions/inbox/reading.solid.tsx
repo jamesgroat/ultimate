@@ -107,6 +107,12 @@ export function Reading(props: { entry: Entry; now: number; phone: boolean; onBa
               </time>
             </span>
           </header>
+          <Show when={message()?.carried}>
+            <p class="mt-2 font-mono text-[11px] text-muted-foreground">
+              Carried from an earlier chapter; replay and the original side chat aren’t available
+              here.
+            </p>
+          </Show>
           <h2 class="mt-3 text-[17px] leading-7 font-semibold tracking-[-0.01em]">
             <Markdown origin={origin()} text={asOneParagraph(text().title)} without={['img']} />
           </h2>
