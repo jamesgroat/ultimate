@@ -92,6 +92,8 @@ export function Toggle(props: { automation: Automation; now: number; act: Act })
       return checked()
         ? 'Pause: no new runs until resumed; a running run finishes'
         : 'Resume the trigger'
+    if (props.automation.schedule)
+      return checked() ? 'Pause checks and stop any active check' : 'Resume scheduled checks'
     if (checked()) return 'Pause: stop the script; nothing fires until resumed'
     return props.automation.script.state === 'done'
       ? 'Start watching again'
@@ -114,7 +116,7 @@ const scheduleText = (schedule: Schedule) =>
       ? `every ${schedule.ms / 1000}s`
       : `at ${schedule.time}`
 
-function ScheduleLine(props: { schedule: Schedule; now: number }) {
+function ScheduleLine(props: { schedule: Schedule; now: number; ask?: string }) {
   const { data } = useAction(
     DescribeAction,
     {
@@ -126,12 +128,17 @@ function ScheduleLine(props: { schedule: Schedule; now: number }) {
   )
   return (
     <TriggerLine
-      text={words(
-        props.schedule,
-        data()?.description ?? scheduleText(props.schedule),
-        props.now,
-        formatTime,
-      )}
+      text={[
+        words(
+          props.schedule,
+          data()?.description ?? scheduleText(props.schedule),
+          props.now,
+          formatTime,
+        ),
+        props.ask,
+      ]
+        .filter(Boolean)
+        .join(' · ')}
     />
   )
 }
@@ -155,9 +162,15 @@ function Trigger(props: { automation: Automation; now: number }) {
       {(schedule) => (
         <Show
           when={schedule().kind !== 'at'}
-          fallback={<TriggerLine text={words(schedule(), '', props.now, formatTime)} />}
+          fallback={
+            <TriggerLine
+              text={[words(schedule(), '', props.now, formatTime), props.automation.script?.ask]
+                .filter(Boolean)
+                .join(' · ')}
+            />
+          }
         >
-          <ScheduleLine schedule={schedule()} now={props.now} />
+          <ScheduleLine schedule={schedule()} now={props.now} ask={props.automation.script?.ask} />
         </Show>
       )}
     </Show>
@@ -177,6 +190,7 @@ export function AutomationRow(props: {
   const item = () => props.automation
   const label = () => automationLabel(item())
   const script = () => item().script
+  const check = () => !!script() && !!item().schedule
   const look = createMemo(() => lookOf(item(), props.now))
   const running = () => item().runs.some((run) => run.status === 'running')
   const line = () => stateLine(item(), props.now, formatTime)
@@ -277,19 +291,21 @@ export function AutomationRow(props: {
               </Button>
             )}
           </Show>
-          <CollapsibleTrigger
-            aria-label={`Show runs for ${label()}`}
-            class="group/runs flex h-6 items-center gap-1 rounded-md px-1.5 font-mono text-[11px] text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <ChevronRight
-              aria-hidden="true"
-              class="size-3 transition-transform group-data-open/runs:rotate-90"
-            />
-            {item().runs.length} run{item().runs.length === 1 ? '' : 's'}
-            <Show when={running()}>
-              <BusyDot class="ml-0.5" />
-            </Show>
-          </CollapsibleTrigger>
+          <Show when={!check() || item().prompt || item().runs.length > 0}>
+            <CollapsibleTrigger
+              aria-label={`Show runs for ${label()}`}
+              class="group/runs flex h-6 items-center gap-1 rounded-md px-1.5 font-mono text-[11px] text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <ChevronRight
+                aria-hidden="true"
+                class="size-3 transition-transform group-data-open/runs:rotate-90"
+              />
+              {item().runs.length} run{item().runs.length === 1 ? '' : 's'}
+              <Show when={running()}>
+                <BusyDot class="ml-0.5" />
+              </Show>
+            </CollapsibleTrigger>
+          </Show>
           <span class="min-w-0 truncate pl-1 font-mono text-[10.5px] text-muted-foreground/60">
             {actions(item())}
           </span>
@@ -315,7 +331,11 @@ export function AutomationRow(props: {
             >
               <DropdownMenuItem
                 class="text-[12.5px]"
-                disabled={script() ? script()?.state === 'writing' : running()}
+                disabled={
+                  script()
+                    ? script()?.state === 'writing' || (check() && look() === 'checking')
+                    : running()
+                }
                 value="run"
               >
                 <Show
@@ -326,7 +346,7 @@ export function AutomationRow(props: {
                     </>
                   }
                 >
-                  <RotateCw /> Restart
+                  <RotateCw /> {check() ? 'Check now' : 'Restart'}
                 </Show>
               </DropdownMenuItem>
               <DropdownMenuItem class="text-[12.5px]" value="edit">

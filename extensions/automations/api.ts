@@ -11,7 +11,7 @@ export type AutomationsService = {
   resume(id: string): Promise<AutomationListItem>
   /** Pause a trigger and terminate its script process group. Commits. */
   pause(id: string): Promise<AutomationListItem>
-  /** Fire a schedule, event or condition now, or relaunch a script. Commits. */
+  /** Fire a trigger now, relaunch a streaming script, or run a bounded scheduled check now. Commits. */
   run(id: string): Promise<AutomationListItem>
   /** The record, including whether its script process is alive. */
   status(id: string): Promise<AutomationListItem>

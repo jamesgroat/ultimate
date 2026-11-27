@@ -6,7 +6,7 @@ import { clock, countdown } from './looks.ts'
 import { DescribeAction } from './refs.ts'
 import { full, words } from './words.ts'
 
-export function Preview(props: { schedule?: string }) {
+export function Preview(props: { schedule?: string; check?: boolean }) {
   const [settled, setSettled] = createSignal<string>()
   createEffect(
     () => props.schedule,
@@ -25,7 +25,7 @@ export function Preview(props: { schedule?: string }) {
             when={props.schedule}
             fallback={
               <p class="font-mono text-[11.5px] text-muted-foreground">
-                Fill in the schedule to see its next runs.
+                Fill in the schedule to see its next {props.check ? 'checks' : 'runs'}.
               </p>
             }
           >
@@ -33,7 +33,7 @@ export function Preview(props: { schedule?: string }) {
           </Show>
         }
       >
-        {(schedule) => <Description schedule={schedule} />}
+        {(schedule) => <Description schedule={schedule} check={props.check} />}
       </Show>
     </div>
   )
@@ -47,7 +47,7 @@ function Reading() {
   )
 }
 
-function Description(props: { schedule: string }) {
+function Description(props: { schedule: string; check?: boolean }) {
   const { data, error } = useAction(
     DescribeAction,
     {
@@ -99,7 +99,7 @@ function Description(props: { schedule: string }) {
             </ol>
             <Show when={perDay() > 1}>
               <p class="mt-1 font-mono text-[11px] text-warning">
-                about {perDay().toLocaleString()} runs a day
+                about {perDay().toLocaleString()} {props.check ? 'checks' : 'runs'} a day
               </p>
             </Show>
           </>

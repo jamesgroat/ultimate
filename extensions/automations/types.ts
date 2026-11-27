@@ -25,6 +25,9 @@ export type Subscriber = ConversationId | StandingAgentName
 export type Automation = {
   id: string
   scope?: 'project'
+  manifest?: Manifest
+  manifestPrompt?: string
+  overrides?: { agent?: boolean; prompt?: boolean; subscribers?: boolean }
   key?: CreateIdempotencyKey
   name: string
   enabled: boolean
@@ -53,6 +56,13 @@ export type Automation = {
     conversationId: ConversationId
     state: 'writing' | 'running' | 'investigating' | 'failed' | 'stopped' | 'done'
     failures?: ConsecutiveUnplannedExits
+    timeout?: number
+    check?: {
+      at: number
+      ms?: number
+      result: 'running' | 'quiet' | 'fired' | 'failed' | 'stopped'
+      fired?: number
+    }
     pid?: number
     startedAt?: number
     exitedAt?: number
@@ -86,6 +96,7 @@ export type CreateArgs = {
     idleFor?: number
   }
   once?: boolean
+  timeout?: number
   secrets?: string[]
   prompt?: string
   agent?: string
@@ -105,10 +116,22 @@ export type Args = Partial<CreateArgs> & {
   lines?: number
   reason?: string
 }
-export type Manifest = { name: string; ask: string; once: boolean; secrets?: string[]; to: string }
+export type Manifest = {
+  name: string
+  ask: string
+  once: boolean
+  schedule?: Schedule
+  timeout?: number
+  secrets?: string[]
+  to?: string
+  subscribers?: string[]
+  agent?: string
+  prompt?: string
+  promptFile?: string
+}
 export const STANDING = /^@[a-zA-Z0-9_-]+$/
 export const FAILURE_LIMIT = 3
-export type Effect = { id: string; action: string; previousPid?: number }
+export type Effect = { id: string; action: string; previousPid?: number; scheduler?: TaskId }
 export const isSlug = (id: string) => /^[a-z][a-z0-9-]{0,62}$/.test(id) && !(id in Object.prototype)
 export const isId = (id: string) => /^A[1-9]\d*$/.test(id) || isSlug(id)
 
