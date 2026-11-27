@@ -1,9 +1,12 @@
 import { join } from 'node:path'
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
+import { AgentDoc } from '@earendil-works/pi-durable'
 import { chromium } from 'playwright-core'
 import { afterEach, expect, it } from 'vitest'
 import { browserBinary } from '../../../browser/server.ts'
 import type { ModelsResponse } from '../../../../shared/protocol.ts'
+import { parseConversationId } from '../../../../lib/ids.ts'
+import { context } from '../../../../server/harness.ts'
 import { prebuiltServer, post, removeTemp, temp } from '../../../../test/helpers.ts'
 
 const cleanup: (() => Promise<void>)[] = []
@@ -80,12 +83,21 @@ it('lets Get ready hand focus and pointer input to login and the model picker an
   await models.pressSequentially('faux-2')
   const row = page.getByRole('option').filter({ hasText: 'faux-2' })
   await row.waitFor({ timeout: 5_000 })
-  const [configured] = await Promise.all([
-    page.waitForResponse((response) => response.url().endsWith(`/conversations/${id}/configure`)),
+  const [selected] = await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/extensions/models/actions/select') &&
+        response.request().method() === 'POST' &&
+        response.request().postDataJSON().conversationId === id,
+    ),
     row.click(),
   ])
-  expect(configured.ok()).toBe(true)
-  expect(configured.request().postDataJSON()).toEqual({
+  expect(selected.ok()).toBe(true)
+  expect(selected.request().postDataJSON()).toEqual({
+    args: { model: { provider: 'faux', modelId: 'faux-2' }, family: null },
+    conversationId: id,
+  })
+  expect(await server.harness.snapshot(AgentDoc, parseConversationId(id), context)).toMatchObject({
     model: { provider: 'faux', modelId: 'faux-2' },
   })
   await ready

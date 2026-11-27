@@ -105,8 +105,8 @@ export type SubagentsService = {
   ) => ReturnType<typeof createChild>
   /**
    * Refresh, inside `tx`, conversation `id` from `definition` (read fresh, e.g. with `discoverAgents`) over
-   * `parentAgent`: its current tools, extensions and instructions; the model and thinking chosen in it stay unless the
-   * definition pins them.
+   * `parentAgent`: its current tools, extensions and instructions. Recorded manual/Auto model, thinking and family
+   * selections survive definition pins; without selection intent, the definition's pins still apply.
    */
   reconfigure: (
     tx: Tx,

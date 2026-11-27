@@ -6,6 +6,16 @@ import type { AuthEvent, AuthPrompt, AuthType, ModelThinkingLevel } from '@earen
 import { actionRef, docRef } from '../../shared/extension-api.ts'
 import { defineEvent } from '../../shared/events.ts'
 
+/** Manually select and hold a model, even if already selected; omitted family clears the old label. */
+export const SelectAction = actionRef<
+  {
+    model: { provider: string; modelId: string }
+    thinkingLevel?: ModelThinkingLevel
+    family?: string | null
+  },
+  null
+>('models', 'select')
+
 /** One login flow as the browser sees it. Answers and credentials never enter it. */
 export type LoginFlow = {
   provider: string

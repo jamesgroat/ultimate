@@ -14,7 +14,7 @@ import {
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { familyColor } from '../../lib/families.ts'
 import { familiesCache, refresh, refreshFor, thinkingOf } from './family-state.ts'
-import { FamiliesAction, FamilyDoc, SetFamilyAction } from './refs.ts'
+import { FamiliesAction, FamilyDoc, SelectAction } from './refs.ts'
 import type { FamilyView } from './refs.ts'
 import { notePick, thinkingDialog } from './state.ts'
 import type { ModelPick, ModelRef, PickerTarget, ThinkingLevel } from './state.ts'
@@ -55,9 +55,12 @@ export async function selectModel(
   family: FamilyView | null = null,
 ) {
   const level = family && thinkingOf(family)
-  await api.configure({ model, ...(level ? { thinkingLevel: level } : {}) }, id)
   await writingAs(source, () =>
-    api.action(SetFamilyAction, { family: family?.name ?? null }, { conversationId: id }),
+    api.action(
+      SelectAction,
+      { model, ...(level ? { thinkingLevel: level } : {}), family: family?.name ?? null },
+      { conversationId: id },
+    ),
   )
   notePick()
 }

@@ -11,7 +11,7 @@ import type {
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { definitionAgent, definitionFamily } from '../../lib/agents.ts'
-import { Family } from '../models/api.ts'
+import { Family, Selection } from '../models/api.ts'
 import type { AgentDefinition } from '../../lib/agents.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { Started } from './refs.ts'
@@ -49,9 +49,16 @@ export async function reconfigure(
     ...(own.model ? { model: own.model } : {}),
     ...(own.thinkingLevel ? { thinkingLevel: own.thinkingLevel } : {}),
   }
-  const change = definitionAgent(definition, currentModelSettings, modelRuntime)
+  let change = definitionAgent(definition, currentModelSettings, modelRuntime)
+  const held = (await tx.doc(Selection, id)).mode
+  if (held)
+    change = {
+      ...change,
+      model: currentModelSettings.model,
+      thinkingLevel: currentModelSettings.thinkingLevel,
+    }
   await configure(tx, id, change)
-  ;(await tx.doc(Family, id)).name = definitionFamily(definition, change)
+  if (!held) (await tx.doc(Family, id)).name = definitionFamily(definition, change)
   ;(await tx.doc(Profile, id)).definition = definition.name
 }
 

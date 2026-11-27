@@ -134,7 +134,7 @@ async function act(label: string, action: string, ...args: unknown[]) {
 const writes = () =>
   harness.fetch.mock.calls.flatMap(([url, init]) => {
     const path = url as string
-    if (!/\/(configure|setFamily|login|answer|cancel)$/.test(path)) return []
+    if (!/\/(configure|select|login|answer|cancel)$/.test(path)) return []
     return [
       {
         path,
@@ -173,7 +173,7 @@ it('keeps the picked effort pending across closing the popover, then shows its f
   expect(page.querySelector('.text-error')?.textContent).toContain('refused')
 })
 
-it('lets an agent pick a model and a family by name, recording both writes as the agent', async () => {
+it('lets an agent pick a model and a family by name, recording each atomic selection as the agent', async () => {
   const container = renderSolid(() => (
     <>
       <ModelControl />
@@ -197,23 +197,54 @@ it('lets an agent pick a model and a family by name, recording both writes as th
   expect(await act('Review family', 'press')).toMatchObject({ ok: true })
   expect(writes()).toEqual([
     {
-      path: '/api/conversations/1/configure',
-      body: { model: { provider: 'faux', modelId: 'orion' } },
+      path: '/api/extensions/models/actions/select',
+      body: {
+        args: { model: { provider: 'faux', modelId: 'orion' }, family: null },
+        conversationId: 1,
+      },
       source: 'agent',
     },
     {
-      path: '/api/extensions/models/actions/setFamily',
-      body: { args: { family: null }, conversationId: 1 },
+      path: '/api/extensions/models/actions/select',
+      body: {
+        args: {
+          model: { provider: 'faux', modelId: 'atlas' },
+          thinkingLevel: 'high',
+          family: 'Review',
+        },
+        conversationId: 1,
+      },
       source: 'agent',
     },
+  ])
+})
+
+it('keeps the picker open with the rejection when a selection fails', async () => {
+  const respond = harness.fetch.getMockImplementation()!
+  harness.fetch.mockImplementation((url, init) =>
+    typeof url === 'string' && url.endsWith('/select')
+      ? Promise.resolve(Response.json({ error: 'Model is not available' }, { status: 500 }))
+      : respond(url, init),
+  )
+  const container = renderSolid(() => (
+    <>
+      <ModelControl />
+      <ModelPicker />
+    </>
+  ))
+  await sync()
+  expect(await act('Model and thinking', 'setOpen', true)).toMatchObject({ ok: true })
+  expect(await act('Pick another model', 'press')).toMatchObject({ ok: true })
+  await act('Search model catalog', 'run', 'faux/orion')
+  expect(container.textContent).toContain('Model is not available')
+  expect(container.querySelector('[aria-label="Search model catalog"]')).not.toBeNull()
+  expect(writes()).toEqual([
     {
-      path: '/api/conversations/1/configure',
-      body: { model: { provider: 'faux', modelId: 'atlas' }, thinkingLevel: 'high' },
-      source: 'agent',
-    },
-    {
-      path: '/api/extensions/models/actions/setFamily',
-      body: { args: { family: 'Review' }, conversationId: 1 },
+      path: '/api/extensions/models/actions/select',
+      body: {
+        args: { model: { provider: 'faux', modelId: 'orion' }, family: null },
+        conversationId: 1,
+      },
       source: 'agent',
     },
   ])
@@ -274,13 +305,11 @@ it('targets the side chat from thinking controls and the picker, including after
         source: 'agent',
       },
       {
-        path: '/api/conversations/17/configure',
-        body: { model: { provider: 'faux', modelId: 'atlas' } },
-        source: 'agent',
-      },
-      {
-        path: '/api/extensions/models/actions/setFamily',
-        body: { args: { family: null }, conversationId: 17 },
+        path: '/api/extensions/models/actions/select',
+        body: {
+          args: { model: { provider: 'faux', modelId: 'atlas' }, family: null },
+          conversationId: 17,
+        },
         source: 'agent',
       },
     ])

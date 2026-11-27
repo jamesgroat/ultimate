@@ -3,7 +3,7 @@ import { AgentDoc } from '@earendil-works/pi-durable'
 import type { ConversationId, EntryDraft, Tx } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { configuredModel, familyDefault, hasLogin } from '../../lib/agents.ts'
-import { Family, Pin } from './api.ts'
+import { BeforeInput, Family, Pin } from './api.ts'
 import type { Fallback } from './refs.ts'
 import { FallbackEntry } from './entries.ts'
 
@@ -60,7 +60,7 @@ export async function checkLogin(
     checks.inconclusiveFor.set(conversationId, { provider: model.provider, snapshot })
 }
 
-async function loginMissing(
+function loginMissing(
   host: ExtensionHost,
   conversationId: ConversationId,
   provider: string,
@@ -72,7 +72,10 @@ async function loginMissing(
     inconclusive?.provider === provider &&
     inconclusive.snapshot === host.modelRuntime.getAvailableSnapshot()
   if (sameCheck) return false
-  return (await conclusiveLogin(host, provider, checks)) === 'missing'
+  const checked = checks.byProvider.get(provider)
+  return (
+    checked?.snapshot === host.modelRuntime.getAvailableSnapshot() && checked.login === 'missing'
+  )
 }
 
 export async function fallback(
@@ -84,18 +87,21 @@ export async function fallback(
   const agent = await tx.doc(AgentDoc, conversationId)
   const runtime = host.modelRuntime
   const from = agent.model
-  if (!needsCheck(host, from) || !(await loginMissing(host, conversationId, from.provider, checks)))
+  if (!needsCheck(host, from) || !loginMissing(host, conversationId, from.provider, checks))
     return undefined
   const fresh = runtime.getAvailableSnapshot()
   if (hasLogin(fresh, from)) return undefined
   const requiresSubscriptionReplacement = providerDeclaresSubscriptionAuth(host, from.provider)
   const preservesSubscriptionBilling = (provider: string) =>
     !requiresSubscriptionReplacement || usesSubscriptionNotPerToken(host, provider)
+  const policy = host.want(BeforeInput)
+  const allowed = (ref: Ref) =>
+    preservesSubscriptionBilling(ref.provider) && (policy?.allowsFallback?.(ref) ?? true)
   const same = fresh.find(
     (model) =>
       model.id === from.modelId &&
       model.provider !== from.provider &&
-      preservesSubscriptionBilling(model.provider),
+      allowed({ provider: model.provider, modelId: model.id }),
   )
   const sameModelThenPinThenDefault: [Ref | undefined, Fallback['reason']][] = [
     [same && { provider: same.provider, modelId: same.id }, 'same'],
@@ -103,7 +109,7 @@ export async function fallback(
     [configuredModel(fresh, host.settings, await familyDefault(host)), 'default'],
   ]
   const eligibleReplacement = sameModelThenPinThenDefault.find(
-    ([ref]) => hasLogin(fresh, ref) && preservesSubscriptionBilling(ref!.provider),
+    ([ref]) => hasLogin(fresh, ref) && allowed(ref!),
   )
   const data: Fallback = eligibleReplacement
     ? { from: name(from), to: name(eligibleReplacement[0]!), reason: eligibleReplacement[1] }
@@ -121,7 +127,7 @@ export async function fallback(
   }
   const content = eligibleReplacement
     ? `Model ${data.from} has no login here; this conversation now runs on ${data.to}.`
-    : `Model ${data.from} has no login here and no subscription login can replace it, so this conversation keeps it until the user logs in to ${from.provider} or picks another model.`
+    : `Model ${data.from} has no login here and no allowed login can replace it, so this conversation keeps it until the user logs in to ${from.provider} or picks another model.`
   return {
     entries: [
       { kind: FallbackEntry.kind, data, model: [{ role: 'user', content, timestamp: Date.now() }] },
@@ -129,12 +135,12 @@ export async function fallback(
   }
 }
 
-const INPUT_TRANSACTION_AUTH_CHECK_TIMEOUT_MS = 5_000
+const INPUT_PREPARATION_AUTH_CHECK_TIMEOUT_MS = 5_000
 
 async function loginCheck(host: ExtensionHost, provider: string) {
   try {
     const found = await host.modelRuntime.checkAuth(provider, {
-      signal: AbortSignal.timeout(INPUT_TRANSACTION_AUTH_CHECK_TIMEOUT_MS),
+      signal: AbortSignal.timeout(INPUT_PREPARATION_AUTH_CHECK_TIMEOUT_MS),
     })
     return found ? 'present' : 'missing'
   } catch (error) {
