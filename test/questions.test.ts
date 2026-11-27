@@ -455,9 +455,11 @@ describe('settling for the user', () => {
           text.includes('settled for them by @ultimate') && text.includes('3: Yes, ship it'),
       ),
     ).toBe(true)
-    await expect(f.settle(id, { messageId: message!.id, text: 'No' })).rejects.toThrow(
-      'These questions are no longer open',
-    )
+    await expect(f.settle(id, { messageId: message!.id, text: 'No' })).resolves.toMatchObject({
+      alreadySettled: true,
+      answer: '3: Yes, ship it',
+    })
+    expect((await f.log()).messages.filter((m) => m.re === message!.id)).toHaveLength(1)
   })
 })
 

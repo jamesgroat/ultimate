@@ -873,6 +873,33 @@ it('atomically admits only one answer-card reply through the Messages service', 
   ).toHaveLength(1)
   expect((await f.log())!.messages.find((message) => message.id === id)?.state).toBe('answered')
 })
+it("settles an open card once, and returns the user's answer for one they already answered", async () => {
+  const f = await fixture()
+  const settle = (messageId: number, text: string) =>
+    actions.settle({ messageId, text }, { ...f.action(), conversationId: ROOT_CONVERSATION_ID })
+  const ask = (text: string) => sendMessage(f.host, f.recipient.id, { to: 'user', text }, context)
+  const open = await ask('Ship it?')
+  const settled = await settle(open, 'Yes, ship it')
+  expect(settled).toEqual({ id: expect.any(Number) })
+  expect((await f.log())!.messages.find((m) => m.id === settled.id)).toMatchObject({
+    from: 'user',
+    re: open,
+    text: 'Yes, ship it',
+  })
+
+  const carded = await ask('Rotate the key?')
+  const reply = await f.service().answer(carded, 'Rotate it', context)
+  const before = (await f.log())!.messages.length
+  expect(await settle(carded, 'Yes')).toEqual({
+    id: reply,
+    alreadySettled: true,
+    state: 'answered',
+    answer: 'Rotate it',
+  })
+  expect((await f.log())!.messages).toHaveLength(before)
+
+  await expect(settle(9999, 'Yes')).rejects.toThrow('Unknown message 9999')
+})
 
 it('lets a subagent message only the conversation that started it', async () => {
   const f = await fixture()
