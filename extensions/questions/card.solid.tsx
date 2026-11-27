@@ -611,19 +611,23 @@ function AnswerCard(props: CardProps & { id: number }) {
             }
           >
             <p class="pt-1 text-[11px] text-muted-foreground" data-asks-hint>
-              Asks without answering; the card stays open. To discuss first, use{' '}
-              <Button
-                aria-label={`Talk it through about message ${props.id}`}
-                class="inline h-auto p-0 text-left font-normal whitespace-normal text-brand hover:underline"
-                size={null}
-                variant={null}
-                onClick={() =>
-                  root.querySelector<HTMLButtonElement>('[data-talk-it-through]')?.click()
-                }
-              >
-                Talk it through
-              </Button>
-              .
+              Asks without answering; the card stays open.
+              <Show when={props.message.call && !props.message.carried}>
+                {' '}
+                To discuss first, use{' '}
+                <Button
+                  aria-label={`Talk it through about message ${props.id}`}
+                  class="inline h-auto p-0 text-left font-normal whitespace-normal text-brand hover:underline"
+                  size={null}
+                  variant={null}
+                  onClick={() =>
+                    root.querySelector<HTMLButtonElement>('[data-talk-it-through]')?.click()
+                  }
+                >
+                  Talk it through
+                </Button>
+                .
+              </Show>
             </p>
           </Show>
         </div>

@@ -383,6 +383,10 @@ async function openOnQuestion(host: ExtensionHost, messageId: number) {
     )
     if (!message) throw new Error(`No message ${messageId}`)
     if (!openQuestion(message)) throw new Error(`Message ${messageId} no longer waits on you`)
+    if (message.carried)
+      throw new Error(
+        `Message ${messageId} was carried from an earlier chapter; its original side chat is unavailable`,
+      )
     const already = (await tx.doc(QuestionSides, ROOT_CONVERSATION_ID)).sides.find(
       (side) => side.question === messageId && side.ended === undefined,
     )

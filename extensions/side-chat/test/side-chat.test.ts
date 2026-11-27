@@ -761,6 +761,27 @@ describe('side chats', () => {
     )
   })
 
+  it('refuses to fork a carried question even when its call id matches a current turn', async () => {
+    const f = await fixture()
+    await f.call(f.main, 'message', {
+      to: 'user',
+      text: 'Carried question',
+      questions: [{ text: 'Keep it?', kind: 'confirm' }],
+    })
+    const id = await f.server.harness.commit(async (tx) => {
+      const board = await tx.doc(Messages, ROOT_CONVERSATION_ID)
+      const message = board.messages.find((item) => item.text === 'Carried question')!
+      expect(message.call).toBeDefined()
+      message.carried = { chapter: 'earlier', id: 42, from: f.main }
+      return message.id
+    }, context)
+    expect((await f.action('open', { message: id })).data.error).toContain(
+      'was carried from an earlier chapter',
+    )
+    const board = (await f.server.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!
+    expect(board.messages.find((message) => message.id === id)!.state).toBe('delivered')
+  })
+
   it('drafts answers on the card without sending, only in a question side chat', async () => {
     const f = await fixture()
     await f.call(f.main, 'message', {

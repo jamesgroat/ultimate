@@ -148,6 +148,21 @@ const question = (id: number, callId: string): Message => ({
   call: callId,
 })
 
+it('returns no reel when the card or its originating call is unavailable', async () => {
+  const noCall = { ...question(2, 'ask2'), call: undefined }
+  const carried = { ...question(2, 'ask2'), carried: { chapter: 'earlier', id: 8, from: BRANCH } }
+  for (const log of [[], [noCall], [carried], [question(2, 'missing-call')]]) {
+    const { ctx } = fixture(
+      [...ask(60, 'ask2'), ...shot(BRANCH, 30, 'c2', { url: '/' }, 'PRIVATE')],
+      log,
+    )
+    expect(await actions.frames({ conversation: BRANCH, message: 2 }, ctx)).toEqual({
+      frames: [],
+      earlier: 0,
+    })
+  }
+})
+
 const round = [
   ...ask(60, 'ask2'),
   ...shot(BRANCH, 50, 'c4', { url: '/?conversation=2', width: 390 }, 'C'),

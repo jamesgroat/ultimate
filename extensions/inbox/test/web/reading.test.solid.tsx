@@ -36,9 +36,43 @@ it('renders the bold lead link in the heading without title images', () => {
   expect(heading.textContent?.trim()).toBe('Remove the throttle: PR 1784')
   expect(heading.querySelectorAll('p')).toHaveLength(1)
   expect(heading.querySelector('img')).toBeNull()
+  expect(container.textContent).not.toContain('Carried from an earlier chapter')
   const link = heading.querySelector('[data-href], a[href]')!
   expect(link.textContent).toBe('PR 1784')
   expect(link.getAttribute('data-href') ?? link.getAttribute('href')).toBe(
     'https://example.com/pr/1784',
   )
 })
+
+it.each([true, false])(
+  'explains unavailable carried context in the reading pane (phone: %s)',
+  (phone) => {
+    const container = renderSolid(() => (
+      <Reading
+        entry={{
+          key: 'message:1',
+          at: 1,
+          message: {
+            id: 1,
+            at: 1,
+            from: 69 as ConversationId,
+            to: 'user',
+            text: 'Keep this?',
+            reply: true,
+            state: 'delivered',
+            carried: { chapter: 'earlier', id: 42, from: 17 as ConversationId },
+          },
+        }}
+        now={1000}
+        onBack={() => {}}
+        phone={phone}
+      />
+    ))
+    expect(container.textContent).toContain(
+      'Carried from an earlier chapter; replay and the original side chat aren’t available here.',
+    )
+    expect(container.querySelector('[data-inbox-carried]')?.textContent).toBe(
+      'asked by #17 in earlier',
+    )
+  },
+)
