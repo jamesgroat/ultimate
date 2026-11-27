@@ -184,7 +184,17 @@ async function fixture({ todos = true } = {}) {
             at: 1,
             reply: true,
             state,
-            questions: [{ text: `Choose ${id}?`, kind: 'confirm' }],
+            questions: [
+              {
+                text: `Choose ${id}?`,
+                kind: 'choice',
+                ref: '1',
+                options: [
+                  { label: 'Keep', key: 'a', recommended: true, detail: 'Why keep' },
+                  { label: 'Drop', key: 'b' },
+                ],
+              },
+            ],
           })
         }
         // Open, asking no questions of its own: the message itself is the question.
@@ -237,9 +247,18 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
     conversation: expect.any(Number),
     handoff: PREPARED.handoff,
   })
+  const asked = {
+    text: 'Choose 100?',
+    kind: 'choice',
+    ref: '1',
+    options: [
+      { label: 'Keep', key: 'a', recommended: true, detail: 'Why keep' },
+      { label: 'Drop', key: 'b' },
+    ],
+  }
   expect(seed.questions).toEqual([
-    { text: 'Choose 100?', ref: '#100' },
-    { text: 'Question 103', ref: '#103' },
+    { id: 100, from: 1, text: 'Question 100', at: 1, questions: [asked] },
+    { id: 103, from: 1, text: 'Question 103', at: 1 },
   ])
   expect(seed.todos).toEqual([{ text: 'Keep this', owner: 'ultimate' }])
   expect(seed.automations).toEqual([
@@ -258,20 +277,44 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
     todos: (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!,
     seed: (await f.harness.snapshot(SeedState, ROOT_CONVERSATION_ID, context))!,
     automations: (await f.harness.snapshot(Automations, context))!,
+    messages: (await f.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!,
   })
   const after = await contents()
   expect(after.memory.memories).toEqual(seed.memories)
   expect((after.memory.memories as typeof seed.memories)['about-daniel'].source).toBe('#123/456')
   expect(after.todos.items.map(({ text, owner }) => ({ text, owner }))).toEqual([
     { text: 'Keep this', owner: 'ultimate' },
-    { text: 'Open question (the-beginning#100): Choose 100?', owner: 'user' },
-    { text: 'Open question (the-beginning#103): Question 103', owner: 'user' },
     {
       text: 'Recreate script A1 (Watch it): Watch the build · prompt: Summarise',
       owner: 'ultimate',
     },
   ])
-  expect(after.todos.next).toBe(5)
+  expect(after.todos.next).toBe(3)
+  const ultimate = (await f.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))!.ultimate
+  expect(after.messages.messages).toEqual([
+    {
+      id: 1,
+      from: ultimate,
+      to: 'user',
+      text: 'Question 100',
+      at: 1,
+      reply: true,
+      state: 'delivered',
+      questions: [asked],
+      carried: { chapter: 'the-beginning', id: 100, from: 1 },
+    },
+    {
+      id: 2,
+      from: ultimate,
+      to: 'user',
+      text: 'Question 103',
+      at: 1,
+      reply: true,
+      state: 'delivered',
+      carried: { chapter: 'the-beginning', id: 103, from: 1 },
+    },
+  ])
+  expect(Object.values(after.automations.automations).map(({ name }) => name)).toEqual(['Daily'])
   expect(after.seed.applied).toBeGreaterThan(0)
   expect(after.seed.automations).toEqual(['Daily'])
   const chapterEntries = async () => {
@@ -329,6 +372,7 @@ it('carries the seed into a fresh chapter once, including user memory, the hando
   const again = await contents()
   expect(again.memory).toEqual(after.memory)
   expect(again.todos).toEqual(after.todos)
+  expect(again.messages).toEqual(after.messages)
   expect(again.seed).toEqual(after.seed)
   expect(again.automations).toEqual(settled.automations)
   expect(await chapterEntries()).toEqual([entry])
@@ -377,6 +421,93 @@ it('adopts executable user scripts from the seed instead of making recreation to
   expect(f.adopt).toHaveBeenCalledTimes(1)
   const todos = (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!.items
   expect(todos.filter(({ text }) => text.startsWith('Recreate'))).toEqual([])
+})
+
+it('opens a chapter whose earlier seed holds questions as text, carrying them as to-dos once', async () => {
+  const f = await fixture()
+  await f.source()
+  const seed = await buildSeed(f.host, PREPARED)
+  const earlier = {
+    ...seed,
+    questions: [
+      { text: 'Choose 100?', ref: '#100' },
+      { text: 'Question 103', ref: '#103' },
+    ],
+  }
+  await writeSeed(join(f.home, 'chapters', 'fresh-roots'), earlier)
+  await f.close()
+  await requestChapter(f.home, 'fresh-roots')
+  await f.open()
+  const opened = async () => ({
+    todos: (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!.items.map(
+      ({ text, owner }) => ({ text, owner }),
+    ),
+    messages: (await f.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!.messages,
+    applied: (await f.harness.snapshot(SeedState, ROOT_CONVERSATION_ID, context))!.applied,
+  })
+  const after = await opened()
+  expect(after.applied).toBeGreaterThan(0)
+  expect(after.messages).toEqual([])
+  expect(after.todos).toEqual([
+    { text: 'Keep this', owner: 'ultimate' },
+    { text: 'Open question (the-beginning#100): Choose 100?', owner: 'user' },
+    { text: 'Open question (the-beginning#103): Question 103', owner: 'user' },
+  ])
+  await f.close()
+  await f.open()
+  expect(await opened()).toEqual(after)
+})
+
+it('opens a chapter whose seed holds malformed questions, carrying only well-formed ones', async () => {
+  const f = await fixture()
+  await f.source()
+  const seed = await buildSeed(f.host, PREPARED)
+  const card = {
+    id: 100,
+    from: 1,
+    text: 'Question 100',
+    at: 1,
+    questions: [{ text: 'Go?', kind: 'confirm' }],
+  }
+  const malformed = {
+    ...seed,
+    questions: [
+      card,
+      null,
+      'loose text',
+      { id: 101, from: 1, at: 1 },
+      { id: 102, from: 1, text: 'Bad questions', at: 1, questions: 'not a list' },
+      { id: 103, from: 1, text: 'Bad items', at: 1, questions: [null] },
+      { text: 'No ref' },
+      { text: 7, ref: '#104' },
+      { text: 'Kept as text', ref: '#105' },
+    ],
+  } as unknown as Seed
+  await writeSeed(join(f.home, 'chapters', 'fresh-roots'), malformed)
+  await f.close()
+  await requestChapter(f.home, 'fresh-roots')
+  await f.open()
+  const state = await f.harness.snapshot(SeedState, ROOT_CONVERSATION_ID, context)
+  expect(state!.applied).toBeGreaterThan(0)
+  const messages = (await f.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!.messages
+  expect(messages.map((m) => m.carried?.id)).toEqual([100])
+  const todos = (await f.harness.snapshot(Todos, ROOT_CONVERSATION_ID, context))!.items
+  expect(todos.map(({ text }) => text).filter((text) => text.startsWith('Open question'))).toEqual([
+    'Open question (the-beginning#105): Kept as text',
+  ])
+  const ultimate = (await f.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))!.ultimate
+  const morning = async () =>
+    f.harness.commit(
+      async (tx) =>
+        (await tx.scanEntries({ conversationId: ultimate }, 100)).items.filter(
+          (entry) => entry.kind === 'dream.chapter',
+        ),
+      context,
+    )
+  await until(async () => (await morning()).length === 1)
+  expect(JSON.stringify((await morning())[0].model)).toContain(
+    '7 of the open questions in the seed were malformed and were not carried',
+  )
 })
 
 it.each(['on', 'off'] as const)(
@@ -567,6 +698,16 @@ it('seeds a chapter without the optional to-dos extension', async () => {
     (await f.harness.snapshot(SeedState, ROOT_CONVERSATION_ID, context))!.applied,
   ).toBeGreaterThan(0)
   const ultimate = (await f.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))!.ultimate
+  const messages = (await f.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!.messages
+  expect(messages).toHaveLength(2)
+  expect(messages[0]).toMatchObject({
+    from: ultimate,
+    to: 'user',
+    reply: true,
+    state: 'delivered',
+    questions: [{ kind: 'choice', options: [{ label: 'Keep' }, { label: 'Drop' }] }],
+    carried: { chapter: 'the-beginning', id: 100, from: 1 },
+  })
   const conversation = (await f.harness.conversation(ultimate, context))!
   await conversation.waitForIdle(context)
   const view = await conversation.context(context)

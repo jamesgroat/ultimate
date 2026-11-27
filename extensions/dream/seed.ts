@@ -14,18 +14,20 @@ import type { Automation } from '../automations/types.ts'
 import { AutomationsApi } from '../automations/api.ts'
 import { BuiltInDoc, PauseDoc } from './built-ins.ts'
 import type { Prepared } from './refs.ts'
-import type { Seed } from './types.ts'
+import type { CarriedQuestion, SeededAsTextBeforeCardsWereCarried, Seed } from './types.ts'
 import { checkpointEvery } from '../../shared/checkpoint.ts'
 
-export const SeedState = defineDoc<{ applied?: number; automations: string[]; scripts?: string[] }>({
-  kind: 'dream.seed',
-  checkpointWhen: checkpointEvery(100),
-  version: 1,
-  scope: 'conversation',
-  history: 'latest',
-  fork: 'initial',
-  initial: () => ({ automations: [] }),
-})
+export const SeedState = defineDoc<{ applied?: number; automations: string[]; scripts?: string[] }>(
+  {
+    kind: 'dream.seed',
+    checkpointWhen: checkpointEvery(100),
+    version: 1,
+    scope: 'conversation',
+    history: 'latest',
+    fork: 'initial',
+    initial: () => ({ automations: [] }),
+  },
+)
 
 const portableTrigger = (item: Seed['automations'][number]) =>
   (!!item.prompt || !!item.subscribers?.length) && !item.condition?.of.startsWith('#')
@@ -69,14 +71,15 @@ export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promis
         if (!memories[slug] || memory.updated > memories[slug].updated) memories[slug] = memory
       }
     }
-    const questions: Seed['questions'] = []
-    for (const message of (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages) {
-      if (!openQuestion(message)) continue
-      const ref = `#${message.id}`
-      if (message.questions?.length)
-        for (const { text } of message.questions) questions.push({ text, ref })
-      else questions.push({ text: message.text, ref })
-    }
+    const questions = (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages
+      .filter(openQuestion)
+      .map((m) => ({
+        id: m.id,
+        from: m.from,
+        text: m.text,
+        at: m.at,
+        ...(m.questions ? { questions: m.questions } : {}),
+      }))
     for (const slug of about)
       if (!memories[slug]) throw new Error(`Chapter seed lost user memory ${slug}`)
     const todos = (await host.want(TodosApi)?.listOpen(tx)) ?? []
@@ -171,6 +174,16 @@ function chapterText(host: ExtensionHost, seed: Seed) {
     `Carried: ${Object.entries(seed.counts)
       .map(([kind, count]) => `${count} ${kind}`)
       .join(', ')}.`,
+    ...(seed.questions.some(carriedCard)
+      ? [
+          `The user's open cards from ${from.name} are open again in their Inbox, asked in your name with their questions and picks: their answers come to you. Each one's \`carried\` field names the chapter, message and conversation that asked it there.`,
+        ]
+      : []),
+    ...(droppedQuestions(seed)
+      ? [
+          `${droppedQuestions(seed)} of the open questions in the seed were malformed and were not carried: read the open messages to the user in ${from.name} for them.`,
+        ]
+      : []),
     '',
     `Before falling asleep, you wrote this handover to yourself (#${seed.continues.conversation} in ${from.name}):`,
     '<handoff>',
@@ -180,6 +193,24 @@ function chapterText(host: ExtensionHost, seed: Seed) {
     'Greet the user in one or two lines, say you are ready, then continue that work: check what is still open (branches, questions, to-dos) and pick it up. The user may check you in a side chat: what this project is, what is open, what the rules are and who you work with.',
   ].join('\n')
 }
+
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const carriedCard = (question: unknown): question is CarriedQuestion =>
+  record(question) &&
+  typeof question.id === 'number' &&
+  typeof question.at === 'number' &&
+  typeof question.text === 'string' &&
+  (typeof question.from === 'number' || question.from === 'user' || question.from === 'remote') &&
+  (question.questions === undefined ||
+    (Array.isArray(question.questions) && question.questions.every(record)))
+
+const seededAsText = (question: unknown): question is SeededAsTextBeforeCardsWereCarried =>
+  record(question) && typeof question.text === 'string' && typeof question.ref === 'string'
+
+const droppedQuestions = (seed: Seed) =>
+  seed.questions.filter((question) => !carriedCard(question) && !seededAsText(question)).length
 
 export async function applySeed(host: ExtensionHost) {
   const seed = await readJson<Seed | undefined>(join(host.chapter.dir, 'seed.json'), undefined)
@@ -203,30 +234,31 @@ export async function applySeed(host: ExtensionHost) {
       if (receipt.applied !== undefined) return
       const memory = await tx.doc(Memory, ROOT_CONVERSATION_ID)
       Object.assign(memory.memories, seed.memories)
+      const cards = seed.questions.filter(carriedCard)
       const todos = host.want(TodosApi)
       if (todos) {
-      const carried: Seed['todos'] = [
-        ...seed.todos,
-        ...seed.questions.map(({ ref, text }) => ({
-          owner: 'user' as const,
-          text: `Open question (${seed.from.name}${ref}): ${text}`,
-        })),
-        ...seed.scripts
-          .filter(
-            (item) =>
-              item.scope !== 'project' &&
-              !seed.transfers?.some((transfer) => transfer.id === item.id),
-          )
-          .map(({ id, name, ask, schedule, timeout, prompt, agent }) => ({
-            owner: 'ultimate' as const,
-            text: `Recreate ${schedule ? 'scheduled check' : 'script'} ${id} (${name}): ${ask}${schedule ? ` · schedule: ${JSON.stringify(schedule)} · timeout: ${timeout}s` : ''}${prompt ? ` · prompt: ${prompt}${agent ? ` (agent ${agent})` : ''}` : ''}`,
+        const carried: Seed['todos'] = [
+          ...seed.todos,
+          ...seed.questions.filter(seededAsText).map(({ ref, text }) => ({
+            owner: 'user' as const,
+            text: `Open question (${seed.from.name}${ref}): ${text}`,
           })),
-        ...(seed.transfers ?? [])
-          .filter((item) => item.error)
-          .map((item) => ({
-            owner: 'ultimate' as const,
-            text: `Chapter transfer failed for ${item.id} (${item.name}): ${item.error}. Source files retained at ${item.source}; source is retired.`,
-          })),
+          ...seed.scripts
+            .filter(
+              (item) =>
+                item.scope !== 'project' &&
+                !seed.transfers?.some((transfer) => transfer.id === item.id),
+            )
+            .map(({ id, name, ask, schedule, timeout, prompt, agent }) => ({
+              owner: 'ultimate' as const,
+              text: `Recreate ${schedule ? 'scheduled check' : 'script'} ${id} (${name}): ${ask}${schedule ? ` · schedule: ${JSON.stringify(schedule)} · timeout: ${timeout}s` : ''}${prompt ? ` · prompt: ${prompt}${agent ? ` (agent ${agent})` : ''}` : ''}`,
+            })),
+          ...(seed.transfers ?? [])
+            .filter((item) => item.error)
+            .map((item) => ({
+              owner: 'ultimate' as const,
+              text: `Chapter transfer failed for ${item.id} (${item.name}): ${item.error}. Source files retained at ${item.source}; source is retired.`,
+            })),
           ...seed.automations
             .filter((item) => !portableTrigger(item))
             .map(({ name, schedule, event, condition }) => ({
@@ -236,6 +268,19 @@ export async function applySeed(host: ExtensionHost) {
         ]
         for (const item of carried) await todos.addCarried(tx, item)
       }
+      const log = await tx.doc(Messages, ROOT_CONVERSATION_ID)
+      for (const { id, from, text, at, questions } of cards)
+        log.messages.push({
+          id: log.next++,
+          from: ultimate.id,
+          to: 'user',
+          text,
+          at,
+          reply: true,
+          state: 'delivered',
+          ...(questions ? { questions } : {}),
+          carried: { chapter: seed.from.name, id, from },
+        })
       await ultimate.submit(tx, {
         type: 'input',
         requestId: `dream.chapter:${host.chapter.name}`,
