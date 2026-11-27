@@ -1184,6 +1184,49 @@ it("settles an open card once, and returns the user's answer for one they alread
   await expect(settle(9999, 'Yes')).rejects.toThrow('Unknown message 9999')
 })
 
+it.each(['answer', 'dismiss'] as const)(
+  'returns the actual %s rather than an earlier clarification when settling a closed card',
+  async (closing) => {
+    const f = await fixture()
+    const settle = (messageId: number, text: string, dismiss = false) =>
+      actions.settle(
+        { messageId, text, dismiss },
+        { ...f.action(), conversationId: ROOT_CONVERSATION_ID },
+      )
+    const card = await sendMessage(
+      f.host,
+      f.recipient.id,
+      {
+        to: 'user',
+        text: 'Ship it?',
+        questions: [{ text: 'Ship it?', kind: 'confirm' }],
+      },
+      context,
+    )
+    const clarification = await f
+      .service()
+      .answer(card, 'Why now?', context, undefined, undefined, true)
+    await f.opened.harness.waitForIdle(context)
+    expect((await f.log())!.messages.find((m) => m.id === card)?.state).toBe('delivered')
+    const reply =
+      closing === 'answer'
+        ? await f.service().answer(card, 'Yes, ship it', context)
+        : (await settle(card, 'No longer needed', true)).id
+    await f.opened.harness.waitForIdle(context)
+    const before = (await f.log())!.messages
+    const actual = before.find((m) => m.id === reply)!
+    expect(reply).not.toBe(clarification)
+    expect(actual.text).toContain(closing === 'answer' ? 'Yes, ship it' : 'No longer needed')
+    expect(await settle(card, 'Do not send this stale answer')).toEqual({
+      id: reply,
+      alreadySettled: true,
+      state: closing === 'answer' ? 'answered' : 'dismissed',
+      answer: actual.text,
+    })
+    expect((await f.log())!.messages).toHaveLength(before.length)
+  },
+)
+
 it('lets a subagent message only the conversation that started it', async () => {
   const f = await fixture()
   const agent = await f.opened.root.agent(context)

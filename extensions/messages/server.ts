@@ -195,7 +195,9 @@ export const actions = {
     const asked = log?.messages.find((m) => m.id === messageId)
     if (!asked) throw new Error(`Unknown message ${messageId as number}`)
     if (asked.to === 'user' && (asked.state === 'answered' || asked.state === 'dismissed')) {
-      const reply = log!.messages.find((m) => m.re === messageId && m.from === 'user')
+      const reply = log!.messages.find(
+        (m) => m.re === messageId && m.from === 'user' && !m.clarifies,
+      )
       if (reply)
         return {
           id: reply.id,
