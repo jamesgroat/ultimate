@@ -1,7 +1,7 @@
-import { machineHostname } from './machine.ts'
 import type { JsonValue } from '@earendil-works/chord/json'
 import { cloudConfig, fetchRegister } from './cloud.ts'
 import type { Register } from './cloud.ts'
+import { isThisMachine, machineName } from './machine.ts'
 import { projectIdentity } from './project-identity.ts'
 import { readSettings, userSettingsPath } from './settings.ts'
 import type { ExtensionHost } from '../server/extensions.ts'
@@ -75,14 +75,10 @@ async function userConfiguredRemotes(host: Pick<ExtensionHost, 'userHome'>) {
   )
 }
 
-async function machineName(host: Pick<ExtensionHost, 'userHome' | 'notice'>) {
-  return (await cloudConfig(host))?.machine ?? machineHostname()
-}
-
 export async function selfAddress(host: ExtensionHost) {
   const current = (await host.projects()).find((item) => item.current)
   if (!current) throw new Error('This project is not listed among the projects')
-  return { project: current.name, machine: await machineName(host) }
+  return { project: current.name, machine: await machineName(host.userHome) }
 }
 
 export async function locate(host: ExtensionHost, project: string, machine?: string) {
@@ -93,12 +89,20 @@ export async function locate(host: ExtensionHost, project: string, machine?: str
       key: project.includes('/') && item.root ? (await projectIdentity(item.root))?.key : undefined,
     })),
   )
-  const here = machine === undefined ? undefined : machine === (await machineName(host))
   const runsHere = local.some((item) => naming(project)(item) && (item.current || item.running))
+  if (machine === undefined && runsHere) return resolveProject(project, local, undefined)
+  const remotes = await userConfiguredRemotes(host)
+  const here =
+    machine === undefined
+      ? undefined
+      : !remotes.some((item) => item.machine.toLowerCase() === machine.toLowerCase()) &&
+        (await isThisMachine(host.userHome, machine))
   if (here !== false && runsHere) return resolveProject(project, local, undefined)
   if (here !== true) {
-    const named = (await userConfiguredRemotes(host)).filter(
-      (item) => naming(project)(item) && (machine === undefined || item.machine === machine),
+    const named = remotes.filter(
+      (item) =>
+        naming(project)(item) &&
+        (machine === undefined || item.machine.toLowerCase() === machine.toLowerCase()),
     )
     if (named.length > 1)
       throw new Error(
