@@ -37,6 +37,7 @@ import { contextBehavior } from './context.ts'
 import { concludedIn } from './projection.ts'
 import { SubmitAfter, submitAfter } from './submit.ts'
 import {
+  ConclusionGuard,
   ContextUsageDoc,
   ConversationsApi,
   ExternalSessions,
@@ -249,6 +250,8 @@ export async function concludeIn(
     if (found.owner) throw new Error(`Conversation ${id} is owned, not a top-level conversation`)
     await refuseFixed(host, tx, id, 'concluded')
   }
+  const tree = await ownedTree(tx, ids)
+  if (typeof by === 'number') await host.want(ConclusionGuard)?.check(tx, [...tree])
   const ui = await tx.doc(UiState, ROOT_CONVERSATION_ID)
   const previous = ui['ext.conversations.concluded']
   ui['ext.conversations.concluded'] = [
@@ -264,7 +267,6 @@ export async function concludeIn(
       : {}),
     ...Object.fromEntries(ids.map((id) => [id, now])),
   }
-  const tree = await ownedTree(tx, ids)
   await host.emit(tx, Concluded, { conversations: [...tree].toSorted((a, b) => a - b), by })
   return tree
 }

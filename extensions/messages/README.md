@@ -14,11 +14,19 @@ conversation as `#123` or `123`, a standing agent as `@name`, or `user`.
 - **Delivery.** An idle recipient wakes. A busy one gets a follow-up after its current run, or steering with
   `steer: true`, the default for @ultimate's messages and `false` for everyone else. A message to a concluded
   conversation resumes it.
-- **Answers.** With `reply` (the default) the recipient's final answer returns as a `board.reply`, steering the sender;
-  one answer to several of the sender's messages returns once and closes them all. An unanswered input returns a
-  `failed` reply, or `stopped` when a person pressed Stop. Answer directly instead of messaging the sender: a
-  reply-enabled message back to a sender whose message you have read and owe becomes that answer and ends your run. A message still queued is unread and never owed. `reply: false` is one-way: it wakes the
-  recipient and returns nothing.
+- **Answers.** Agent requests require `request {id, action: 'reply', text}` (or codemode `tools.request(...)`).
+  The local id is shown in the input. The caller must be the recipient and the request must remain outstanding;
+  nonempty text completes exactly that request through its stored local or remote return address. The completion
+  and call receipt commit together: replay returns the receipt without sending twice. Ordinary final prose cannot
+  complete requests, including after an explicit reply; unrelated requests remain open. A stopped or failed run
+  still reports its failure. User chat and unsolicited notes are not agent requests. `reply: false` sends only a note.
+- **Continuing work.** `request {id, action: 'work'}` selects an outstanding request for subsequent delegation and
+  acknowledges continuing work in this run without completing it or replacing its owner. Delegation infers one
+  eligible request; several without explicit selection fail closed. Notes never settle or reassign requests.
+- **One reminder.** At final yield, unread requests are excluded. Read, unanswered requests not acknowledged with
+  `work` and not waiting on real delegated work get one durable corrective nudge per run. Ignoring it leaves them
+  open, without a loop. The narrow native tool remains available to restricted-tool agents without granting codemode;
+  explicitly denying it refuses incoming reply-expected requests rather than stranding them.
 - **Images.** `images` forwards images from the sender's own conversation: `'latest'` takes the newest entry with
   images in the current turn (its input, or a tool result such as a screenshot since) and fails when there is none; an
   entry id names an older one. At most `maxImages`, each at most
@@ -55,10 +63,10 @@ report.**
   that run (not concluded, not messaged in the run) with `routed: true`, so a weigh-in reaches the branch. The run's
   other inputs (the user's, another Ultimate's, a card) neither receive it nor keep it from a branch.
 - **Results to the asker.** A branch, waking automation or reply-expected `tell` started by @ultimate can own a request.
-  New work takes it over if the run owes the request, reads its current owner's output or hears from its asker (their
-  newest open request). Only the current owner's result goes back. A branch's result is final once it is concluded;
-  local askers receive a normal early answer and then a one-way result. A local asker that is concluded by then (a
-  branch that landed) gets the result, or the notice that none will come, as a note, so it stays concluded.
+  New work takes over the explicitly selected request, or the sole eligible request read in the run or represented
+  by its current owner's output. Multiple candidates require selection; an asker's one-way update never selects one. Only the current owner's result goes back. A branch's result is final once it is concluded;
+  completion remains explicit after an owner's result arrives; pending output reservations remain separate from ownership.
+  A local asker that is concluded gets the result, or the notice that none will come, as a note, so it stays concluded.
 - **Everything else wakes:** reply-enabled messages and one-way messages from anyone who is not the recipient's child or
   branch.
 
@@ -71,18 +79,23 @@ append ` · run 2/4` (using its label and counts), or ` · not running` when it 
 popover counts branches the conversation started that currently wait on it, rather than inferring a debt from past
 reports. The browser reads `board.started` read-only.
 
+Messages provides `conversations.conclusion-guard`: an agent cannot conclude a branch that owns an unanswered Serving request unless an output is durably pending. User conclusion still permits cancellation and its existing lost-output failure; landing continues to reserve and deliver its card through the existing output route.
+
 ### Messages to the user
 
 A message to `user` shows in the sender's transcript and starts no run. For @ultimate it is its answer: the run ends
 without restating it, unless a reply-enabled message it has read is still open or a branch whose reply or report the
-run read still waits for its answer: the run goes on to its final answer, which routing sends there. While a user's message it has read is
+run read still waits for its answer: the run goes on so it can explicitly answer request ids. Final prose may still route unsolicited feedback to branch reports, but never settles requests. While a user's message it has read is
 open, @ultimate's message to the user answers it and, with `questions`, stays open itself, so it can ask one card after
 another.
 
 A reply-expected message to the user stays open, and its sender shows as awaiting reply, until the user answers that
 message: a Reply with `re` (the answer card or a typed Reply). The delivered input reads `Answer to message N:` before
 the reply, so an asker with several cards open never guesses which one it answers; a spoken (voice) reply answers no
-card while several are open. Dismissing it closes it with a one-way note to the sender. A branch's question also puts an attention pointer (`board.asked`) in the conversation of the standing agent that
+card while several are open. A note sent from a card with questions and none of them answered asks rather than
+answers: the reply carries `clarifies`, reads `Clarification on message N (still open …):`, records a `clarify` input,
+posts no `board.answered`, and the card stays open. When the asker answers that clarification with a new message with
+`questions`, the new card replaces the old one: the old one is `dismissed` with `replacedBy` and no note goes back. Dismissing it closes it with a one-way note to the sender. A branch's question also puts an attention pointer (`board.asked`) in the conversation of the standing agent that
 started it (@ultimate when a coordinator, a side chat or no standing agent started it), and the user's answer a
 `board.answered` note there; neither starts a run. A branch with an open question shows as `waits on you`.
 
@@ -103,7 +116,8 @@ lineage branch from the explicit root, else the caller's tree root, else the onl
 reply-enabled first message; it returns the branch and message ids. `title` (one line, at most 60 characters) names it
 until its summary does. The branch runs the `coordinator` definition (instructions, pinned model and thinking when its
 provider has a login, else the default model) with the caller's tools, labelled `coordinator`, and its caller is
-recorded in `board.started`.
+recorded in `board.started`. Its agent profile records the `coordinator` definition and preserves its creation time;
+an explicit `family` override records `explicitModel`, even when it resolves to the same model.
 
 A branch's decisions go to @ultimate first, which weighs in; the branch then asks the user with a reply-expected message
 with `questions` in its own conversation. Reports that need no answer use `reply: false`.
@@ -113,9 +127,17 @@ with `questions` in its own conversation. Reports that need no answer use `reply
 One @ultimate can message another project's @ultimate, on this machine or over the tailnet; nothing else crosses, and the
 message is never the user's.
 
+For the caller: only @ultimate may call `tell`. `project` is the project's name as `ultimate.projects()` or the
+`remotes` user setting lists it, never a path; `machine` picks one machine from `remotes` when the project runs on
+several. A request from another project's @ultimate is answered with `tools.request({id, action: 'reply', text})`;
+reply-enabled `tell` is refused while that request is open. Use `reply: false` for a one-way update: it neither answers
+the open request nor waits for a reply. A sender names its machine by the `machine` user setting
+([Discovery and settings](../../docs/settings.md)); pin it so peers' `remotes` keep routing when the OS hostname changes.
+
 - **Sender:** codemode `tools.tell({ project, text, reply? })` (@ultimate only) posts the target's `messages.remote`
   action, located as codemode's `{ project }` reads are (`lib/remote.ts`). A failed post throws a sentence naming the
-  project and machine. Telling an Ultimate whose question to you is still open is refused: answer it instead.
+  project and machine. A reply-enabled tell to an Ultimate whose question to you is still open is refused: explicitly
+  answer its local request id instead. A one-way tell (`reply: false`) is allowed while that question stays open.
 - **Target:** `messages.remote { key, text, reply, from: { project, machine } }` delivers to its own primary agent only,
   which reads `Message from @ultimate@<project> on <machine> (another project's Ultimate, not the user)`. A repeated key
   delivers once. A request that expects a reply is refused when the target has no route back to the sender (its
@@ -123,9 +145,9 @@ message is never the user's.
   arrive.
 - **One hop back:** with `reply`, the answer posts to the sender's
   `messages.remoteReply { key, text, failed, stopped?, interim? }` as a reply that expects none.
-- **The reply is the wait.** `board.serving` records one owner per request. An answer that hands a remote request on
-  arrives as an interim note and doesn't wake the asker. The current owner's final result closes the request and
-  wakes the asker. A reply-expected `tell` can own a branch's relay request; the remote result returns to that branch.
+- **The reply is the wait.** `board.serving` records one owner per request. Progress leaves the request open.
+  After the owner's result arrives, explicitly replying completes the selected request and wakes the asker.
+  The existing `remoteReply` wire protocol is unchanged. A reply-expected `tell` can own a branch's relay request; the remote result returns to that branch.
 - **Failures are loud.** Lost owners fail the request once. An answer that cannot be posted wakes the answering
   @ultimate with the cause and the undelivered text. Two Ultimates never loop: a reply expects no answer.
 - **Durable on the sender:** `tell` logs the message and creates the `messages.tell` effect task in one commit; the
@@ -141,6 +163,8 @@ as `@ultimate@<project> on <machine>` with a globe mark and a violet accent.
 the log keeps the newest 300 items, and transcripts retain delivered inputs. `Message` is in `api.ts`: `from` and `to`
 are a conversation id, `'user'` or `'remote'`; `state` is `sent`, `delivered`, `answered`, `dismissed`, `failed` or
 `stopped`; `re`, `entry`, `answer`, `error`, `via`, `remote`, `report`, `questions` and `call` are optional.
+`carried { chapter, id, from }` marks an open card a new chapter's seed carried over (see
+[Dream](../dream/README.md#seed)): asked again by @ultimate, it names the chapter, message and asker it came from.
 
 - `board.message` data: `{ id, from, text, reply, delivery: 'steer' | 'followUp' | 'note', images?, remote?, judged? }`.
 - `board.reply` data: `{ id, re, from, text, failed, stopped?, images?, remote?, interim? }`; `stopped` also sets
@@ -170,7 +194,8 @@ Server side, imported in one direction (`log`, `images`, `addresses`, `questions
 
 - `server.ts`: wiring: the `message` tool, prompt section, hooks, actions, `MessagesApi` and the `workspaces.branches`
   point.
-- `send.ts`: `send()`, validation, receipts, and turning a message to a sender you owe into that answer.
+- `request.ts`: shared native request operation, replay receipts and one corrective nudge per run.
+- `send.ts`: `send()`, validation, receipts, and refusal of inferred agent replies.
 - `delivery.ts`: the `board.delivery` task, owner-output admission and the `board.settle` task that waits for that input.
 - `route.ts`: the `board.route` task: notes, reports (weighed by the judge) and answers back down.
 - `judged.solid.tsx`: the judge's verdict chip on a message card and a branch's final answer.

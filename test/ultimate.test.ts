@@ -94,9 +94,25 @@ async function fixture(onRequest?: (text: string, home: string) => Promise<void>
         return fauxAssistantMessage([fauxToolCall('message', JSON.parse(command.slice(5)))], {
           stopReason: 'toolUse',
         })
-      return fauxAssistantMessage(
-        last.role === 'toolResult' ? `Tool result: ${text}` : `Answer: ${text}`,
+      const answer = last.role === 'toolResult' ? `Tool result: ${text}` : `Answer: ${text}`
+      const request = transcript.messages
+        .flatMap((message) => {
+          if (message.role !== 'user') return []
+          const body = textOf(message.content)
+          return body.startsWith('Message from')
+            ? [...body.matchAll(/\nRequest (\d+):/g)].map((match) => Number(match[1]))
+            : []
+        })
+        .at(-1)
+      if (
+        request !== undefined &&
+        (await log(server)).some((m) => m.id === request && m.reply && m.state === 'delivered')
       )
+        return fauxAssistantMessage(
+          [fauxToolCall('request', { id: request, action: 'reply', text: answer })],
+          { stopReason: 'toolUse' },
+        )
+      return fauxAssistantMessage(answer)
     }
     server.host.faux!.setResponses([route])
     return server
@@ -140,7 +156,7 @@ it('ships a resident Ultimate definition with valid tools; standing addresses cr
   const agent = await (await f.server.harness.conversation(ultimate, context))!.agent(context)
   // mcp exists only while mcpServers names a server; the fixture configures none.
   expect(agent.tools.map((tool) => tool.name).toSorted()).toEqual(
-    definition.tools!.filter((name) => name !== 'mcp').toSorted(),
+    [...definition.tools!.filter((name) => name !== 'mcp'), 'request'].toSorted(),
   )
   // debug is deferred: @ultimate names it, the root agent does not get it.
   expect(definition.tools).toContain('debug')
@@ -335,6 +351,34 @@ it('starts a lineage branch with a message input and caller attribution, returns
     (await entries(f.server, ultimate)).some((entry) =>
       JSON.stringify(entry).includes('Choose a root. Roots: (none)'),
     ),
+  )
+})
+
+it('refuses numeric-address requests after the standing definition denies completion', async () => {
+  const f = await fixture()
+  const dice = await f.subagents.standing('dice', context)
+  const conversation = (await f.server.harness.conversation(dice, context))!
+  expect((await conversation.agent(context)).tools.some((tool) => tool.name === 'request')).toBe(
+    true,
+  )
+  await writeFile(
+    join(f.home, '.ultimate/agents/dice.md'),
+    '---\nname: dice\ndescription: Dice\nresident: true\ntools: [message]\ndenyTools: [request]\n---\nAnswer concisely.',
+  )
+  expect((await conversation.agent(context)).tools.some((tool) => tool.name === 'request')).toBe(
+    true,
+  )
+  await ask(
+    f.server,
+    f.server.root.id,
+    'SEND ' + JSON.stringify({ to: `#${dice}`, text: 'Must not strand' }),
+  )
+  expect((await conversation.agent(context)).tools.some((tool) => tool.name === 'request')).toBe(
+    false,
+  )
+  expect(await log(f.server)).toHaveLength(0)
+  expect(JSON.stringify(await entries(f.server, f.server.root.id))).toContain(
+    'request completion tool is unavailable or denied',
   )
 })
 

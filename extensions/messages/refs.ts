@@ -65,7 +65,15 @@ export type Message = {
   via?: Via
   /** How the judge weighed this branch's final answer before it went to the starter. */
   judged?: Judged
+  /** A user note on an open card that answers none of its questions: the card stays open. */
+  clarifies?: true
+  /** The card the asker sent in answer to a clarification, which closed this one. */
+  replacedBy?: number
+  /** An open card carried over from an earlier chapter: that chapter, its message id there and who asked it. */
+  carried?: Carried
 }
+/** Where an open card carried into a new chapter was asked: the chapter, its message id there and its asker. */
+export type Carried = { chapter: string; id: number; from: ConversationId | 'user' | 'remote' }
 /** Where @ultimate settled a question for the user: its conversation, and the user's input it read the answer from. */
 export type Via = { conversation: ConversationId; entry?: EntryId }
 export type MessagesData = { messages: Message[]; next: number }

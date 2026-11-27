@@ -50,6 +50,33 @@ export const Serving = defineDoc<{
   migrate: () => ({ owners: {} }),
 })
 
+export const RequestRun = defineDoc<{
+  run?: SubmissionId
+  selected?: number
+  acknowledged: number[]
+  nudge?: TaskId
+}>({
+  kind: 'board.request-run',
+  checkpointWhen: () => false,
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ acknowledged: [] }),
+})
+
+export async function requestRun(tx: Tx, to: ConversationId) {
+  const state = await tx.doc(RequestRun, to)
+  const run = (await tx.doc(LiveDoc, to)).run?.inputs[0]
+  if (state.run !== run) {
+    state.run = run
+    delete state.selected
+    delete state.nudge
+    state.acknowledged = []
+  }
+  return state
+}
+
 export const EarlyReplies = defineDoc<{ pending: Record<string, { settledBy?: EntryId }> }>({
   kind: 'board.early-replies',
   checkpointWhen: checkpointEvery(100),
@@ -101,7 +128,11 @@ export async function ownerOutput(
       entry.data.id
     ]?.conversationId
   if (
-    (ReplyEntry.is(entry) || (MessageEntry.is(entry) && !entry.data.reply)) &&
+    (ReplyEntry.is(entry) ||
+      (MessageEntry.is(entry) &&
+        (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.some(
+          (m) => m.id === entry.data.id && m.report,
+        ))) &&
     typeof entry.data.from === 'number' &&
     !entry.data.echo
   )
@@ -111,12 +142,6 @@ export async function ownerOutput(
   return undefined
 }
 
-function asker({ from, remote }: Pick<Serves, 'from' | 'remote'>) {
-  return from === 'remote'
-    ? JSON.stringify([remote?.project, remote?.machine])
-    : `conversation:${from}`
-}
-
 export async function serve(host: ExtensionHost, tx: Tx, to: ConversationId, owner: Owner) {
   if ((await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate !== to) return []
   const inputs = await runInputs(tx, to)
@@ -124,20 +149,7 @@ export async function serve(host: ExtensionHost, tx: Tx, to: ConversationId, own
   if (assignedBy === undefined) return []
   const { owners } = await tx.doc(Serving, ROOT_CONVERSATION_ID)
   const read = new Set(inputs.flatMap((entry) => (MessageEntry.is(entry) ? [entry.data.id] : [])))
-  const authors = new Set(
-    inputs.flatMap((entry) =>
-      MessageEntry.is(entry) &&
-      entry.data.from !== 'user' &&
-      entry.data.from !== undefined &&
-      !entry.data.echo
-        ? [asker({ from: entry.data.from, remote: entry.data.remote })]
-        : [],
-    ),
-  )
   const requests = new Map<number, Serves>()
-  const { pending: early } = await tx.doc(EarlyReplies, ROOT_CONVERSATION_ID)
-  const newest = new Map<string, Serves>()
-  for (const { request } of Object.values(owners)) newest.set(asker(request), request)
   for (const m of (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages) {
     if (m.to !== to || m.from === 'user' || m.ownerSettled || !isOpen(m) || !read.has(m.id))
       continue
@@ -146,13 +158,7 @@ export async function serve(host: ExtensionHost, tx: Tx, to: ConversationId, own
       from: m.from,
       ...(m.remote ? { remote: { ...m.remote } } : {}),
     }
-    early[m.id] ??= {}
     requests.set(m.id, request)
-    if ((newest.get(asker(request))?.message ?? 0) < m.id) newest.set(asker(request), request)
-  }
-  for (const author of authors) {
-    const request = newest.get(author)
-    if (request) requests.set(request.message, request)
   }
   for (const entry of inputs) {
     const output = await ownerOutput(host, tx, to, entry)
@@ -160,8 +166,28 @@ export async function serve(host: ExtensionHost, tx: Tx, to: ConversationId, own
     for (const { request, owner: current } of Object.values(owners))
       if (sameOwner(current, output.owner)) requests.set(request.message, request)
   }
-  for (const request of requests.values())
+  const state = await requestRun(tx, to)
+  const selected = state.selected
+  if (selected !== undefined) {
+    const message = (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.find(
+      (m) => m.id === selected && m.to === to && m.from !== 'user' && isOpen(m) && !m.ownerSettled,
+    )
+    if (!message || message.from === 'user')
+      throw new Error(`Request ${selected} is no longer outstanding`)
+    requests.clear()
+    requests.set(selected, {
+      message: selected,
+      from: message.from,
+      ...(message.remote ? { remote: message.remote } : {}),
+    })
+  }
+  if (requests.size > 1)
+    throw new Error(
+      `Several requests are eligible (${[...requests.keys()].join(', ')}). Select one with request { id, action: 'work' } before delegating.`,
+    )
+  for (const request of requests.values()) {
     owners[request.message] = { request, owner, assignedBy, pending: [] }
+  }
   return [...requests.values()]
 }
 
@@ -218,10 +244,35 @@ export async function servesLine(
       if (owner.kind !== 'branch' || owner.id !== from) return []
       const label = request.remote ? remoteLabel(request.remote) : `#${request.from}`
       return [
-        `\n#${from} works on ${label}'s message ${request.message}. Once #${from} is concluded, your final answer to it goes to ${label} instead.`,
+        `\n#${from} works on ${label}'s message ${request.message}. To return its result to ${label}, explicitly reply to request ${request.message}; final prose leaves it open.`,
       ]
     })
     .join('')
+}
+
+export async function refreshStandingDefinition(
+  host: ExtensionHost,
+  id: ConversationId,
+  ctx: Context,
+) {
+  const index = await host.harness().snapshot(Standing, ROOT_CONVERSATION_ID, ctx)
+  const name = Object.keys(index ?? {}).find((candidate) => index![candidate] === id)
+  if (name === undefined) return
+  const service = host.need(SubagentsApi)
+  if ((await service.residents(ctx)).some((agent) => agent.name === name))
+    await service.standing(name, ctx)
+}
+
+export async function hasRequestTool(host: ExtensionHost, id: ConversationId, ctx: Context) {
+  const agent = await (await host.harness().conversation(id, ctx))?.agent(ctx)
+  return agent?.tools.some((tool) => tool.name === 'request') === true
+}
+
+export async function requireRequestTool(host: ExtensionHost, id: ConversationId, ctx: Context) {
+  if (!(await hasRequestTool(host, id, ctx)))
+    throw new Error(
+      `#${id} cannot accept a reply-expected request: its request completion tool is unavailable or denied. Send a one-way note instead.`,
+    )
 }
 
 export async function parentOf(host: ExtensionHost, id: ConversationId, ctx: Context) {

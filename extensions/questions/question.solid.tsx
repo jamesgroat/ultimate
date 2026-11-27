@@ -2,6 +2,7 @@ import { Check } from '@lucide/solid'
 import type { JSX } from '@solidjs/web'
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 import { Markdown } from '@/components/markdown/markdown.solid.tsx'
+import type { MarkdownOrigin } from '@/components/markdown/source.ts'
 import { Button } from '@/components/ui/button.solid.tsx'
 import { Toggle } from '@/components/ui/toggle.solid.tsx'
 import { cn, PromptBox } from '@/sdk/solid'
@@ -115,6 +116,7 @@ export function QuestionItem(props: {
   onFieldKey: (event: FieldKey) => boolean
   onFieldSend: () => void
   onUploading: (busy: boolean) => void
+  origin?: MarkdownOrigin
 }) {
   const list = createMemo(() => choices(props.question))
   const [active, setActive] = createSignal<number>()
@@ -325,7 +327,7 @@ export function QuestionItem(props: {
                               <span class="text-muted-foreground">No preview for this option.</span>
                             }
                           >
-                            {(text) => <Markdown text={text()} />}
+                            {(text) => <Markdown text={text()} origin={props.origin} />}
                           </Show>
                         </div>
                       </div>

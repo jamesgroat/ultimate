@@ -1133,6 +1133,16 @@ it.concurrent('notes a clean landing without a branch run, concludes and release
     const { owners } = await tx.doc(Serving, ROOT_CONVERSATION_ID)
     const message = log.next++
     const assignedBy = (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: 'test.request' })).id
+    log.messages.push({
+      id: message,
+      from: asker.id,
+      to: ROOT_CONVERSATION_ID,
+      text: 'Land the change',
+      at: 1,
+      reply: true,
+      state: 'delivered',
+      entry: assignedBy,
+    })
     owners[message] = {
       request: { message, from: asker.id },
       owner: { kind: 'branch', id },
@@ -1141,6 +1151,26 @@ it.concurrent('notes a clean landing without a branch run, concludes and release
     }
     return message
   }, context)
+  // The starter explicitly answers the request with the real landing report, not its final prose.
+  const replyToLanding: FauxResponseFactory = (transcript) => {
+    f.prepared.faux!.appendResponses([replyToLanding])
+    const last = transcript.messages.findLast((message) => message.role !== 'system')!
+    const text =
+      typeof last.content === 'string'
+        ? last.content
+        : last.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
+    if (last.role === 'user' && text.startsWith(`#${id} `) && text.includes('landed as'))
+      return fauxAssistantMessage(
+        fauxToolCall('request', {
+          id: request,
+          action: 'reply',
+          text: `Result of #${id}, which worked on your message ${request}:\n\n${text}`,
+        }),
+        { stopReason: 'toolUse' },
+      )
+    return fauxAssistantMessage('finished')
+  }
+  f.prepared.faux!.setResponses([replyToLanding])
   const workspace = (await f.service.get(id, context))!
   const task = f.service.Lander
   const report = task.definition.phases.report

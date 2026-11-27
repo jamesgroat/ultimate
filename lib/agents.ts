@@ -181,7 +181,7 @@ export function definitionAgent(
   const offered = tools.filter(
     (tool) =>
       !excludeTools.includes(tool.name) &&
-      (!definition?.tools || definition.tools.includes(tool.name)),
+      (!definition?.tools || tool.name === 'request' || definition.tools.includes(tool.name)),
   )
   const scriptOnly = offered.some((tool) => tool.name === 'codemode')
     ? parent.callable.filter(
