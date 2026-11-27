@@ -181,8 +181,9 @@ are a conversation id, `'user'` or `'remote'`; `state` is `sent`, `delivered`, `
   recent top-level conversation summaries.
 - `settle({ messageId, text, dismiss? }) → { id }`: from @ultimate's conversation or its side chat, settles the user's
   open question for them from what they said there. `text` is their answer (with `dismiss`, why it no longer matters);
-  the reply records `via`, so the card reads "@ultimate answered for you". Refused for other callers and closed
-  messages. With `dismiss`, it also closes @ultimate's own open `tell` to another project, `text` as the reason.
+  the reply records `via`, so the card reads "@ultimate answered for you". Refused for other callers and unknown
+  messages. A question the user already answered or dismissed is left as it is: settle returns
+  `{ id, alreadySettled: true, state, answer }` with their reply instead of an error. With `dismiss`, it also closes @ultimate's own open `tell` to another project, `text` as the reason.
 
 There is no user posting action: users type in a conversation or answer a card. `host.want(MessagesApi)` (`api.ts`)
 exposes `send`, a one-way message from a conversation, and `answer`, the user's reply to an open message.
