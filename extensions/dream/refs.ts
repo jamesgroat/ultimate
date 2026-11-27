@@ -112,9 +112,18 @@ export const ChaptersAction = actionRef<
 /** `{ chapter }`: restart into an existing, idle chapter. User-only; a returned error means restart failed. */
 export const SwitchAction = actionRef<{ chapter: string }, never>('dream', 'switch')
 
-/** Calls per tool over the trace's window: how often, how often failing, how slow; and enabled tools never called. */
+/** Calls and failures grouped by caller or callee, most calls first. */
+export type CallCounts = {
+  byCaller: { name: string; calls: number; failed: number }[]
+  byCallee: { name: string; calls: number; failed: number }[]
+}
+
+/** Tool statistics and service/action counts in the window; `since` and `until` are its first and last tool calls. */
 export type ToolStats = {
   since?: number
+  until?: number
+  services: CallCounts
+  actions: CallCounts
   calls: number
   tools: { name: string; calls: number; failed: number; avgMs: number }[]
   unused: string[]
@@ -123,8 +132,11 @@ export type ToolStats = {
     name: string
     error: string
     count: number
-    examples: { at: string }[]
+    examples: { at: string; error: string }[]
   }[]
 }
-/** No arguments → tool statistics from `trace.sqlite`, no model involved. */
-export const StatsAction = actionRef<null, ToolStats>('dream', 'stats')
+/** `{ since?, until? }`: inclusive ISO times with Z/offset, or dates at UTC midnight; defaults to the whole chapter trace. Read-only, no model involved. */
+export const StatsAction = actionRef<{ since?: string; until?: string } | null, ToolStats>(
+  'dream',
+  'stats',
+)
