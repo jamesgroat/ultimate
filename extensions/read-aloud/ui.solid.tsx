@@ -10,12 +10,16 @@
  * `paused`, `blocked`, `streaming`) and `items()`; `idle()` resolves once it is done or another source took over. A source may
  * pass `hold` to `load`: while it returns true, a sentence that would start waits paused for that source's `resume`. `voice`, `openaiVoice`, `rate` and their setters are the shared Speech setting;
  * `setKeyed` records OpenAI TTS availability and `setLocal` local TTS readiness, independently of transcription;
- * `warm()` opens the OpenAI connection early; `failure` holds the last
+ * `loadingVoice()` is true while a sentence has waited over a second for its audio; `refresh()` asks which sources are
+ * ready (local stays on once seen ready on this page, so a cold worker is waited for, never swapped for another voice);
+ * `warm()` opens the OpenAI connection or loads the local model early; `failure` holds the last
  * error with the key it stopped.
  */
 export { speech } from './voice.solid.tsx'
 /** What to show while `state().blocked`: the browser refused to play sound before a tap; the player waits paused for `resume` or `toggle`. */
 export { BLOCKED as SOUND_BLOCKED } from './voice.solid.tsx'
+/** How a local voice failure's message starts: the player waits paused on that sentence for `resume` to try again. */
+export { VOICE_UNAVAILABLE } from './voice.solid.tsx'
 /** The page's speech player and its settings. */
 export type { Speech } from './voice.solid.tsx'
 /** Split streamed reply parts, or one text, into sentences with their paragraphs; `estimate` gives a sentence's seconds. */

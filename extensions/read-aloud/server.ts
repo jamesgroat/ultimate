@@ -8,7 +8,7 @@ import { createRealtimeVoice } from './openai-voice.ts'
 import { PrepareAction, SpeakAction, SpeechStatusAction } from './refs.ts'
 import type { OpenAiVoice } from './refs.ts'
 import { plainSpeech, sections, words } from './text.ts'
-import { localSpeech, localSpeechReady } from './local.ts'
+import { localSpeech, localSpeechReady, warmLocalSpeech } from './local.ts'
 import { MAX_SPOKEN, VOICES } from './voices.ts'
 
 const REWRITE_TIMEOUT_MS = 30_000
@@ -103,7 +103,10 @@ export const actions = {
       (typeof text !== 'string' || !text.trim() || text.length > MAX_SPOKEN)
     )
       throw new Error(`Expected text of at most ${MAX_SPOKEN} characters`)
-    if (voice === 'local') return text === undefined ? {} : localSpeech(host, text, signal)
+    if (voice === 'local')
+      return text === undefined
+        ? await warmLocalSpeech(host, signal).then(() => ({}))
+        : localSpeech(host, text, signal)
     const key = await openaiSecretOrNonOAuthKey(host, signal)
     if (!key) throw new Error('OpenAI voice needs OPENAI_API_KEY in ⌘K → Secrets')
     const realtime = realtimeVoice(host)

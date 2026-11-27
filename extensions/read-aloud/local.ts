@@ -39,3 +39,8 @@ export async function localSpeech(host: ExtensionHost, text: string, signal: Abo
     throw new Error('Local speech returned no audio')
   return { audio, mimeType }
 }
+
+export async function warmLocalSpeech(host: ExtensionHost, signal: AbortSignal) {
+  const prefs = (await host.invoke('speak', 'prefs', null, signal)) as { model?: string }
+  await host.invoke('speak', 'mlxWarm', prefs.model ? { model: prefs.model } : {}, signal)
+}

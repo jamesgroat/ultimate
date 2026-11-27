@@ -6,6 +6,7 @@ import {
   Maximize2,
   Minimize2,
   Play,
+  RotateCcw,
   Settings2,
   SquareArrowOutUpRight,
   X,
@@ -74,11 +75,17 @@ import {
   voiceOpen,
   voiceSink,
 } from './dock.solid.tsx'
-import { SpeechStatusAction } from '../read-aloud/refs.ts'
 import { PickAction, StatusAction, VoiceForkDoc, VoiceSessionDoc } from './refs.ts'
 import { PickControl } from '../models/ui.solid.tsx'
 import type { ModelPick } from '../models/ui.solid.tsx'
-import { PlaybackBar, SOUND_BLOCKED, SpeakerBar, speech, VOICES } from '../read-aloud/ui.solid.tsx'
+import {
+  PlaybackBar,
+  SOUND_BLOCKED,
+  SpeakerBar,
+  speech,
+  VOICE_UNAVAILABLE,
+  VOICES,
+} from '../read-aloud/ui.solid.tsx'
 
 import { Voicing, Waveform } from './turns.solid.tsx'
 import { REST, settle, type Snap } from './sheet.ts'
@@ -219,9 +226,32 @@ function Unblock() {
   )
 }
 
+export const voiceFailed = () =>
+  !!dock.error()?.startsWith(VOICE_UNAVAILABLE) && playerState().paused
+
+function Unavailable() {
+  return (
+    <span class="flex min-w-0 flex-1 items-center gap-2" data-voice-unavailable>
+      <span class="truncate text-error" title={dock.error()}>
+        {VOICE_UNAVAILABLE} · the reply is on screen
+      </span>
+      <Button
+        aria-label="Retry the voice"
+        class="h-6 shrink-0 gap-1 rounded-md px-1.5 font-mono text-[11px] font-normal text-brand hover:bg-brand/10"
+        onClick={() => speech.resume()}
+        size={null}
+        variant={null}
+      >
+        <RotateCcw class="size-3" />
+        Retry
+      </Button>
+    </span>
+  )
+}
+
 function VoiceLine(props: { words?: boolean }) {
   const spoken = () => props.words && (playerState().playing || playerState().paused)
-  const blocked = () => playerState().blocked
+  const blocked = () => playerState().blocked || voiceFailed()
   const listening = () => capturing() && !dock.talking()
   const shown = () =>
     blocked() ||
@@ -243,7 +273,7 @@ function VoiceLine(props: { words?: boolean }) {
             <Show
               when={!blocked() && spoken()}
               fallback={
-                <Show when={!blocked()} fallback={<Unblock />}>
+                <Show when={!blocked()} fallback={voiceFailed() ? <Unavailable /> : <Unblock />}>
                   <Show
                     when={activity().current}
                     fallback={
@@ -403,8 +433,17 @@ function PlaybackStrip() {
     >
       <PlaybackBar
         name="Voice dock"
+        loading={speech.loadingVoice()}
         status={
-          playerState().blocked ? SOUND_BLOCKED : playerState().paused ? 'Paused' : 'Speaking'
+          playerState().blocked
+            ? SOUND_BLOCKED
+            : voiceFailed()
+              ? VOICE_UNAVAILABLE
+              : playerState().paused
+                ? 'Paused'
+                : speech.loadingVoice()
+                  ? 'Loading voice…'
+                  : 'Speaking'
         }
         toggle={() => speech.toggle()}
       />
@@ -651,17 +690,8 @@ export function VoicePanel() {
   createEffect(id, (open) => {
     composeIn(open)
   })
-  const speechStatus = useAction(SpeechStatusAction, null, { conversation: ROOT })
-  useEvent('secrets:changed', () => void speechStatus.refetch())
-  createEffect(
-    () => speechStatus.data(),
-    (known) => {
-      if (known !== undefined) {
-        speech.setKeyed(known.openai)
-        speech.setLocal(known.local)
-      }
-    },
-  )
+  speech.refresh()
+  useEvent('secrets:changed', () => speech.refresh())
   createEffect(
     () => [surface(), shown(), summary()?.title] as const,
     ([on, conversation, title]) => {

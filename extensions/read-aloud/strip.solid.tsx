@@ -5,9 +5,7 @@ import {
   column,
   ComposerRedirect,
   events,
-  ROOT,
   switchConversation,
-  useAction,
   useConversation,
   useEvent,
   useExternal,
@@ -15,7 +13,6 @@ import {
 import type { SolidComposerProps } from '@/sdk/solid'
 import { ReadingBar } from './reading-bar.solid.tsx'
 import type { Reading } from './player.solid.tsx'
-import { SpeechStatusAction } from './refs.ts'
 import { speech } from './voice.solid.tsx'
 
 type Player = {
@@ -31,17 +28,8 @@ export function readingStrip(player: Player) {
     const reading = useExternal(player.current, player.subscribe)
     const conversation = useConversation()
     const redirected = useContext(ComposerRedirect)
-    const status = useAction(SpeechStatusAction, null, { conversation: ROOT })
-    useEvent('secrets:changed', () => void status.refetch())
-    createEffect(
-      () => status.data(),
-      (known) => {
-        if (known !== undefined) {
-          speech.setKeyed(known.openai)
-          speech.setLocal(known.local)
-        }
-      },
-    )
+    speech.refresh()
+    useEvent('secrets:changed', () => speech.refresh())
     const [revealing, setRevealing] = createSignal<{
       conversation: ConversationId
       entry: number

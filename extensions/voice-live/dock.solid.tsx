@@ -1,6 +1,6 @@
 import type { ConversationId, EntryRecord } from '@earendil-works/pi-durable'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
-import { createEffect, createMemo, createRoot, createSignal } from 'solid-js'
+import { createEffect, createMemo, createRoot, createSignal, untrack } from 'solid-js'
 import {
   api,
   composerDraft,
@@ -36,6 +36,7 @@ import {
 import type { VoiceClip, VoiceDelivery, VoiceFork, VoiceTurn } from './refs.ts'
 
 export const KEYS = 'mod+shift+v'
+const KEEP_WARM_MS = 5 * 60_000
 type Image = { data: string; mimeType: string }
 export type Phase = 'idle' | 'recording' | 'sending' | 'thinking' | 'speaking' | 'done' | 'error'
 type Local = {
@@ -76,10 +77,21 @@ export const dock = createRoot(() => {
   const [error, setError] = createSignal<string | undefined>()
   const [pending, setPending] = createSignal<string | undefined>()
   const cues = createCues(cuesOn)
+  let shownFailure: string | undefined
   speech.failure.subscribe(() => {
     const failure = speech.failure.get()
-    if (failure?.key !== undefined && loaded.has(failure.key)) setError(failure.message)
+    if (failure?.key !== undefined && loaded.has(failure.key)) {
+      shownFailure = failure.message
+      setError(failure.message)
+    } else if (!failure && shownFailure !== undefined) {
+      if (untrack(error) === shownFailure) setError(undefined)
+      shownFailure = undefined
+    }
   })
+  createEffect(
+    () => open() && speak() && speech.localOn(),
+    (on) => (on ? every(KEEP_WARM_MS, () => speech.warm()) : undefined),
+  )
   let held: { busy: boolean } | undefined
   let stopPulse: (() => void) | undefined
   return {
@@ -234,6 +246,7 @@ export const voiceSink: Sink = {
   },
   start() {
     dock.setError(undefined)
+    if (dock.speak()) speech.warm()
     const speaking = ours().playing
     dock.player.pause()
     dock.hold({

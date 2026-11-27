@@ -17,6 +17,7 @@ export type PlayerState = {
   index: number
   charIndex: number
   playing: boolean
+  audible: boolean
   paused: boolean
   blocked: boolean
   streaming: boolean
@@ -295,6 +296,7 @@ export function createPlayer(options: {
     index: -1,
     charIndex: -1,
     playing: false,
+    audible: false,
     paused: false,
     blocked: false,
     streaming: false,
@@ -319,7 +321,14 @@ export function createPlayer(options: {
     if (!item) return
     if (options.listening()) {
       engine.halt()
-      publish({ index, charIndex: -1, playing: false, paused: true, blocked: false })
+      publish({
+        index,
+        charIndex: -1,
+        playing: false,
+        audible: false,
+        paused: true,
+        blocked: false,
+      })
       return
     }
     const mine = ++token
@@ -337,6 +346,7 @@ export function createPlayer(options: {
     const start = (seconds?: number) => {
       if (mine !== token) return
       audible = Date.now()
+      publish({ audible: true })
       const speed =
         seconds && Number.isFinite(seconds) ? item.text.length / seconds : charsPerSecond(rate)
       stopWordClock = options.frame(() => {
@@ -353,14 +363,22 @@ export function createPlayer(options: {
       stopWordClock?.()
       if (audible !== undefined) learn(rate, item.text.length, (Date.now() - audible) / 1000)
       if (items[index + 1]) play(index + 1)
-      else publish({ playing: false, charIndex: -1 })
+      else publish({ playing: false, audible: false, charIndex: -1 })
     }
     const blocked = () => {
       if (mine !== token) return
       halt()
-      publish({ charIndex: -1, playing: false, paused: true, blocked: true })
+      publish({ charIndex: -1, playing: false, audible: false, paused: true, blocked: true })
     }
-    publish({ index, charIndex: -1, playing: true, paused: false, blocked: false, startedAt })
+    publish({
+      index,
+      charIndex: -1,
+      playing: true,
+      audible: index > 0 && state.get().audible,
+      paused: false,
+      blocked: false,
+      startedAt,
+    })
     engine.say(item.text, rate, { start, boundary, end: finished, blocked })
     prefetchNext()
   }
@@ -404,6 +422,7 @@ export function createPlayer(options: {
         index: -1,
         charIndex: -1,
         playing: false,
+        audible: false,
         paused: false,
         blocked: false,
         streaming,
@@ -428,7 +447,7 @@ export function createPlayer(options: {
     pause() {
       if (!state.get().playing) return false
       halt()
-      publish({ playing: false, paused: true })
+      publish({ playing: false, audible: false, paused: true })
       return true
     },
     resume() {
@@ -442,7 +461,14 @@ export function createPlayer(options: {
     },
     stop() {
       drop()
-      publish({ playing: false, paused: false, blocked: false, streaming: false, charIndex: -1 })
+      publish({
+        playing: false,
+        audible: false,
+        paused: false,
+        blocked: false,
+        streaming: false,
+        charIndex: -1,
+      })
     },
     sentence(step: number) {
       if (items.length) play(Math.min(items.length - 1, Math.max(0, state.get().index + step)))

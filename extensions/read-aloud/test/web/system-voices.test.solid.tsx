@@ -94,3 +94,19 @@ it('uses browser speech without a local engine and keeps shared-player source ow
   expect(harness.said).toEqual(['Hello there.'])
   expect(harness.spoken).toEqual([])
 })
+
+it('keeps Local on once ready: a later stale not-ready never hands a reply to the system voice', async () => {
+  const synth = new FakeSynth()
+  synth.voices = [{ name: 'Device voice' }]
+  const { speech, say } = await speakWith(synth)
+  speech.setVoice('local')
+  speech.setKeyed(false)
+  speech.setLocal(true)
+  flush()
+  speech.setLocal(false)
+  flush()
+  expect(speech.localOn()).toBe(true)
+  say()
+  await vi.waitFor(() => expect(harness.spoken).toEqual(['Hello there.']))
+  expect(harness.said).toEqual([])
+})

@@ -7,6 +7,7 @@ import { Toggle } from '@/components/ui/toggle.solid.tsx'
 import { inProcess } from '../../lib/errors.ts'
 import { capture, talkMode } from '../dictation/ui.solid.tsx'
 import type { Take } from '../dictation/ui.solid.tsx'
+import { speech } from '../read-aloud/ui.solid.tsx'
 import { dock, playerState, voiceSink } from './dock.solid.tsx'
 import { Waveform } from './turns.solid.tsx'
 
@@ -117,7 +118,7 @@ export function TalkBar(props: { onTalk?: () => void; settings?: JSX.Element }) 
           : 'Hold to talk'
   const status = () => {
     if (dock.error()) return dock.error()
-    if (playerState().playing) return 'Speaking'
+    if (playerState().playing) return speech.loadingVoice() ? 'Loading voice…' : 'Speaking'
     if (playerState().paused) return 'Paused'
     if (busy()) return dock.status() ?? 'Thinking…'
     const said = dock.status()
