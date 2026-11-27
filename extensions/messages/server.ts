@@ -393,7 +393,7 @@ export default function messages(host: ExtensionHost) {
       defineTool({
         name: 'message',
         description:
-          'Send a message to #id or @name; it returns immediately. A busy recipient gets it after its current run, or during it with steer: true (the default for @ultimate). images forwards screenshots or other images from your conversation, to an agent or to the user. Agent requests must be answered with request {id, action: "reply", text}, not message or final prose. A message to the user whose message you owe answers it (with its images and questions), and ends your run unless an agent still waits for your answer or a branch whose reply or report you read in this run does. Sent from codemode or beside other calls in its tool round, it never ends the run.',
+          'Send a message to #id or @name; it returns immediately. A worker or subagent messages only its parent (the conversation that started it). A busy recipient gets it after its current run, or during it with steer: true (the default for @ultimate). images forwards screenshots or other images from your conversation, to an agent or to the user. Agent requests must be answered with request {id, action: "reply", text}, not message or final prose. A message to the user whose message you owe answers it (with its images and questions), and ends your run unless an agent still waits for your answer or a branch whose reply or report you read in this run does. Sent from codemode or beside other calls in its tool round, it never ends the run.',
         parameters: obj({
           to: str(),
           text: str({ minLength: 1 }),

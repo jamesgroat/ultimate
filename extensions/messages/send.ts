@@ -110,7 +110,7 @@ export async function send(
   const starter = parent ?? (await starterOf(host, from, ctx))
   if (input.to === 'user' && parent !== undefined)
     throw new Error(
-      `A subagent answers the conversation that started it: give your final answer, or message #${parent}.`,
+      `A worker or subagent messages only its parent (#${parent}), the conversation that started it. Answer agent requests with request {id, action: 'reply', text}, never message to the asker.`,
     )
   if (!input.text.trim()) throw new Error('Message text must not be empty')
   if (input.questions !== undefined && (input.to !== 'user' || input.reply === false))
@@ -118,7 +118,7 @@ export async function send(
   const questions = input.questions === undefined ? undefined : checkQuestions(input.questions)
   if (parent !== undefined && input.to.replace(/^#/, '') !== String(parent))
     throw new Error(
-      `Subagents report to the conversation that started them: message only #${parent}. Your final answer reaches it anyway.`,
+      `A worker or subagent messages only its parent (#${parent}), the conversation that started it. Answer agent requests with request {id, action: 'reply', text}, never message to the asker.`,
     )
   const to = await resolveRecipient(host, input.to, from, ctx)
   if (from !== 'user' && typeof to === 'number' && input.reply !== false) {

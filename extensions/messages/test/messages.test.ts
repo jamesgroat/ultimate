@@ -1264,11 +1264,13 @@ it('lets a subagent message only the conversation that started it', async () => 
   const workerId = await child(true)
   await send(workerId, 'user')
   expect(f.observed.join('\n')).toContain(
-    'A subagent answers the conversation that started it: give your final answer, or message #1.',
+    "A worker or subagent messages only its parent (#1), the conversation that started it. Answer agent requests with request {id, action: 'reply', text}, never message to the asker.",
   )
   await send(workerId, `#${f.recipient.id}`)
   await send(workerId, '#1')
-  expect(f.observed.filter((text) => text.includes('message only #1'))).toHaveLength(1)
+  expect(f.observed.filter((text) => text.includes('messages only its parent (#1)'))).toHaveLength(
+    2,
+  )
   expect((await f.log())!.messages.map((m) => [m.from, m.to])).toEqual([[workerId, 1]])
   const view = await (await f.opened.harness.conversation(workerId, context))!.context(context)
   expect(JSON.stringify(view.entries)).toContain('Use message only to update #1')
