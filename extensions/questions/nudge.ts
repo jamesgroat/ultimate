@@ -4,8 +4,10 @@ import {
   hook,
   LiveDoc,
   ROOT_CONVERSATION_ID,
+  ToolTask,
 } from '@earendil-works/pi-durable'
-import type { SubmissionId, TaskId } from '@earendil-works/pi-durable'
+import type { HookApi, SubmissionId, TaskId } from '@earendil-works/pi-durable'
+import type { Context } from '@earendil-works/chord/context'
 import { meansNone } from '../../lib/errors.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { Messages } from '../messages/api.ts'
@@ -49,6 +51,7 @@ export function finalAsk(text: string) {
   )
     return true
   const prose = stripQuotes(unquoted)
+  if (/\bif you (?:want|would like|prefer)\b[^.!?\n]*\bsay so\b/i.test(prose)) return true
   const start = /(?:^|[.!]\s+|\n)\s*(?:[-*]\s+)?(?:[^:.!?\n]{1,40}:\s+)?/.source
   if (
     new RegExp(
@@ -204,26 +207,28 @@ const NUDGE =
   'Your final prose appears to ask the user for a decision, but it has no answer card. If a response is needed, send the actual question with message { to: "user", text, questions } using the appropriate question kinds and options. Otherwise state your conclusion without asking. Do not invent or answer a decision. This is the only corrective nudge for this run.'
 
 export function finalAskNudge(host: ExtensionHost) {
-  return hook(GenerationTask, {
-    onYield: async (answer, api, ctx) => {
-      const text = answer.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('')
-      const matched = finalAsk(text)
-      if (!matched && !host.want(ClassifyApi)) return undefined
-      if (
-        (await api.snapshot(Standing, ROOT_CONVERSATION_ID, ctx))?.ultimate !== api.conversationId
-      )
-        return undefined
-      const user = (await readSettings(userSettingsPath(host.userHome)).catch(meansNone)) ?? {}
-      const project = await host.projectSettings()
-      type Config = { questions?: { nudgeFinalAsk?: boolean } }
-      const enabled =
-        (project as Config).questions?.nudgeFinalAsk ?? (user as Config).questions?.nudgeFinalAsk
-      if (enabled === false) return undefined
-      const conversation = await host.harness().conversation(api.conversationId, ctx)
-      if (!(await conversation?.agent(ctx))?.tools.some((tool) => tool.name === 'message'))
-        return undefined
-      const run = (await api.snapshot(LiveDoc, api.conversationId, ctx))?.run
-      if (!run?.inputs.length) return undefined
+  async function nudge(text: string, api: HookApi, ctx: Context, message?: number) {
+    const matched = finalAsk(text)
+    if (!matched && !host.want(ClassifyApi)) return undefined
+    if (
+      message === undefined &&
+      (await api.snapshot(Standing, ROOT_CONVERSATION_ID, ctx))?.ultimate !== api.conversationId
+    )
+      return undefined
+    const user = (await readSettings(userSettingsPath(host.userHome)).catch(meansNone)) ?? {}
+    const project = await host.projectSettings()
+    type Config = { questions?: { nudgeFinalAsk?: boolean } }
+    const enabled =
+      (project as Config).questions?.nudgeFinalAsk ?? (user as Config).questions?.nudgeFinalAsk
+    if (enabled === false) return undefined
+    const conversation = await host.harness().conversation(api.conversationId, ctx)
+    if (!(await conversation?.agent(ctx))?.tools.some((tool) => tool.name === 'message'))
+      return undefined
+    const run = (await api.snapshot(LiveDoc, api.conversationId, ctx))?.run
+    if (!run?.inputs.length) return undefined
+    const attempted = await api.snapshot(Attempt, api.conversationId, ctx)
+    if (attempted?.run === run.inputs[0] && attempted.generation !== api.taskId) return undefined
+    if (message === undefined)
       for (const id of run.inputs) {
         const input = await (await host.harness().submission(id, ctx))?.status(ctx)
         if (input?.type !== 'input' || input.status !== 'placed') return undefined
@@ -239,34 +244,63 @@ export function finalAskNudge(host: ExtensionHost) {
         )
           return undefined
       }
-      if (!matched && !(await classifiedAsk(host, text, ctx.abortSignal))) return undefined
-      const open = (
-        (await api.snapshot(Messages, ROOT_CONVERSATION_ID, ctx))?.messages ?? []
-      ).filter((m) => m.from === api.conversationId && openQuestion(m))
-      const covered = open.length
-        ? await coveringCards(host, text, open, ctx.abortSignal)
-        : new Set<number>()
-      const claimed = await host.harness().commit(async (tx) => {
-        const current = (await tx.doc(LiveDoc, api.conversationId)).run
-        if (
-          current?.taskId !== api.taskId ||
-          current.inputs.length !== run.inputs.length ||
-          current.inputs.some((id, i) => id !== run.inputs[i])
+    if (!matched && !(await classifiedAsk(host, text, ctx.abortSignal))) return undefined
+    const open = ((await api.snapshot(Messages, ROOT_CONVERSATION_ID, ctx))?.messages ?? []).filter(
+      (m) => m.from === api.conversationId && openQuestion(m),
+    )
+    const covered = open.length
+      ? await coveringCards(host, text, open, ctx.abortSignal)
+      : new Set<number>()
+    const claimed = await host.harness().commit(async (tx) => {
+      const current = (await tx.doc(LiveDoc, api.conversationId)).run
+      if (
+        current?.taskId !== run.taskId ||
+        current.inputs.length !== run.inputs.length ||
+        current.inputs.some((id, i) => id !== run.inputs[i])
+      )
+        return false
+      if (
+        (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.some(
+          (m) => m.from === api.conversationId && openQuestion(m) && covered.has(m.id),
         )
-          return false
-        if (
-          (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.some(
-            (m) => m.from === api.conversationId && openQuestion(m) && covered.has(m.id),
-          )
+      )
+        return false
+      const attempt = await tx.doc(Attempt, api.conversationId)
+      if (attempt.run === run.inputs[0]) return attempt.generation === api.taskId
+      attempt.run = run.inputs[0]
+      attempt.generation = api.taskId
+      return true
+    }, ctx)
+    return claimed
+      ? message === undefined
+        ? NUDGE
+        : `Message ${message}: ${NUDGE.replace('Your final prose', 'Your message to the user')}`
+      : undefined
+  }
+  return [
+    hook(GenerationTask, {
+      onYield: async (answer, api, ctx) => {
+        const text = answer.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('')
+        const correction = await nudge(text, api, ctx)
+        return correction ? { continue: correction } : undefined
+      },
+    }),
+    hook(ToolTask, {
+      afterTool: async (call, result, api, ctx) => {
+        if (call.name !== 'message' || result.isError) return undefined
+        const messages = (await api.snapshot(Messages, ROOT_CONVERSATION_ID, ctx))?.messages ?? []
+        const sent = messages.find(
+          (m) => m.from === api.conversationId && m.to === 'user' && m.call === call.id,
         )
-          return false
-        const attempt = await tx.doc(Attempt, api.conversationId)
-        if (attempt.run === run.inputs[0]) return attempt.generation === api.taskId
-        attempt.run = run.inputs[0]
-        attempt.generation = api.taskId
-        return true
-      }, ctx)
-      return claimed ? { continue: NUDGE } : undefined
-    },
-  })
+        if (!sent || sent.questions?.length) return undefined
+        const correction = await nudge(sent.text, api, ctx, sent.id)
+        if (!correction) return undefined
+        return {
+          ...result,
+          control: undefined,
+          output: [...(result.output ?? []), { type: 'text', text: correction }],
+        }
+      },
+    }),
+  ]
 }

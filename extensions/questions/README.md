@@ -39,11 +39,15 @@ with a line listing it by its questions (see [Messages](../messages/README.md)).
 By default, `questions.nudgeFinalAsk` gives the primary standing Ultimate one corrective continuation when a final
 answer contains a clear prose ask such as “Want me to…” or “Should I…”, or asks for a go without a question mark
 (“Say go when you want it”, “Reply with go”). Set it to `false` in user or project settings
-to opt out; disabling this optional extension also removes the nudge. This is a fork-specific exception to the
+to opt out; disabling this optional extension also removes the nudge. The same receipt also covers a `message`
+tool call to the user without `questions`, including a one-way message that would otherwise end the run. Its tool
+result names the sent message id and asks for a corrective card. This applies to user-directed messages from branches
+as well as the standing agent, regardless of what started their run; it never inspects branch-to-branch messages.
+Messages already carrying questions are left alone. This is a fork-specific exception to the
 repository's prompt-only behavioural policy, not a guarantee that every question will be caught.
 
-Only current runs whose placed inputs all come from the user qualify (typed input, a voice utterance, or a Messages
-input attributed to the user). Peer, branch, subagent, automation and unknown or mixed origins are excluded, regardless
+For final prose, only current runs whose placed inputs all come from the user qualify (typed input, a voice utterance, or a Messages
+input attributed to the user). Peer, branch, subagent, automation and unknown or mixed origins are excluded from final-prose checks, regardless
 of their model role. Watchdog's automatic retry submissions are excluded by their `watchdog-retry:` request provenance,
 even though they use the same `pi.user` entry kind as typed input. The message tool must be available and no open native
 answer card of the conversation may already cover the ask: classify judges each open card against the closing text
@@ -52,7 +56,8 @@ questions share at least 30% of the closing paragraphs' content words (Jaccard),
 silences the nudge.
 The heuristic ignores code and quoted text (a quoted “go” after say or reply still counts) and does not treat arbitrary
 question marks or mentions of a go as asks. It also catches an ask after a short `**Label:**` and an answer ending in
-“let me know which/whether…”, “tell me which/whether…” or “confirm and I…”.
+“let me know which/whether…”, “tell me which/whether…”, “confirm and I…” or “If you want …, say so”.
+Final prose and user messages share one attempt per run; sending another uncarded ask does not trigger another nudge.
 
 When the heuristic finds nothing and the optional [classify](../classify/README.md) extension is on, the closing part
 of the answer's prose goes to TypeSafe's Jev: code blocks and quoted lines removed, then its last two paragraphs

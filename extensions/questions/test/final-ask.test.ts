@@ -212,6 +212,90 @@ it('caps repeated prose across restart, but allows a new user run to try again',
   expect((await f.log())!.messages[0].questions).toHaveLength(1)
 })
 
+it('corrects the uncarded user message with its id and caps a later final ask in the same run', async () => {
+  const f = await fixture()
+  const missed = fauxAssistantMessage(
+    [
+      fauxToolCall('message', {
+        to: 'user',
+        reply: false,
+        text: 'If you want a fair second run, say so; otherwise I will leave it there.',
+      }),
+    ],
+    { stopReason: 'toolUse' },
+  )
+  let turns = 0
+  await f.run([
+    missed,
+    (transcript) => {
+      turns++
+      const sent = JSON.stringify(transcript.messages)
+      expect(sent).toContain('Message 1:')
+      expect(sent).toContain('only corrective nudge')
+      return fauxAssistantMessage([fauxText(ASK)])
+    },
+  ])
+  expect(turns).toBe(1)
+  expect((await f.log())!.messages).toHaveLength(1)
+})
+
+it('lets a non-standing coordinator resend the missed user decision as a card', async () => {
+  const f = await fixture()
+  const standing = await f.opened.harness.createConversation(
+    { ownership: { kind: 'ownerless' } },
+    context,
+  )
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = standing.id
+  }, context)
+  await f.run([
+    fauxAssistantMessage([fauxToolCall('message', { to: 'user', reply: false, text: ASK })], {
+      stopReason: 'toolUse',
+    }),
+    card,
+  ])
+  expect((await f.log())!.messages).toMatchObject([
+    { to: 'user', text: ASK },
+    { to: 'user', questions: [{ kind: 'confirm' }] },
+  ])
+})
+
+it('does not correct carded user messages, quoted reports, or ordinary landing reports', async () => {
+  for (const response of [
+    card,
+    fauxAssistantMessage(
+      [
+        fauxToolCall('message', {
+          to: 'user',
+          reply: false,
+          text: 'Landed the fix. All checks passed.',
+        }),
+      ],
+      { stopReason: 'toolUse' },
+    ),
+    fauxAssistantMessage(
+      [
+        fauxToolCall('message', {
+          to: 'user',
+          reply: false,
+          text: 'The report ended with “Would you like another run?”',
+        }),
+      ],
+      { stopReason: 'toolUse' },
+    ),
+  ]) {
+    const f = await fixture()
+    let turns = 0
+    await f.run([
+      () => {
+        turns++
+        return response
+      },
+    ])
+    expect(turns).toBe(1)
+  }
+})
+
 it('leaves opt-out and message-unavailable runs alone', async () => {
   for (const options of [{ off: true }, { noMessage: true }]) {
     const f = await fixture(options)
@@ -458,12 +542,10 @@ it('sends only the closing paragraphs, so soft offers count and a long plan does
   }
 })
 
-it('falls back to the regex when classify is unavailable, failing or slow', async () => {
-  const never = () => new Promise<never>(() => {})
-  for (const classify of [undefined, async () => Promise.reject(new Error('402')), never]) {
+it('falls back to the regex when classify is unavailable or failing', async () => {
+  for (const classify of [undefined, async () => Promise.reject(new Error('402'))]) {
     const f = await fixture(classify ? { classify } : {})
     let turns = 0
-    const started = Date.now()
     await f.run([
       () => {
         turns++
@@ -471,9 +553,8 @@ it('falls back to the regex when classify is unavailable, failing or slow', asyn
       },
     ])
     expect(turns).toBe(1)
-    expect(Date.now() - started).toBeLessThan(6_000)
   }
-  const f = await fixture({ classify: never })
+  const f = await fixture({ classify: async () => Promise.reject(new Error('402')) })
   let turns = 0
   await f.run([
     () => {

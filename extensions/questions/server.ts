@@ -54,5 +54,5 @@ export const actions = {
 
 export default function questionsExtension(host: ExtensionHost) {
   host.need(MessagesApi)
-  return defineExtension({ name: 'questions', hooks: [finalAskNudge(host)] })
+  return defineExtension({ name: 'questions', hooks: finalAskNudge(host) })
 }
