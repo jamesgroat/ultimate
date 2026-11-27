@@ -34,9 +34,12 @@ export function readingStrip(player: Player) {
     const status = useAction(SpeechStatusAction, null, { conversation: ROOT })
     useEvent('secrets:changed', () => void status.refetch())
     createEffect(
-      () => status.data()?.openai,
+      () => status.data(),
       (known) => {
-        if (known !== undefined) speech.setKeyed(known)
+        if (known !== undefined) {
+          speech.setKeyed(known.openai)
+          speech.setLocal(known.local)
+        }
       },
     )
     const [revealing, setRevealing] = createSignal<{

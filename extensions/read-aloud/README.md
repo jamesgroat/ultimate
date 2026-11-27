@@ -9,12 +9,13 @@ lightly rewritten for listening.
   paragraph. A source can pass a hold (voice passes its own microphone): a sentence that would start then waits,
   paused, for that source to resume it. Voice mode and the speaker both play through it;
   `ui.solid.tsx` is the contract other extensions use.
+- **Local speech:** when the optional user `speak` extension is configured for MLX and ready, Local uses its saved model, voice and rate through `render`, retaining the returned audio MIME type. No model or path settings are migrated. Local is the default for an unset Speech selection; existing explicit System/OpenAI selections remain unchanged. When local setup is absent, Local retains the upstream default: OpenAI when a key exists, otherwise the browser. A render failure is shown for retry, never silently rerouted to a paid source. Local STT readiness does not enable TTS.
 - **The voices:** the browser's `speechSynthesis`, or OpenAI's Realtime `gpt-realtime-2.1-mini` through the `speak`
   action (`openai-voice.ts`), with the `OPENAI_API_KEY` secret or an API key Pi's `openai` provider holds. The OpenAI
   voice fetches each sentence clause by clause and the next sentence while one plays; stopping aborts every request in
   flight, which cancels its response.
-- **The Speech setting** is shared by read-aloud and voice: voice (OpenAI by default when a key is set, else the
-  system voice), the OpenAI voice (cedar by default) and the speed (1.1× by default), in UI state
+- **The Speech setting** is shared by read-aloud and voice: voice (Local by default, falling back to upstream's
+  OpenAI-when-keyed or system voice), the OpenAI voice (cedar by default) and the speed (1.1× by default), in UI state
   `ext.read-aloud.voice`, `ext.read-aloud.openai-voice` and `ext.read-aloud.rate`. Voice settings shows them all;
   the reading strip cycles the speed.
 - **The button** sits in the hover action row of agent answers and message cards (`messageActions`), between Go back

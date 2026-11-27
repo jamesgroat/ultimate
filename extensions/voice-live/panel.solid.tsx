@@ -74,6 +74,7 @@ import {
   voiceOpen,
   voiceSink,
 } from './dock.solid.tsx'
+import { SpeechStatusAction } from '../read-aloud/refs.ts'
 import { PickAction, StatusAction, VoiceForkDoc, VoiceSessionDoc } from './refs.ts'
 import { PickControl } from '../models/ui.solid.tsx'
 import type { ModelPick } from '../models/ui.solid.tsx'
@@ -342,6 +343,7 @@ function Settings(props: { name?: string }) {
 function SpeechVoice() {
   const keyed = () => speech.keyed() === true
   const voiceNote = () => {
+    if (speech.localOn()) return 'Local speech · saved speak model, voice and rate'
     const needsKey = speech.keyed() === false && 'OpenAI voice needs OPENAI_API_KEY in ⌘K → Secrets'
     if (speech.voiced()) return needsKey
     if (needsKey) return `No system voices in this browser. ${needsKey}`
@@ -353,8 +355,14 @@ function SpeechVoice() {
         Voice
         <SegmentedControl
           aria-label="Speech voice"
-          bind={[() => (speech.openaiOn() ? 'openai' : 'system'), speech.setVoice]}
+          bind={[
+            () => (speech.localOn() ? 'local' : speech.openaiOn() ? 'openai' : 'system'),
+            speech.setVoice,
+          ]}
         >
+          <SegmentedControlItem disabled={!speech.local()} value="local">
+            Local
+          </SegmentedControlItem>
           <SegmentedControlItem disabled={!speech.voiced()} value="system">
             System
           </SegmentedControlItem>
@@ -640,15 +648,18 @@ export function VoicePanel() {
   const surface = useSurface()
   const shown = useConversationId()
   const summary = useConversationSummary(shown)
-  const status = useAction(StatusAction, null, { conversation: ROOT })
-  useEvent('secrets:changed', () => void status.refetch())
   createEffect(id, (open) => {
     composeIn(open)
   })
+  const speechStatus = useAction(SpeechStatusAction, null, { conversation: ROOT })
+  useEvent('secrets:changed', () => void speechStatus.refetch())
   createEffect(
-    () => status.data()?.transcribes,
+    () => speechStatus.data(),
     (known) => {
-      if (known !== undefined) speech.setKeyed(known)
+      if (known !== undefined) {
+        speech.setKeyed(known.openai)
+        speech.setLocal(known.local)
+      }
     },
   )
   createEffect(

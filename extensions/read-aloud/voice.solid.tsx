@@ -12,7 +12,10 @@ import { VOICES } from './voices.ts'
 export const BLOCKED = 'Tap ▶ to let this page play sound'
 
 export const speech = createRoot(() => {
-  const [voice, setVoice] = useUiState<'system' | 'openai'>('ext.read-aloud.voice', 'openai')
+  const [voice, setVoice] = useUiState<'system' | 'openai' | 'local'>(
+    'ext.read-aloud.voice',
+    'local',
+  )
   const [storedVoice, setOpenaiVoice] = useUiState('ext.read-aloud.openai-voice', 'cedar')
   const openaiVoice = (): OpenAiVoice => {
     const stored = storedVoice()
@@ -20,26 +23,31 @@ export const speech = createRoot(() => {
   }
   const [rate, setRate] = useUiState('ext.read-aloud.rate', 1.1)
   const [keyed, setKeyed] = createSignal<boolean | undefined>()
+  const [local, setLocal] = createSignal(false)
   const failure = cell<{ key?: string; message: string } | undefined>(undefined)
   const voices = systemVoices()
   const [voiced, setVoiced] = createSignal(voices.some())
   voices.subscribe(() => setVoiced(voices.some()))
-  const openaiOn = () => keyed() === true && (voice() === 'openai' || !voiced())
-  const openai = fetchedVoice({
-    load: async (text, signal) => {
-      const { audio } = await api.action(
-        SpeakAction,
-        { voice: openaiVoice(), text },
-        { conversationId: ROOT, signal },
-      )
-      return `data:audio/wav;base64,${audio}`
-    },
-    audio: new Audio(),
-    failed: (error) => {
-      failure.set({ key: player.state.get().key, message: `OpenAI voice: ${errorMessage(error)}` })
-      player.stop()
-    },
-  })
+  const localOn = () => voice() === 'local' && local()
+  const openaiOn = () => !localOn() && keyed() === true && (voice() !== 'system' || !voiced())
+  const fetched = (source: 'local' | 'openai') =>
+    fetchedVoice({
+      load: async (text, signal) => {
+        const { audio, mimeType } = await api.action(
+          SpeakAction,
+          { voice: source === 'local' ? 'local' : openaiVoice(), text },
+          { conversationId: ROOT, signal },
+        )
+        return `data:${mimeType ?? 'audio/wav'};base64,${audio}`
+      },
+      audio: new Audio(),
+      failed: (error) => {
+        failure.set({ key: player.state.get().key, message: `Speech: ${errorMessage(error)}` })
+        player.stop()
+      },
+    })
+  const openai = fetched('openai')
+  const localVoice = fetched('local')
   const system = systemVoice()
   let holding = () => false
   const player = createPlayer({
@@ -47,14 +55,18 @@ export const speech = createRoot(() => {
     enabled: () => true,
     listening: () => holding(),
     frame: animationFrames,
-    engine: () => (openaiOn() ? openai : system),
+    engine: () => (localOn() ? localVoice : openaiOn() ? openai : system),
   })
-  createEffect(openaiOn, () => player.switched())
+  createEffect(
+    () => (localOn() ? 'local' : openaiOn() ? 'openai' : 'system'),
+    () => player.switched(),
+  )
   for (const type of ['pointerdown', 'pointerup', 'keydown'] as const)
     addEventListener(
       type,
       () => {
         openai.unlock?.()
+        localVoice.unlock?.()
         system.unlock?.()
       },
       { capture: true },
@@ -82,6 +94,9 @@ export const speech = createRoot(() => {
     setKeyed,
     voiced,
     openaiOn,
+    localOn,
+    local,
+    setLocal,
     warm() {
       if (!openaiOn()) return
       inProcess(

@@ -8,6 +8,7 @@ import { createRealtimeVoice } from './openai-voice.ts'
 import { PrepareAction, SpeakAction, SpeechStatusAction } from './refs.ts'
 import type { OpenAiVoice } from './refs.ts'
 import { plainSpeech, sections, words } from './text.ts'
+import { localSpeech, localSpeechReady } from './local.ts'
 import { MAX_SPOKEN, VOICES } from './voices.ts'
 
 const REWRITE_TIMEOUT_MS = 30_000
@@ -95,21 +96,24 @@ export const actions = {
   }),
   speak: implementAction(SpeakAction, async (args, { host, signal }) => {
     const { voice, text } = unwrap<{ voice: unknown; text: unknown }>(args)
-    if (!VOICES.includes(voice as OpenAiVoice)) throw new Error(`Unknown voice: ${String(voice)}`)
+    if (voice !== 'local' && !VOICES.includes(voice as OpenAiVoice))
+      throw new Error(`Unknown voice: ${String(voice)}`)
     if (
       text !== undefined &&
       (typeof text !== 'string' || !text.trim() || text.length > MAX_SPOKEN)
     )
       throw new Error(`Expected text of at most ${MAX_SPOKEN} characters`)
+    if (voice === 'local') return text === undefined ? {} : localSpeech(host, text, signal)
     const key = await openaiSecretOrNonOAuthKey(host, signal)
     if (!key) throw new Error('OpenAI voice needs OPENAI_API_KEY in ⌘K → Secrets')
     const realtime = realtimeVoice(host)
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(SPEAK_TIMEOUT_MS)])
     if (text === undefined) return await realtime.connect(key, bounded).then(() => ({}))
     const wav = await realtime.speak(key, text, voice as OpenAiVoice, bounded)
-    return { audio: wav.toString('base64') }
+    return { audio: wav.toString('base64'), mimeType: 'audio/wav' }
   }),
   status: implementAction(SpeechStatusAction, async (_args, { host, signal }) => ({
     openai: !!(await openaiSecretOrNonOAuthKey(host, signal)),
+    local: await localSpeechReady(host, signal),
   })),
 }

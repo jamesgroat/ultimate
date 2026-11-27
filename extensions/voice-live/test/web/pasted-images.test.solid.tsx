@@ -5,6 +5,7 @@ import { parseConversationId } from '../../../../lib/ids.ts'
 import { FakeSource } from '../../../../test/web/fake-source.ts'
 import { composerDraft, getDraft } from '../../../../web/src/app/drafts.ts'
 import { store as clientStore } from '../../../../web/src/sdk/client.ts'
+import { speech } from '../../../read-aloud/ui.solid.tsx'
 import {
   COLD_DRAFT,
   composeIn,
@@ -41,9 +42,11 @@ vi.mock('../../../../web/src/sdk/client.ts', async () => {
       await harness.status
       init?.signal?.throwIfAborted()
       return Response.json({
-        result: { model: 'faux/voice', thinking: 'low', route: harness.route },
+        result: { model: 'faux/voice', thinking: 'low', route: harness.route, transcribes: true },
       })
     }
+    if (path === '/api/extensions/read-aloud/actions/status')
+      return Response.json({ result: { openai: false, local: false } })
     if (path === '/api/extensions/voice-live/actions/turn') {
       harness.turns.push(JSON.parse(init?.body as string).args)
       return Response.json({ result: { conversation: 40, route: 'audio' } })
@@ -103,6 +106,9 @@ it('a spoken "send it" takes the images pasted into the voice composer and clear
   await settle()
   expect(harness.turns).toEqual([expect.objectContaining({ clips: ['clip-1'], images: [shot] })])
   expect(getDraft(session).get().images).toEqual([])
+  flush()
+  expect(speech.keyed()).toBe(false)
+  expect(speech.local()).toBe(false)
 })
 
 it('the send button and Enter send the collected clips with the pasted images', async () => {

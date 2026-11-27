@@ -76,3 +76,21 @@ it('keeps the system voice when the browser has voices, including ones that load
   expect(harness.said).toEqual(['Hello there.'])
   expect(harness.spoken).toEqual([])
 })
+
+it('uses browser speech without a local engine and keeps shared-player source ownership', async () => {
+  const synth = new FakeSynth()
+  synth.voices = [{ name: 'Device voice' }]
+  const { speech, say } = await speakWith(synth)
+  speech.setVoice('local')
+  speech.setLocal(false)
+  speech.setKeyed(false)
+  flush()
+  say()
+  expect(harness.said).toEqual(['Hello there.'])
+  speech.load('voice-reply', [], true)
+  const { splitSentences } = await import('../../speech.ts')
+  speech.push('reply', splitSentences('Stale read aloud.', true).sentences[0])
+  expect(speech.state.get().key).toBe('voice-reply')
+  expect(harness.said).toEqual(['Hello there.'])
+  expect(harness.spoken).toEqual([])
+})

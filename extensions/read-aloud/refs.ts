@@ -27,13 +27,16 @@ export const PrepareAction = actionRef<{ text: string; section: number }, Prepar
 )
 
 /**
- * `{ voice, text }` → `{ audio }`, the text read aloud by that OpenAI voice as base64 WAV; aborting the request cancels
- * it. Without text it only opens the connection, so the first sentence starts sooner.
+ * `{ voice, text }` → base64 audio and its MIME type. `local` renders with the optional speak extension's saved MLX
+ * settings; other voices use OpenAI. Without text OpenAI opens its connection and local does nothing.
  */
-export const SpeakAction = actionRef<{ voice: OpenAiVoice; text?: string }, { audio?: string }>(
-  'read-aloud',
-  'speak',
-)
+export const SpeakAction = actionRef<
+  { voice: OpenAiVoice | 'local'; text?: string },
+  { audio?: string; mimeType?: string }
+>('read-aloud', 'speak')
 
-/** `null` → `{ openai }`: whether an OpenAI key is available, so the OpenAI voice can speak. */
-export const SpeechStatusAction = actionRef<null, { openai: boolean }>('read-aloud', 'status')
+/** Availability of the independent server speech sources; browser speech needs neither. */
+export const SpeechStatusAction = actionRef<null, { openai: boolean; local: boolean }>(
+  'read-aloud',
+  'status',
+)

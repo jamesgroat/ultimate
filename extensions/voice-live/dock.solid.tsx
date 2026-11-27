@@ -20,6 +20,7 @@ import {
   talkMode,
 } from '../dictation/ui.solid.tsx'
 import type { Recorded, Sink } from '../dictation/ui.solid.tsx'
+import { SpeechStatusAction } from '../read-aloud/refs.ts'
 import { speech, splitReply } from '../read-aloud/ui.solid.tsx'
 import type { Sentence } from '../read-aloud/ui.solid.tsx'
 import { createCues } from './cues.ts'
@@ -517,7 +518,9 @@ async function sendTurn(input: {
     else dock.cues.send()
     try {
       const status = await api.action(StatusAction, null, { signal, who })
-      speech.setKeyed(status.transcribes)
+      const sources = await api.action(SpeechStatusAction, null, { signal, who })
+      speech.setKeyed(sources.openai)
+      speech.setLocal(sources.local)
       const audio = input.recorded ? await base64(input.recorded.blob) : undefined
       const mimeType = input.recorded?.blob.type.split(';')[0] ?? ''
       const recorded = audio
