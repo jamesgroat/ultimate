@@ -43,7 +43,8 @@ to opt out; disabling this optional extension also removes the nudge. The same r
 tool call to the user without `questions`, including a one-way message that would otherwise end the run. Its tool
 result names the sent message id and asks for a corrective card. This applies to user-directed messages from branches
 as well as the standing agent, regardless of what started their run; it never inspects branch-to-branch messages.
-Messages already carrying questions are left alone. This is a fork-specific exception to the
+For a nested call (such as codemode), the durable correction goes on the parent tool result even if the script
+discards the nested return value. Messages already carrying questions are left alone. This is a fork-specific exception to the
 repository's prompt-only behavioural policy, not a guarantee that every question will be caught.
 
 For final prose, only current runs whose placed inputs all come from the user qualify (typed input, a voice utterance, or a Messages

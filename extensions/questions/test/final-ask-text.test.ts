@@ -44,6 +44,7 @@ it.each([
   'I will go ahead and land it now.',
   '> Should I keep the old flag?\nYes: I kept it, since two callers read it.',
   'You asked "should I keep the old flag?" and I kept it.',
+  'The report said “The patch is ready. Say go and I deploy.”',
   'Why not? The cache already holds it, so I reused it.',
   'Let me know if anything breaks; the change is live.',
   'Tell me which file broke and I will look, but nothing is pending now. Landed.',

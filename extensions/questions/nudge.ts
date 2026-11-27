@@ -17,7 +17,12 @@ import { openQuestion } from '../../lib/message-state.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
 import { ClassifyApi } from '../classify/api.ts'
 
-const Attempt = defineDoc<{ run?: SubmissionId; generation?: TaskId }>({
+const Attempt = defineDoc<{
+  run?: SubmissionId
+  generation?: TaskId
+  parent?: TaskId
+  correction?: string
+}>({
   kind: 'questions.final-ask-attempt',
   version: 1,
   checkpointWhen: () => false,
@@ -43,7 +48,12 @@ const stripQuotes = (text: string) =>
   text.replace(/`+[^`]*`+|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^'\n]+'(?!\w)/g, '')
 
 export function finalAsk(text: string) {
-  const unquoted = unquotedProse(text)
+  const unquoted = stripQuotes(
+    unquotedProse(text).replace(
+      /\b(say|tell me|reply(?: with)?|give me (?:a|the|your))\s+["“‘'`](go(?: ahead)?)["”’'`]/gi,
+      '$1 $2',
+    ),
+  )
   if (
     /(?:^|[.!?]\s+|\n)\s*(?:[-*]\s+)?(?:[^.!?\n,]{1,40},\s*|(?:just|then|so)\s+)?(?:say|give me (?:a|the|your)|tell me|reply(?: with)?)\s+["“‘'`]?go(?: ahead)?\b(?![-'’])/im.test(
       unquoted,
@@ -207,7 +217,13 @@ const NUDGE =
   'Your final prose appears to ask the user for a decision, but it has no answer card. If a response is needed, send the actual question with message { to: "user", text, questions } using the appropriate question kinds and options. Otherwise state your conclusion without asking. Do not invent or answer a decision. This is the only corrective nudge for this run.'
 
 export function finalAskNudge(host: ExtensionHost) {
-  async function nudge(text: string, api: HookApi, ctx: Context, message?: number) {
+  async function nudge(
+    text: string,
+    api: HookApi,
+    ctx: Context,
+    message?: number,
+    parent?: TaskId,
+  ) {
     const matched = finalAsk(text)
     if (!matched && !host.want(ClassifyApi)) return undefined
     if (
@@ -251,6 +267,10 @@ export function finalAskNudge(host: ExtensionHost) {
     const covered = open.length
       ? await coveringCards(host, text, open, ctx.abortSignal)
       : new Set<number>()
+    const correction =
+      message === undefined
+        ? NUDGE
+        : `Message ${message}: ${NUDGE.replace('Your final prose', 'Your message to the user')}`
     const claimed = await host.harness().commit(async (tx) => {
       const current = (await tx.doc(LiveDoc, api.conversationId)).run
       if (
@@ -269,13 +289,11 @@ export function finalAskNudge(host: ExtensionHost) {
       if (attempt.run === run.inputs[0]) return attempt.generation === api.taskId
       attempt.run = run.inputs[0]
       attempt.generation = api.taskId
+      attempt.parent = parent
+      attempt.correction = parent === undefined ? undefined : correction
       return true
     }, ctx)
-    return claimed
-      ? message === undefined
-        ? NUDGE
-        : `Message ${message}: ${NUDGE.replace('Your final prose', 'Your message to the user')}`
-      : undefined
+    return claimed ? correction : undefined
   }
   return [
     hook(GenerationTask, {
@@ -287,14 +305,23 @@ export function finalAskNudge(host: ExtensionHost) {
     }),
     hook(ToolTask, {
       afterTool: async (call, result, api, ctx) => {
+        const attempt = await api.snapshot(Attempt, api.conversationId, ctx)
+        if (attempt?.parent === api.taskId && attempt.correction) {
+          return {
+            ...result,
+            control: undefined,
+            output: [...(result.output ?? []), { type: 'text', text: attempt.correction }],
+          }
+        }
         if (call.name !== 'message' || result.isError) return undefined
         const messages = (await api.snapshot(Messages, ROOT_CONVERSATION_ID, ctx))?.messages ?? []
         const sent = messages.find(
           (m) => m.from === api.conversationId && m.to === 'user' && m.call === call.id,
         )
         if (!sent || sent.questions?.length) return undefined
-        const correction = await nudge(sent.text, api, ctx, sent.id)
+        const correction = await nudge(sent.text, api, ctx, sent.id, call.parent?.taskId)
         if (!correction) return undefined
+        if (call.parent) return { ...result, control: undefined }
         return {
           ...result,
           control: undefined,

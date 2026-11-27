@@ -13,11 +13,13 @@ import type { JsonValue } from '@earendil-works/chord/json'
 import type { Task } from '@earendil-works/pi-durable'
 import {
   defineExtension,
+  defineTool,
   GenerationTask,
   hook,
   LiveDoc,
   ROOT_CONVERSATION_ID,
 } from '@earendil-works/pi-durable'
+import { obj } from '@earendil-works/pi-schema'
 import { context, prepareHarness } from '../../../server/harness.ts'
 import type { OpenHost } from '../../../server/harness.ts'
 import type { ExtensionHost } from '../../../server/extensions.ts'
@@ -97,6 +99,25 @@ async function fixture(
   const backend = messages(host)
   prepared.registry.install(options.noMessage ? { ...backend, tools: [] } : backend)
   prepared.registry.install(questions(host))
+  prepared.registry.install(
+    defineExtension({
+      name: 'nested-message-probe',
+      tools: [
+        defineTool({
+          name: 'silentNestedMessage',
+          description: 'Sends a user message and discards its nested result',
+          parameters: obj({}),
+          execute: async (_args, api, ctx) => {
+            await api.executeTool('message', { to: 'user', reply: false, text: ASK }, ctx)
+            return {
+              output: [{ type: 'text', text: 'Script completed' }],
+              control: { terminate: true },
+            }
+          },
+        }),
+      ],
+    }),
+  )
   const retry = options.retry
     ? (watchdog({ ...host, onOpen: () => {}, onClose: () => {} }).tasks![0] as Task<
         JsonValue,
@@ -237,6 +258,19 @@ it('corrects the uncarded user message with its id and caps a later final ask in
   ])
   expect(turns).toBe(1)
   expect((await f.log())!.messages).toHaveLength(1)
+})
+
+it('delivers the correction through the parent result when a script discards the nested return', async () => {
+  const f = await fixture()
+  await f.run([
+    fauxAssistantMessage([fauxToolCall('silentNestedMessage', {})], { stopReason: 'toolUse' }),
+    (transcript) => {
+      expect(JSON.stringify(transcript.messages)).toContain('Message 1:')
+      expect(JSON.stringify(transcript.messages)).toContain('only corrective nudge')
+      return card
+    },
+  ])
+  expect((await f.log())!.messages).toHaveLength(2)
 })
 
 it('lets a non-standing coordinator resend the missed user decision as a card', async () => {
