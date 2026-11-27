@@ -8,8 +8,11 @@ import { createNodePhotonImages } from '@earendil-works/pi-durable/images/node'
 import type { ToolExecutionApi } from '@earendil-works/pi-durable'
 import { afterEach, expect, it, vi } from 'vitest'
 import codingTools from '../server.ts'
+import { git } from '../../../lib/git.ts'
 import { context } from '../../../server/harness.ts'
 import type { ExtensionHost } from '../../../server/extensions.ts'
+
+vi.mock('../../../lib/git.ts', () => ({ git: vi.fn<typeof git>() }))
 
 afterEach(() => vi.unstubAllEnvs())
 
@@ -22,6 +25,67 @@ const inertHost = {
   onOpen: () => {},
   react: () => {},
 }
+
+it.each([true, false])(
+  'only probes Git when foreground hooks are enabled (repository: %s)',
+  async (repository) => {
+    vi.mocked(git).mockResolvedValue(repository ? '/trusted/repo' : '')
+    const extension = codingTools({
+      ...inertHost,
+      emit: vi.fn<ExtensionHost['emit']>() as ExtensionHost['emit'],
+    })
+    const bash = extension.tools!.find((tool) => tool.name === 'bash') as ReturnType<
+      typeof createBashTool
+    >
+    const exec = vi.fn<NonNullable<ToolExecutionApi['env']>['exec']>(
+      async (command, options, execution) => {
+        options?.onOutput?.(
+          command === 'git --version' ? 'git version 2.50.1 (Apple Git-155)\n' : 'done\n',
+          execution,
+          { stream: 'stdout' },
+        )
+        return { ok: true, value: { exitCode: 0 } }
+      },
+    )
+    const diagnostic = vi.fn<ToolExecutionApi['diagnostic']>()
+    const output = vi.fn<ToolExecutionApi['output']>()
+    const api = {
+      conversationId: 7,
+      callId: 'old-git',
+      env: { cwd: '/trusted/repo', exec },
+      diagnostic,
+      output,
+      retainedOutput: () => ({ text: 'done\n', truncated: false }),
+      snapshot: async () => ({ calls: {} }),
+      watchDoc: async () => ({
+        value: { calls: {} },
+        start: () => {},
+        stop: async () => {},
+      }),
+    } as unknown as ToolExecutionApi
+    const result = await bash.execute({ command: 'echo done' }, api, context)
+    expect(exec.mock.calls.map(([command]) => command)).toEqual([
+      ...(repository ? ['git --version'] : []),
+      'unset NODE_ENV\necho done',
+    ])
+    expect(output).toHaveBeenCalledExactlyOnceWith('done\n', undefined)
+    expect(result.isError).toBeFalsy()
+    expect(diagnostic.mock.calls).toEqual(
+      repository
+        ? [
+            [
+              {
+                severity: 'warn',
+                code: 'git_version',
+                message:
+                  'Commit attribution requires Git 2.54 or newer; Git on this command’s PATH is older or could not be verified. Update Git and put it first on PATH before starting Ultimate. This command will still run, but commit trailers and events may be missing.',
+              },
+            ],
+          ]
+        : [],
+    )
+  },
+)
 
 it('uses a 600-second default tripwire and leaves explicit timeouts unchanged', async () => {
   vi.stubEnv('ULTIMATE_BASH_TIMEOUT', undefined)

@@ -51,6 +51,7 @@ it('resolves trusted sources for diffs, choices, recipients and a fresh, server-
   } as unknown as ExtensionHost
   const ctx: ActionContext = {
     host,
+    by: { source: 'person' },
     signal: new AbortController().signal,
     exec: vi.fn<ActionContext['exec']>(),
     uiChanged: async () => undefined,

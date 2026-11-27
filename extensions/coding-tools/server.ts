@@ -80,7 +80,7 @@ export async function prepareBash(
   log?: string,
 ) {
   const worktree = await git(execution.cwd, 'rev-parse', '--show-toplevel').catch(() => '')
-  if (!worktree.trim()) return
+  if (!worktree.trim()) return false
   execution.env.ULTIMATE_COMMIT_WORKTREE = worktree.trim()
   let count = Number(process.env.GIT_CONFIG_COUNT ?? 0)
   for (const [event, command] of Object.entries(nonBlockingGitHooks(api.conversationId))) {
@@ -92,6 +92,7 @@ export async function prepareBash(
   }
   execution.env.GIT_CONFIG_COUNT = String(count)
   if (log) execution.env.ULTIMATE_COMMIT_LOG = log
+  return true
 }
 
 export function changes(command: string) {
@@ -404,7 +405,36 @@ export default function codingTools(
       const invocationLog = join(tmpdir(), `ultimate-commits-${randomUUID()}.log`)
       const call = createBashTool({
         commandPrefix: dropHostNodeEnv,
-        prepare: (execution) => prepareBash(execution, api, invocationLog),
+        prepare: async (execution, callApi, command) => {
+          const hooksEnabled = await prepareBash(execution, callApi, invocationLog)
+          if (!hooksEnabled || !callApi.env) return
+          let output = ''
+          const checked = await callApi.env.exec(
+            'git --version',
+            {
+              cwd: execution.cwd,
+              env: execution.env,
+              inheritEnv: execution.inheritEnv,
+              timeout: 30,
+              onOutput: (text) => (output += text),
+            },
+            command,
+          )
+          const version = /^git version (\d+)\.(\d+)(?:\.|$)/.exec(output.trim())
+          if (
+            !checked.ok ||
+            checked.value.exitCode !== 0 ||
+            !version ||
+            Number(version[1]) < 2 ||
+            (Number(version[1]) === 2 && Number(version[2]) < 54)
+          )
+            callApi.diagnostic({
+              severity: 'warn',
+              code: 'git_version',
+              message:
+                'Commit attribution requires Git 2.54 or newer; Git on this command’s PATH is older or could not be verified. Update Git and put it first on PATH before starting Ultimate. This command will still run, but commit trailers and events may be missing.',
+            })
+        },
       })
       const run = (command: Context) => call.execute(args, api, command)
       try {
