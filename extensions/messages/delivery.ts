@@ -24,7 +24,7 @@ import { Standing } from '../subagents/api.ts'
 import { locate, postAction } from '../../lib/remote.ts'
 import { Messages, MessageSent } from './api.ts'
 import type { Message } from './api.ts'
-import { imagesOf } from '../../lib/entries.ts'
+import { imagesOf } from './entries.ts'
 import { append, terminal } from './log.ts'
 import {
   EarlyReplies,

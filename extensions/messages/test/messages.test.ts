@@ -10,6 +10,7 @@ import {
 } from '../../../test/helpers.ts'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { crc32, deflateSync } from 'node:zlib'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { machineHostname } from '../../../lib/machine.ts'
@@ -1830,6 +1831,65 @@ const result = (images: object[]) => [
     timestamp: Date.now(),
   },
 ]
+function largePng() {
+  const chunk = (name: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(name), data])
+    const size = Buffer.alloc(4)
+    size.writeUInt32BE(data.length)
+    const crc = Buffer.alloc(4)
+    crc.writeUInt32BE(crc32(body))
+    return Buffer.concat([size, body, crc])
+  }
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(1024, 0)
+  header.writeUInt32BE(1024, 4)
+  header[8] = 8
+  header[9] = 2
+  const pixels = Buffer.alloc(1024 * (1024 * 3 + 1))
+  let seed = 123456789
+  for (let y = 0; y < 1024; y++)
+    for (let x = 1; x <= 1024 * 3; x++) {
+      seed ^= seed << 13
+      seed ^= seed >>> 17
+      seed ^= seed << 5
+      pixels[y * (1024 * 3 + 1) + x] = seed & 255
+    }
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(pixels)),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+it('forwards a 3 MiB PNG compressed under the base64 limit without dropping other images', async () => {
+  const f = await fixture()
+  const original = largePng()
+  expect(original.length).toBeGreaterThan(3 * 1024 * 1024)
+  const shot = await f.opened.harness.commit(
+    async (tx) =>
+      (
+        await tx.appendEntry(ROOT_CONVERSATION_ID, {
+          kind: 'test.entry',
+          model: result([
+            { type: 'image', mimeType: 'image/png', data: original.toString('base64') },
+            png(1),
+          ]),
+        } as never)
+      ).id,
+    context,
+  )
+  await f.send(`#${f.recipient.id}`, 'Contact sheet', { images: shot })
+  const message = (await f.log())!.messages[0]
+  expect(message.text).toBe('Contact sheet\n\n(image compressed to fit)')
+  expect(message.images?.count).toBe(2)
+  const delivered = imagesIn(await placed(f, f.recipient.id, message.id))
+  expect(delivered).toHaveLength(2)
+  expect(delivered[0].mimeType).toBe('image/jpeg')
+  expect(Buffer.byteLength(delivered[0].data, 'utf8')).toBeLessThan(2 * 1024 * 1024)
+  expect(delivered[1]).toEqual(png(1))
+})
+
 it("forwards tool-result images by id, not an earlier turn's as latest, and checks every image", async () => {
   const f = await fixture()
   const to = `#${f.recipient.id}`

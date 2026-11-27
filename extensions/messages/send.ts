@@ -154,10 +154,13 @@ export async function send(
         throw new Error('These questions are no longer open')
     }
     let images: Message['images']
+    let imageNote = ''
     if (input.images !== undefined) {
       if (from === 'user')
         throw new Error('your images go along with what you submit, not with a message')
-      images = await resolveImages(tx, input.imagesFrom ?? from, input.images)
+      const resolved = await resolveImages(tx, input.imagesFrom ?? from, input.images)
+      images = { entry: resolved.entry, count: resolved.count }
+      if (resolved.compressed) imageNote = '\n\n(image compressed to fit)'
     }
 
     if (from === 'user' && input.re !== undefined)
@@ -191,7 +194,7 @@ export async function send(
     const message = await append(tx, {
       from,
       to,
-      text: input.text,
+      text: input.text + imageNote,
       reply: input.reply ?? true,
       state: to === 'user' ? 'delivered' : 'sent',
       ...(re === undefined ? {} : { re }),

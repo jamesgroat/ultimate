@@ -1,6 +1,8 @@
 import type { ConversationId, EntryId, EntryRecord, Tx } from '@earendil-works/pi-durable'
 import { int, lit, union } from '@earendil-works/pi-schema'
-import { imagesOf, latestImagesEntry } from '../../lib/entries.ts'
+import { resizeImage } from '@earendil-works/pi-coding-agent'
+import { latestImagesEntry } from '../../lib/entries.ts'
+import { ForwardedImages, imagesOf } from './entries.ts'
 import { imageMimeTypes, maxImageBytes, maxImages } from '../../shared/protocol.ts'
 
 export type ImagesRef = 'latest' | EntryId
@@ -30,13 +32,27 @@ export async function resolveImages(tx: Tx, from: ConversationId, ref: ImagesRef
     throw new Error(
       `images: entry ${entry.id} has ${images.length} images; at most ${maxImages} go along`,
     )
-  for (const image of images)
-    if (
-      !imageMimeTypes.includes(image.mimeType) ||
-      Buffer.byteLength(image.data, 'base64') > maxImageBytes
+  let compressed = ForwardedImages.is(entry)
+  for (const [index, image] of images.entries()) {
+    const refused = new Error(
+      `images: entry ${entry.id} has an unsupported image or one over 2 MiB`,
     )
-      throw new Error(`images: entry ${entry.id} has an unsupported image or one over 2 MiB`)
-  return { entry: entry.id, count: images.length }
+    if (!imageMimeTypes.includes(image.mimeType)) throw refused
+    if (Buffer.byteLength(image.data, 'utf8') < maxImageBytes) continue
+    const resized = await resizeImage(Buffer.from(image.data, 'base64'), image.mimeType, {
+      maxWidth: Number.MAX_SAFE_INTEGER,
+      maxHeight: Number.MAX_SAFE_INTEGER,
+      maxBytes: maxImageBytes,
+    })
+    if (!resized || Buffer.byteLength(resized.data, 'utf8') >= maxImageBytes) throw refused
+    images[index] = { type: 'image', data: resized.data, mimeType: resized.mimeType }
+    compressed = true
+  }
+  const prepared =
+    compressed && !ForwardedImages.is(entry)
+      ? await tx.appendEntry(from, { kind: ForwardedImages.kind, data: { images } })
+      : entry
+  return { entry: prepared.id, count: images.length, compressed }
 }
 export const imagesParameter = union([lit('latest'), int({ minimum: 1 })], {
   description:

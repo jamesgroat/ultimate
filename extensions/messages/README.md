@@ -30,7 +30,9 @@ conversation as `#123` or `123`, a standing agent as `@name`, or `user`.
 - **Images.** `images` forwards images from the sender's own conversation: `'latest'` takes the newest entry with
   images in the current turn (its input, or a tool result such as a screenshot since) and fails when there is none; an
   entry id names an older one. At most `maxImages`, each at most
-  `maxImageBytes`. `branch` takes `images` for its first message too.
+  `maxImageBytes` including base64 encoding. Oversized images are re-encoded or downscaled with Pi's resize helper;
+  the message says “image compressed to fit”. Originals stay untouched; unsupported or unfittable images are refused,
+  never dropped. Prepared copies are stored once as attachment-only entries. `branch` uses the same path for its first message.
 
 ### Waking upward: notes and reports
 

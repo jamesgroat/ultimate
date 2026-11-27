@@ -36,6 +36,7 @@ export default defineWebExtension({
     'board.answered': hidden,
     'board.wake': hidden,
     'board.open': hidden,
+    'board.images': hidden,
     'pi.assistant': CompactAnswer,
   },
   tools: { message: MessageCall, branch: BranchCall },

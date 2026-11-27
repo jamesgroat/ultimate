@@ -2,7 +2,7 @@ import type { ConversationId, EntryId, EntryRecord } from '@earendil-works/pi-du
 import { createMemo, Errored, For, Loading, onCleanup, Show } from 'solid-js'
 import { ToolImage } from '@/components/ai/tool.solid.tsx'
 import { api, useTranscript } from '@/sdk/solid'
-import { imagesOf } from '../../lib/entries.ts'
+import { imagesOf } from './entries.ts'
 import { offsetEntryId } from '../../lib/ids.ts'
 
 export function InputImages(props: { entry: EntryRecord }) {
