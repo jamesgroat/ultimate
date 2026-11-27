@@ -4,6 +4,7 @@ import type { MemoryItem } from '../lineage/refs.ts'
 import type { Todo } from '../todos/refs.ts'
 import type { ModelThinkingLevel } from '@earendil-works/pi-ai'
 import type { CreateArgs, Schedule } from '../automations/refs.ts'
+import type { ScriptTransfer } from '../automations/api.ts'
 
 export type Seed = {
   from: { name: string; number: number }
@@ -22,11 +23,14 @@ export type Seed = {
     model?: { provider: string; modelId: string }
     thinking?: ModelThinkingLevel
   }[]
+  transfers?: ScriptTransfer[]
   scripts: {
     id: string
     scope?: 'project'
     name: string
     ask: string
+    schedule?: Schedule
+    timeout?: number
     prompt?: string
     agent?: string
     model?: { provider: string; modelId: string }

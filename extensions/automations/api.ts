@@ -2,7 +2,13 @@
 import type { Tx } from '@earendil-works/pi-durable'
 import { defineApi } from '../../shared/extension-api.ts'
 import type { Automation, AutomationListItem, CreateArgs } from './types.ts'
+export type { ScriptTransfer } from './transfer.ts'
+import type { ScriptTransfer } from './transfer.ts'
 export type AutomationsService = {
+  /** Quiesce and permanently retire user scripts for a chapter, retaining their files. Retryable. */
+  retireScripts(chapter: string): Promise<ScriptTransfer[]>
+  /** Adopt a retired script without a writing turn. Keyed by source chapter and id. Retryable. */
+  adoptScript(transfer: ScriptTransfer, key: string): Promise<Automation>
   /** Create an automation as the tool's create does; `subscribers` stand in for a caller. Commits. */
   create(args: CreateArgs): Promise<Automation>
   /** Delete a record, retiring its scheduler; files and conversations remain. Commits. */

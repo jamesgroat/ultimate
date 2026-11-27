@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
@@ -61,18 +62,20 @@ async function fixture() {
     lastBackup: vi.fn<CloudService['lastBackup']>(async () => undefined),
   }
   const services = new Map<unknown, unknown>([[CloudApi, cloud]])
-  const invoke = vi.fn<(extension: string, action: string) => Promise<[]>>(
+  const invoke = vi.fn<(extension: string, action: string) => Promise<unknown[]>>(
     async (extension, action) => {
       expect(action).toBe('list')
       expect(extension).toBe('automations')
       return []
     },
   )
+  const retire = vi.fn<(chapter: string) => Promise<Seed['transfers']>>(async () => [])
   const hold = vi.fn<() => void>()
   const host = {
     home,
     chapter: { name: 'the-beginning', number: 1 },
     want: (api: unknown) => services.get(api),
+    need: () => ({ retireScripts: retire }),
     conversations: () => [],
     resource: (key: string, create: () => unknown) => {
       if (!resources.has(key)) resources.set(key, create())
@@ -114,7 +117,7 @@ async function fixture() {
     harness.commit(async (tx) => {
       ;(await tx.doc(Next, ROOT_CONVERSATION_ID)).prepared = { ...READY, at: 1 }
     }, context)
-  return { host, home, harness, call, prepare, cloud, services, phases, invoke, hold }
+  return { host, home, harness, call, prepare, cloud, services, phases, invoke, hold, retire }
 }
 
 it('keeps asleep and switch user-only', () => {
@@ -212,6 +215,72 @@ it.each([undefined, 'off', 'local'] as const)(
     expect(f.cloud.backup).not.toHaveBeenCalled()
   },
 )
+
+it('does not retire watchers on failed validation or backup and retries sleep under a changed name', async () => {
+  const f = await fixture()
+  await f.prepare()
+  const trigger = {
+    id: 'A1',
+    name: 'Duplicate',
+    enabled: true,
+    subscribers: ['@ultimate'],
+    schedule: { kind: 'every', ms: 60000 },
+  }
+  f.invoke.mockResolvedValueOnce([trigger, { ...trigger, id: 'A2' }])
+  expect(await actions.asleep({}, f.call)).toMatchObject({
+    sleep: { phase: 'failed', error: expect.stringContaining('unique automation names') },
+  })
+  expect(f.retire).not.toHaveBeenCalled()
+  f.cloud.backup.mockRejectedValueOnce(new Error('Backup unavailable'))
+  expect(await actions.asleep({}, f.call)).toMatchObject({
+    sleep: { phase: 'failed', error: 'Error: Backup unavailable' },
+  })
+  expect(f.retire).not.toHaveBeenCalled()
+  await writeJson(join(f.home, 'chapters/changed-name/seed.json'), { abandoned: true })
+  await expect(actions.switch({ chapter: 'changed-name' }, f.call)).rejects.toThrow(
+    'Unknown chapter',
+  )
+  await actions.asleep({ name: 'changed-name' }, f.call)
+  expect(f.retire).toHaveBeenCalledExactlyOnceWith('changed-name')
+  expect(existsSync(join(f.home, 'pending-chapter.json'))).toBe(false)
+  const seed = await readJson<Seed | null>(join(f.home, 'chapters/changed-name/seed.json'), null)
+  expect(seed?.transfers).toEqual([])
+  expect(seed?.learned).toEqual(READY.learned)
+})
+
+it('retries a failed seed write under a changed name with both script and error receipts', async () => {
+  const f = await fixture()
+  await f.prepare()
+  const valid = {
+    id: 'A9',
+    name: 'Watch PRs',
+    source: '/archived/A9/run',
+    subscribers: ['@ultimate'],
+    automation: { name: 'Watch PRs', script: { ask: 'Watch PRs', once: false } },
+  }
+  const receipts = [
+    valid,
+    {
+      ...valid,
+      id: 'A10',
+      name: 'Unmapped watch',
+      subscribers: [],
+      error: 'Subscriber #42 is not a standing agent',
+    },
+  ]
+  f.retire.mockResolvedValue(receipts)
+  await mkdir(join(f.home, 'chapters/fresh-roots/seed.json'), { recursive: true })
+  expect(await actions.asleep({}, f.call)).toMatchObject({
+    sleep: { phase: 'failed', error: expect.stringContaining('Error:') },
+  })
+  expect(f.retire).toHaveBeenCalledExactlyOnceWith('fresh-roots')
+  expect(f.host.restart).not.toHaveBeenCalled()
+  await actions.asleep({ name: 'changed-name' }, f.call)
+  expect(f.retire).toHaveBeenLastCalledWith('changed-name')
+  const seed = await readJson<Seed | null>(join(f.home, 'chapters/changed-name/seed.json'), null)
+  expect(seed?.transfers).toEqual(receipts)
+  expect(existsSync(join(f.home, 'pending-chapter.json'))).toBe(false)
+})
 
 it('stays when the backup fails, or another conversation starts during the backup', async () => {
   const f = await fixture()
