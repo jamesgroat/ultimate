@@ -274,6 +274,7 @@ export default function codingTools(
   const reportEnded = async (
     conversation: ConversationId,
     { name, command, pgid, log }: { name: string; command: string; pgid: number; log: string },
+    continueOnExit: boolean,
     { exitCode, signal }: { exitCode: number | null; signal: string | null },
   ) => {
     const tail = await logTail(log)
@@ -284,15 +285,22 @@ export default function codingTools(
     if (!handle) return
     await harness.commit(async (tx) => {
       if (await concludedWithOwners(tx, conversation)) return
-      await handle.submit(tx, {
-        type: 'write',
-        requestId: `background-ended:${name}`,
-        entry: {
-          kind: BackgroundEndedEntry.kind,
-          data: { command, pgid, exitCode, signal, log, tail },
-          model: [{ role: 'user', content, timestamp: Date.now() }],
-        },
-      })
+      const entry = {
+        kind: BackgroundEndedEntry.kind,
+        data: { command, pgid, exitCode, signal, log, tail },
+      }
+      const requestId = `background-ended:${name}`
+      const live = await tx.doc(LiveDoc, conversation)
+      await handle.submit(
+        tx,
+        continueOnExit && !live.run
+          ? { type: 'input', requestId, content, entry, whenBusy: 'reject' }
+          : {
+              type: 'write',
+              requestId,
+              entry: { ...entry, model: [{ role: 'user', content, timestamp: Date.now() }] },
+            },
+      )
     }, BACKGROUND_CONTEXT)
   }
   host.onOpen(() =>
@@ -349,11 +357,17 @@ export default function codingTools(
           'For servers, test runs and other long-running processes: start the command in its own process group and return at once with the group id, a log file of its output and the command that stops it. Do not add & yourself. When it ends, its exit code and the last lines of its log arrive with your next input: do not poll or sleep on the log to wait for it. Ultimate stops it when this conversation concludes or Ultimate restarts.',
       }),
     ),
+    continue: opt(
+      bool({
+        description:
+          'With background:true, wake this conversation when the command exits if it is idle and not concluded. Use for build/train/score steps that need follow-up. Busy conversations receive a note instead. Omit for servers and watchers.',
+      }),
+    ),
   })
   const tracedBashTool = defineTool({
     ...shell,
     parameters,
-    async execute({ interruptible, background, ...args }, api, context) {
+    async execute({ interruptible, background, continue: continueOnExit, ...args }, api, context) {
       if (background) {
         if (!api.env) throw new Error('No execution environment is configured')
         const { pgid, log, started, stop, exited } = await startBackground(
@@ -384,6 +398,7 @@ export default function codingTools(
               reportEnded(
                 api.conversationId,
                 { name: started.name, command: args.command, pgid, log },
+                continueOnExit === true,
                 outcome,
               ),
             )

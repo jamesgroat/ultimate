@@ -40,11 +40,19 @@ async function boot() {
   return server
 }
 
-async function background(server: Server, conversation: ConversationId, command: string) {
+async function background(
+  server: Server,
+  conversation: ConversationId,
+  command: string,
+  continueOnExit = false,
+) {
   server.host.faux!.setResponses([
-    fauxAssistantMessage([fauxToolCall('bash', { command, background: true })], {
-      stopReason: 'toolUse',
-    }),
+    fauxAssistantMessage(
+      [fauxToolCall('bash', { command, background: true, continue: continueOnExit })],
+      {
+        stopReason: 'toolUse',
+      },
+    ),
     fauxAssistantMessage('Started'),
   ])
   const handle = (await server.harness.conversation(conversation, context))!
@@ -86,6 +94,7 @@ it('tells the conversation once, with its exit code and log tail, when a backgro
     id,
     `until [ -e '${go}' ]; do sleep 0.05; done; seq 1 30; echo failing >&2; exit 3`,
   )
+  const calls = server.host.faux!.state.callCount
   await writeFile(go, '')
   const handle = (await server.harness.conversation(id, context))!
   const ended = async () =>
@@ -103,21 +112,59 @@ it('tells the conversation once, with its exit code and log tail, when a backgro
   expect(JSON.stringify(entry.model)).toContain('exited with code 3')
   await until(async () => !(await groupsOf(server, id)).some((file) => file.endsWith('.pid')))
   expect(await ended()).toHaveLength(1)
+  expect(server.host.faux!.state.callCount).toBe(calls)
 })
 
-it('concluding stops the groups started before it, and a resumed conversation keeps its new ones', async () => {
+it('wakes an idle owner once to follow up on an opted-in command with its outcome', async () => {
+  const server = await boot()
+  const id = await create(server)
+  const go = join(directory, 'go')
+  const followed = join(directory, 'followed')
+  await background(
+    server,
+    id,
+    `until [ -e '${go}' ]; do sleep 0.05; done; echo scored; exit 3`,
+    true,
+  )
+  server.host.faux!.setResponses([
+    fauxAssistantMessage([fauxToolCall('bash', { command: `echo followed > '${followed}'` })], {
+      stopReason: 'toolUse',
+    }),
+    fauxAssistantMessage('Follow-up complete'),
+  ])
+  await writeFile(go, '')
+  await until(async () => (await readFile(followed, 'utf8').catch(() => '')) === 'followed\n')
+  const handle = (await server.harness.conversation(id, context))!
+  await until(async () =>
+    JSON.stringify((await handle.context(context)).entries).includes('Follow-up complete'),
+  )
+  const ended = (await handle.context(context)).entries.filter((entry) =>
+    BackgroundEndedEntry.is(entry),
+  )
+  expect(ended).toHaveLength(1)
+  expect(ended[0].data).toMatchObject({ exitCode: 3, tail: 'scored' })
+  expect(JSON.stringify(ended[0].model)).toContain('exited with code 3')
+})
+
+it('concluding stops opted-in groups without waking their owner, and a resumed conversation keeps its new ones', async () => {
   const server = await boot()
   const [concluded, other] = [await create(server), await create(server)]
-  const before = await background(server, concluded, 'exec sleep 300')
+  const before = await background(server, concluded, 'exec sleep 300', true)
   const untouched = await background(server, other, 'exec sleep 300')
+  const calls = server.host.faux!.state.callCount
   expect((await conversationAction(server, 'conclude', [concluded])).status).toBe(200)
   await until(() => !groupAlive(before.pgid))
   await until(async () => (await groupsOf(server, concluded)).length === 0)
+  expect(server.host.faux!.state.callCount).toBe(calls)
   expect((await conversationAction(server, 'resume', [concluded])).status).toBe(200)
   const after = await background(server, concluded, 'exec sleep 300')
   expect((await conversationAction(server, 'conclude', [other])).status).toBe(200)
   await until(() => !groupAlive(untouched.pgid))
   expect(groupAlive(after.pgid)).toBe(true)
+  const handle = (await server.harness.conversation(concluded, context))!
+  expect(
+    (await handle.context(context)).entries.filter((entry) => BackgroundEndedEntry.is(entry)),
+  ).toHaveLength(0)
 })
 
 it('stops the new group when the commit that records it fails', async () => {

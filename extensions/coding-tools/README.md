@@ -35,8 +35,13 @@ again. A pid is signalled only while its pid file still names it with the start 
 When a background group ends on its own or is killed, the process that started it writes one
 `coding-tools.background-ended` entry (`refs.ts`) to the conversation, keyed by the group's name: the command, the
 exit code or signal, the log path and its last 20 lines. The entry carries model text, so it is placed at the next
-boundary like a note: the agent reads it with its next input instead of polling the log. It wakes nobody and is
-skipped once the conversation is concluded. The watch is the group's own `ended` promise, nothing durable: a restart
+boundary like a note: the agent reads it with its next input instead of polling the log. By default it wakes nobody. Add `continue: true` to a `background: true`
+build, training or scoring call that needs follow-up: its completion starts a new turn if the owner is idle,
+carrying the same exit status and log tail in the same card. The idle check and submission share a transaction;
+a busy owner gets only the note, not a queued follow-up. Both forms use the same group-specific request id,
+so one process end is delivered once. Completion is skipped once the conversation or an owner is concluded.
+Leave `continue` off for servers and watchers. Processes started by the harness (such as preview servers)
+do not pass through this bash completion path and never opt into waking. The watch is the group's own `ended` promise, nothing durable: a restart
 stops every background group anyway, so no exit outlives the process to report. The transcript shows it as a
 collapsed `&` card with the exit status, opening on the log tail.
 
