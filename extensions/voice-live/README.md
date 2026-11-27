@@ -3,14 +3,16 @@ back to @ultimate when you agree.
 
 It is off by default. Enable it with `"extensions": { "enable": ["voice-live"] }` in your user or project
 `.ultimate/settings.json`. It needs the voice model's login (by default Claude Code's, for
-`claude-code/claude-opus-5-5`) and an OpenAI API key for transcription (`OPENAI_API_KEY` in ⌘K → Secrets, the key
-dictation uses). The voice prompt box's model and thinking chip picks both: before a session it sets what the next
+`claude-code/claude-opus-5-5`) and a transcription source: local Parakeet through the optional user `speak` extension,
+or an OpenAI API key (`OPENAI_API_KEY` in ⌘K → Secrets). Local-ready recordings are decoded with `ffmpeg` to 16 kHz
+mono signed PCM16 and sent to Parakeet with turn classification off. If local setup is absent, OpenAI remains available;
+a failed local transcription is reported, not silently retried with a paid source. Dictation's microphone ownership is unchanged. The voice prompt box's model and thinking chip picks both: before a session it sets what the next
 session starts on (`pick`), in an open session it sets that session's, and the next session starts from the last pick
 (`model` and `thinking` in `voice.session`). Without a pick, `"voice": { "model": "provider/model" }` in
 `~/.ultimate/settings.json` applies; the thinking level defaults to `low`, and a model without the picked level uses
 its closest one. The voice model is a per-project pick: each project's root keeps its own.
 
-The empty voice panel shows this setup as a checklist from `status`: the voice model's login, OpenAI transcription (required) and Jev for hands-free send in
+The empty voice panel shows this setup as a checklist from `status`: the voice model's login, local or OpenAI transcription (required) and Jev for hands-free send in
 collect mode (optional), each with what to do when it is missing. The model line says where it comes from (`picked`,
 `from settings` or `default`) and reads "model removed" when that model no longer exists; a stored pick offers
 **Use default**, which clears it (`pick` with `model: null`).

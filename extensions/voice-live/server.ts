@@ -62,6 +62,7 @@ import type {
   VoiceUi,
 } from './refs.ts'
 import { voicePrompt } from './prompt.ts'
+import { localTranscript, localTranscriptionReady } from './local.ts'
 import { checkpointEvery } from '../../shared/checkpoint.ts'
 
 const DEFAULT_MODEL = { provider: 'claude-code', modelId: 'claude-opus-5-5' }
@@ -198,9 +199,16 @@ const transcribeEffect = (host: ExtensionHost) =>
   defineEffect<{ session: ConversationId; audio: string }, string>(
     'voice-live.transcribe',
     async ({ session, audio }, { signal }) => {
+      const recording = await readRecording(host, session, audio)
+      if (await localTranscriptionReady(host, signal)) {
+        const heard = await localTranscript(host, recording, signal)
+        if (!heard) await dropSilentTurn(host, session, audio)
+        return heard
+      }
       const key = await openaiSecretOrNonOAuthKey(host, signal)
-      if (!key) throw new Error('Transcription needs an OpenAI API key in ⌘K → Secrets')
-      const { data, mimeType } = await readRecording(host, session, audio)
+      if (!key)
+        throw new Error('Transcription needs local Parakeet or an OpenAI API key in ⌘K → Secrets')
+      const { data, mimeType } = recording
       const answer = await openaiTranscribe(
         key,
         new Blob([Buffer.from(data, 'base64')], { type: mimeType }),
@@ -461,7 +469,7 @@ const unwrap = <T extends object>(args: unknown) =>
   (args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as Partial<T>
 
 export const actions = {
-  status: implementAction(StatusAction, async (_args, { host }) => {
+  status: implementAction(StatusAction, async (_args, { host, signal }) => {
     const session = await host.harness().snapshot(Session, ROOT_CONVERSATION_ID, context)
     const open = session?.id
     const agent =
@@ -494,7 +502,8 @@ export const actions = {
         : 'Log in to its provider, or pick another model in the prompt box below.',
       default: 'Log in to its provider, or pick another model in the prompt box below.',
     }[source]
-    const transcribes = !!(await openaiSecretOrNonOAuthKey(host))
+    const local = await localTranscriptionReady(host, signal)
+    const transcribes = local || !!(await openaiSecretOrNonOAuthKey(host))
     const classifies =
       !!host.want(ClassifyApi) && !!(await readSecret(host.userHome, 'TYPESAFE_API_KEY'))
     return {
@@ -516,12 +525,12 @@ export const actions = {
         transcription: transcribes
           ? {
               ready: true,
-              detail: 'OpenAI transcription: your words show as text and reach any model',
+              detail: `${local ? 'Local Parakeet' : 'OpenAI'} transcription: your words show as text and reach any model`,
             }
           : {
               ready: false,
-              detail: 'OpenAI transcription is missing',
-              fix: 'Required: add OPENAI_API_KEY in ⌘K → Secrets.',
+              detail: 'No transcription source is ready',
+              fix: 'Set up local Parakeet in speak, or add OPENAI_API_KEY in ⌘K → Secrets.',
             },
         handsFree: classifies
           ? { ready: true, detail: 'Jev: "send it" sends a collected message hands-free' }
