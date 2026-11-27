@@ -48,6 +48,20 @@ describe('automation schedules', () => {
     )
     expect(parseSchedule('cron "* * * * *"').kind).toBe('cron')
   })
+  it('suggests the wrapped form for bare cron expressions', () => {
+    for (const [input, suggestion] of [
+      ['0 15 * * *', 'Did you mean: cron "0 15 * * *"?'],
+      ['0 15 * * * UTC', 'Did you mean: cron "0 15 * * *" UTC?'],
+      ['0 8 * * * America/Phoenix', 'Did you mean: cron "0 8 * * *" America/Phoenix?'],
+    ])
+      expect(() => parseSchedule(input)).toThrow(suggestion)
+  })
+  it('lists accepted forms for unrecognised schedules', () => {
+    for (const input of ['tomorrow', 'at nope'])
+      expect(() => parseSchedule(input)).toThrow(
+        'Use an ISO time. Accepted forms: cron "<5 fields>" [IANA zone], at <ISO time>, in <duration>, every <duration>',
+      )
+  })
   it('rejects invalid input and impossible cron dates', () => {
     for (const input of [
       'every 0.5s',
