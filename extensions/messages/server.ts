@@ -192,6 +192,18 @@ export const actions = {
       if (!closing) throw new Error('A request to another project closes only with dismiss: true')
       return { id: await dismissTell(host, primary, messageId as number, text.trim(), ctx) }
     }
+    const asked = log?.messages.find((m) => m.id === messageId)
+    if (!asked) throw new Error(`Unknown message ${messageId as number}`)
+    if (asked.to === 'user' && (asked.state === 'answered' || asked.state === 'dismissed')) {
+      const reply = log!.messages.find((m) => m.re === messageId && m.from === 'user')
+      if (reply)
+        return {
+          id: reply.id,
+          alreadySettled: true as const,
+          state: asked.state,
+          answer: reply.text,
+        }
+    }
     const entry = await userRunInput(host, conversationId, ctx)
     const via = { conversation: conversationId, ...(entry === undefined ? {} : { entry }) }
     return {
