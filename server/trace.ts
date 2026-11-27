@@ -88,9 +88,13 @@ function toolError(result: ToolExecutionResult) {
     ),
     ...(result.output ?? []).flatMap((part) => (part.type === 'text' ? [part.text] : [])),
   ].join('\n')
-  return text.length <= SUMMARY_CHARACTER_LIMIT
-    ? text
-    : text.slice(0, SUMMARY_CHARACTER_LIMIT) + '…'
+  if (text.length <= SUMMARY_CHARACTER_LIMIT * 2) return text
+  const last = text.split(/\r?\n/).findLast((line) => line.includes('Error:'))
+  const terminal = last
+    ? last.trim().slice(0, SUMMARY_CHARACTER_LIMIT)
+    : text.trim().slice(-SUMMARY_CHARACTER_LIMIT)
+  const cause = text.includes('Script error:') ? `Script error:\n${terminal}` : terminal
+  return `${text.slice(0, SUMMARY_CHARACTER_LIMIT)}\n…\n${cause}`
 }
 
 export function summary(value: unknown) {

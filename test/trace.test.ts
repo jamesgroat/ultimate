@@ -694,6 +694,38 @@ it('names a failed shell command by its exit code, from the error diagnostic', a
   trace.close()
 })
 
+it('retains terminal selector failures and Script error causes after long output', async () => {
+  const selector = 'Error: Selector button:has-text("Missing") did not match any elements'
+  const cause =
+    'RangeError: store("t") value has 384250 characters of JSON, more than the limit of 262144.'
+  const { trace, execute } = await tracedTools({
+    browser: async () => ({
+      isError: true,
+      output: [{ type: 'text', text: `${'warning\n'.repeat(200)}${selector}\n at browser.ts:42` }],
+    }),
+    codemode: async () => ({
+      isError: true,
+      output: [
+        {
+          type: 'text',
+          text: `Script failed\nOutput:\n${'x'.repeat(1000)}\nScript error:\n${cause}`,
+        },
+      ],
+    }),
+  })
+  try {
+    const api = { conversationId: 1, taskId: 1, callId: 'call' }
+    await execute('browser', api, model('call'))
+    await execute('codemode', api, model('call'))
+    const rows = trace.reader.query()
+    expect(rows.find((row) => row.name === 'browser')?.error).toContain(selector)
+    expect(rows.find((row) => row.name === 'codemode')?.error).toContain(`Script error:\n${cause}`)
+    expect(rows.every((row) => row.error!.length < 650)).toBe(true)
+  } finally {
+    trace.close()
+  }
+})
+
 it("finds a Pi nested call's caller by task and call id, not by a call id another conversation reuses", async () => {
   const gates = new Map([1, 2].map((id) => [id, Promise.withResolvers<void>()]))
   let entered = 0
